@@ -33,7 +33,7 @@ flowchart LR
   V --> A
 ```
 
-`bcon`は端末実装、Kittyはここでは画像プロトコル。別のKittyアプリやWindow Managerを追加しない。resourcesは既存ops成果物を参照し、Viewerを複製しない。共通moduleは `nixos/browser-host.nix` に定義し、VMも同じmoduleをimportする。現物CIでの合格が必要であり、VMの成功だけでは本番適用・対象実機同等性（E11）を証明しない。
+`bcon`は端末実装、Kittyはここでは画像プロトコル。別のKittyアプリやWindow Managerを追加しない。resourcesは既存ops成果物を参照し、Viewerを複製しない。共通moduleは `nixos/browser-host.nix` に定義し、Chromeの起動とtty2でのbcon起動、tty1の復旧経路を持つ。VMも同じmoduleをimportし、ソフトウェアGPUだけを試験用に指定する。現物CIでの合格が必要であり、VMの成功だけでは本番適用・対象実機同等性（E11）を証明しない。
 
 **操作境界の最小契約:** 生CDPへの到達をBrowser管理側に限定し、利用者には指定Targetの観測と許可された操作だけを渡す。書込中は1主体・1作用、権限変更は未確定の作用を照合してから行う。旧権限・旧Browser世代・旧Targetへの要求は拒否する。管理操作はViewerへ混ぜない。既存opsの実行境界で実現できるかを先に調べ、迂回できる間は未達。図の箱だけで新Gateway・DB・常駐監視を増設しない。
 

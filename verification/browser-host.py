@@ -109,8 +109,8 @@ try:
     browser.succeed("chvt 2; test \"$(cat /sys/class/tty/tty0/active)\" = tty2")
     # Regression: service availability is not proof while autovt's agetty owns tty2.
     browser.fail("pgrep -f '[a]getty .*tty2'")
-    browser.succeed("systemctl start bcon-test")
-    browser.wait_for_unit("bcon-test.service")
+    browser.succeed("systemctl is-enabled browser-host-terminal.service")
+    browser.wait_for_unit("browser-host-terminal.service")
     wait_process("pgrep -x login")
     before = pixels("bcon-before")
     assert min(before[:3]) < 100, "negative control unexpectedly contains the fixture"
@@ -166,8 +166,8 @@ try:
 finally:
     # Record the failing phase without mutating/restarting the tested service.
     for command in (
-        "systemctl show bcon-test -p MainPID -p ActiveState -p SubState -p NRestarts",
-        "journalctl -b -u bcon-test --no-pager -n 160",
+        "systemctl show browser-host-terminal -p MainPID -p ActiveState -p SubState -p NRestarts",
+        "journalctl -b -u browser-host-terminal --no-pager -n 160",
         "ps -eo pid,ppid,tty,stat,wchan:32,args",
         "cat /sys/class/tty/tty0/active; ls -l /dev/dri/",
         "cat /run/viewer-errors 2>/dev/null",

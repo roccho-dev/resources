@@ -25,30 +25,8 @@ in pkgs.testers.runNixOSTest {
       hardware.graphics.enable = true;
       services.dbus.enable = true;
       fonts.packages = [ pkgs.noto-fonts pkgs.noto-fonts-cjk-sans ];
-      # logind autospawns getty on VT switch even if the per-instance unit is disabled.
-      # Keep tty1 as the rescue console; dedicate tty2 to the bcon session.
-      services.logind.settings.Login = { NAutoVTs = 1; ReserveVT = 1; };
-      systemd.services."getty@tty2".enable = false;
-      systemd.services.bcon-test = {
-        after = [ "systemd-user-sessions.service" ];
-        environment = {
-          HOME = "/root";
-          XDG_RUNTIME_DIR = "/run/bcon-test";
-          TERM = "xterm-256color";
-          LIBGL_ALWAYS_SOFTWARE = "1";
-          RUST_LOG = "info";
-        };
-        serviceConfig = {
-          ExecStart = "${bcon}/bin/bcon";
-          StandardInput = "tty";
-          StandardOutput = "tty";
-          StandardError = "journal";
-          TTYPath = "/dev/tty2";
-          RuntimeDirectory = "bcon-test";
-          TimeoutStopSec = "5s";
-          Restart = "no";
-        };
-      };
+      # Only GPU emulation differs from the Host module's terminal service.
+      systemd.services.browser-host-terminal.environment.LIBGL_ALWAYS_SOFTWARE = "1";
       services.openssh.enable = true;
       # Disposable VM network only; no production credentials.
       services.openssh.settings.PermitRootLogin = "prohibit-password";

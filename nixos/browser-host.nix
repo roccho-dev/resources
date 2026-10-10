@@ -22,6 +22,29 @@ in {
     environment.systemPackages = [ bcon viewer ];
     users.groups.browser = { };
     users.users.browser = { isSystemUser = true; group = "browser"; };
+    # Keep tty1 for recovery; logind must not autospawn agetty on the bcon VT.
+    services.logind.settings.Login = { NAutoVTs = 1; ReserveVT = 1; };
+    systemd.services."getty@tty2".enable = false;
+    systemd.services.browser-host-terminal = {
+      wantedBy = [ "multi-user.target" ];
+      after = [ "systemd-user-sessions.service" ];
+      environment = {
+        HOME = "/root";
+        XDG_RUNTIME_DIR = "/run/browser-host-terminal";
+        TERM = "xterm-256color";
+        RUST_LOG = "info";
+      };
+      serviceConfig = {
+        ExecStart = "${bcon}/bin/bcon";
+        StandardInput = "tty";
+        StandardOutput = "tty";
+        StandardError = "journal";
+        TTYPath = "/dev/tty2";
+        RuntimeDirectory = "browser-host-terminal";
+        TimeoutStopSec = "5s";
+        Restart = "no";
+      };
+    };
     systemd.services.browser-host = {
       wantedBy = [ "multi-user.target" ];
       environment.HOME = "/var/lib/browser-host";
