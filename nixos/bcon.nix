@@ -1,6 +1,6 @@
 # Existing upstream renderer; only adapt its login path to NixOS.
 { lib, rustPlatform, pkg-config, makeWrapper, libdrm, libgbm, libglvnd
-, libxkbcommon, libinput, systemd, fontconfig, freetype, libseat, shadow }:
+, libxkbcommon, libinput, systemd, fontconfig, freetype, seatd, shadow }:
 let
   src = builtins.fetchGit {
     url = "https://github.com/sanohiro/bcon.git";
@@ -12,12 +12,12 @@ in rustPlatform.buildRustPackage {
   inherit src;
   cargoLock.lockFile = "${src}/Cargo.lock";
   nativeBuildInputs = [ pkg-config makeWrapper ];
-  buildInputs = [ libdrm libgbm libxkbcommon libinput systemd fontconfig freetype libseat ];
+  buildInputs = [ libdrm libgbm libxkbcommon libinput systemd fontconfig freetype seatd ];
   postPatch = ''
     substituteInPlace src/terminal/pty.rs --replace-fail '"/bin/login"' '"${shadow}/bin/login"'
   '';
   postFixup = ''
-    wrapProgram "$out/bin/bcon" --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath [ libglvnd libseat ]}"
+    wrapProgram "$out/bin/bcon" --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath [ libglvnd seatd ]}"
   '';
   meta = { license = lib.licenses.mit; mainProgram = "bcon"; platforms = lib.platforms.linux; };
 }
