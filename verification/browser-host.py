@@ -133,7 +133,9 @@ try:
     # QMP injects a virtual physical wheel; the independent CDP client only reads.
     assert browser.qmp_client is not None
     for down in (True, False):
-        result = browser.qmp_client.send("input-send-event", {"events": [
+        # Pinned QMPSession.send annotates scalar values, but QMP events is an array.
+        # Keep this one annotation exception local; payload and outcome checks stay intact.
+        result = browser.qmp_client.send("input-send-event", {"events": [  # type: ignore[dict-item]
             {"type": "btn", "data": {"button": "wheel-down", "down": down}}]})
         assert "return" in result, "QMP wheel injection rejected: " + repr(result)
     deadline = time.monotonic() + 10
