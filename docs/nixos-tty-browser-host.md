@@ -1,180 +1,122 @@
-# NixOS TTY Browser Host — resources における完成状態の投影案
+# Browser Host — 完成契約と検証閉包
 
-> **提案 / NOT_RUN。** Browser の設計・受入条件の正本は [ADRS #615](https://github.com/roccho-dev/adrs/issues/615)。本書は [resources #1](https://github.com/roccho-dev/resources/issues/1) に対して、`nixos/` で何を組み立て、何を実機で証明するかを示す。構成図を載せただけでは採択・実装・完成にならない。
+**提案 / 完成未証明。** 意味・採択の正本は [ADRS #615](https://github.com/roccho-dev/adrs/issues/615)、環境の範囲は [resources #1](https://github.com/roccho-dev/resources/issues/1)。本書は完成契約を1表にまとめた実装先の投影であり、別の業務正本ではない。
 
-## 目的と完成の定義
+## 完成状態
 
-NixOS Host の **1つの認証済み Headless Chrome/Profile** を、人間はTTYから表示・操作し、RemoteのAgentは同じ明示Targetへ接続する。Remoteには別のBrowser認証正本を置かない。AtlasのWorld/Work/SessionはChromeのProfile/Tabとは独立した正本のまま保つ。
+**Hostの唯一のHeadless Chrome/Profileを、人はbcon＋cdp-ttyで見て触り、Remote A/Bは同じ明示Targetを参照する。入力→実際の変化→表示更新まで一致し、切断・再起動でも状態を二重化しない。** Atlasは既存Web/maxGraphを使い、World/Work/Harness Sessionの意味はapps/uiに残す。Native Atlas TUIは完成条件にしない。
 
-**完成** = 対象Host構成を固定版から再現でき、同じ実TargetでHuman/Agentの表示・入力・書込排他・観測・切断・復旧を実証し、各破壊試験の結果を読戻せた状態。Chrome再起動後のProfile保持は要求するが、消えたTabを保持できたとは主張しない。
+完成は「図・build・通信の成功」ではなく、下表の全条件に、対象版と対象環境が一致する実行証拠が揃った状態。CIの起動機能と製品の完成証明を混同しない。製品が複数プロセスを使うChromeを、OSプロセス総数1と誤定義しない。
 
-## 完成形MMD：構成と責務
-
-枠は**責務境界**。新しい常駐プロセスやGatewayの導入を指示するものではない。特に「Access」は未実装の**論理契約**であり、実際に迂回不能な制御を証明するまで安全性を合格にしない。
-
-```mermaid
-flowchart TB
-  subgraph RES["resources | 再現できる環境定義"]
-    direction LR
-    F["flake / 固定された依存"]
-    P["profile / 共通の設定"]
-    N["nixos / Host構成"]
-    F --> N
-    P --> N
-  end
-
-  subgraph HOST["NixOS Host | Browser正本"]
-    direction TB
-    subgraph HUMAN["Human | TTY表示・入力"]
-      T["bcon / Kitty対応端末"]
-      V["cdp-tty | opsの既存成果物"]
-      T <--> V
-    end
-    subgraph ACCESS["Target同一性とアクセス境界"]
-      G["Target紐付け / 書込許可"]
-    end
-    subgraph BROWSER["唯一のBrowser Session"]
-      O["HostのChrome起動・復旧"]
-      C["Headless Chrome / Tabs"]
-      PR["永続Profile / 認証"]
-      O --> C
-      C --- PR
-    end
-    V <-->|"画像 / 許可された入力"| G
-    G <-->|"非公開CDP"| C
-  end
-
-  subgraph REMOTE["Remote × N | Browser状態を持たない"]
-    A["Agent / CLI"]
-    D["開発localhost"]
-  end
-
-  subgraph ATLAS["Atlas | Browserとは別の意味の正本"]
-    W["World / Work / SessionRef"]
-    U["Atlas Web / maxGraph"]
-    W --> U
-  end
-
-  N -->|"再現・固定"| O
-  N -.->|"端末の設定"| T
-  N -.->|"既存成果物の参照"| V
-  N -.->|"CDPの隔離設定"| G
-  A <-->|"SSH / 許可済み操作"| G
-  C -->|"Host側localhost転送"| D
-  U -.->|"既存ChromeのTabで表示"| C
-```
-
-**所有を混ぜない：** `resources` はOS/ユーザー設定・Nix出力・適用検証を所有する。Browser/Viewer/入力の意味的契約はADRS #615/#423、Viewer実装は [ops PR #426](https://github.com/roccho-org/ops/pull/426)、実不具合は [ops #433](https://github.com/roccho-org/ops/issues/433)。Agent実行はops、Atlasの意味・投影はapps/ui、秘密・配置とIaC受渡しはenvsの既存責務を維持。resources #1 の `windows/`・`oci/`・`extensions/` をこの図によって退役・移管しない。
-
-## データフローMMD：入力と読戻し
-
-CDPの単なる送信成功を「ページ上の作用が成功」と言い換えない。同時書込は認めず、結果不明の入力を自動再送しない。
+## 構成図 — 矢印は依存
 
 ```mermaid
 flowchart LR
-  subgraph ACTOR["Human / Agent"]
-    H["TTY入力"]
-    A["Agent操作"]
+  subgraph RES["resources | 組み立て・検証"]
+    SPEC["共通NixOS module / 固定入力"]
+    TEST["受入試験 | VM・実機の必要箇所"]
+    TEST --> SPEC
   end
-  subgraph CONTROL["Hostアクセス契約"]
-    ID["Browser世代 + Target + Frame世代"]
-    GRANT["現在の書込主体"]
-    VALID["入力可否を確認"]
-    ID --> VALID
-    GRANT --> VALID
+  subgraph IO["既存の表示・入力部品"]
+    B["bcon | Kitty画像・fcitx5"]
+    V["ops cdp-tty | attach-only"]
   end
-  subgraph EXEC["既存Chrome"]
-    SEND["対象へ一度だけ送信"]
-    OBS["実ページの再観測"]
-    SEND --> OBS
+  subgraph STATE["Hostだけが所有"]
+    C["Chrome / Profile / Target"]
+    A["操作境界 | Target・書込権限"]
+    A --> C
   end
-  subgraph RESULT["証拠・復旧"]
-    R["観測済 / 不明 / 拒否"]
-    RE["対象喪失時の明示再選択"]
-    R -->|"対象が消えた場合のみ"| RE
-  end
-  H --> VALID
-  A --> VALID
-  VALID -->|"許可かつ新鮮な入力のみ"| SEND
-  OBS --> R
-  OBS -.->|"世代更新・旧入力失効"| ID
-  RE -.->|"旧入力は再送しない"| ID
-  R --> H
-  R --> A
+  SPEC --> B
+  SPEC --> V
+  SPEC --> A
+  SPEC --> C
+  V --> A
 ```
 
-**重要な未決定：** 生CDPは接続しただけで観測専用にはならない。信頼されていないAgentへ直接CDPの権限を渡さず、すべての書込経路で排他とTarget照合を**強制**できることを示す。既存ops/SSH/OS隔離で実現できるかを先に検証し、不可能と判明した場合に限り最小の仲介を設計する。証明できなければ **BLOCK**。新Gateway/Registry/DBを先に増やさない。
+`bcon`は端末実装、Kittyはここでは画像プロトコル。別のKittyアプリやWindow Managerを追加しない。resourcesは既存ops成果物を参照し、Viewerを複製しない。共通moduleの**実装は未完**。VM専用fixtureが通っただけでは、そのmoduleや本番構成まで証明したことにしない。
 
-## 改善閉包MMD：差分がゼロになるまで
+**操作境界の最小契約:** 生CDPへの到達をBrowser管理側に限定し、利用者には指定Targetの観測と許可された操作だけを渡す。書込中は1主体・1作用、権限変更は未確定の作用を照合してから行う。旧権限・旧Browser世代・旧Targetへの要求は拒否する。管理操作はViewerへ混ぜない。既存opsの実行境界で実現できるかを先に調べ、迂回できる間は未達。図の箱だけで新Gateway・DB・常駐監視を増設しない。
+
+## データフロー — 矢印は流れ
+
+```mermaid
+flowchart LR
+  subgraph CLIENT["Human / Remote A・B"]
+    H["bcon ⇄ cdp-tty"]
+    R["Remote | Browser正本なし"]
+  end
+  subgraph HOST["同じHost Browser"]
+    G["対象・世代・権限を確認"]
+    C["Chrome | 作用・再観測"]
+    H -->|"入力"| G
+    R -->|"SSH経由の許可操作"| G
+    G -->|"一度だけ実行"| C
+    C -->|"画像・実結果・不明"| H
+    C -->|"観測・実結果・不明"| R
+  end
+  subgraph APP["アプリの正本"]
+    D["Remote localhost / Atlas Web"]
+  end
+  C <-->|"Host側SSH転送 / ページ通信"| D
+```
+
+初回起動・Tabの生成/選択・Chromeの再起動はHost管理側、Viewerは明示Targetへattachするだけ。Target喪失後は古い入力を捨て、管理側で再選択する。画面の切替と書込権限の移転は別であり、送信済みか不明な操作を自動再送しない。Atlasからの指示は既存typed intent経路へ戻し、Chromeの画面を業務上の正本にしない。
+
+## 完成を担保する唯一の検証表
+
+V＝NixOS VMで自動実行。H＝対象ハードウェア差を隔離した実機CIで実行。まずVで実bconを試し、DRM/EGL等で成立しない試験だけHへ配置する。**試験環境を選ぶのであって、条件を削って合格にしない。** 同じ要求ID・判定を使い、別の万能テスト基盤を作らない。
+
+| ID | 成功を示す証拠 | 破綻させる試験と期待結果 | 場所 / 修正先 |
+|---|---|---|---|
+| E01 再現 | 固定source・依存から共通moduleを構築しNixOS起動 | 依存不足・別moduleへの置換は拒否 | V / resources |
+| E02 描画 | 実Chrome→cdp-tty→実bconの最終描画を既知画像と照合 | 空白・古い画像・画像欠損を検出。CDP画像やKitty応答だけでは不合格 | VまたはH / ops・bcon |
+| E03 入力 | 仮想キー/マウス→bcon→cdp-tty→DOM値・イベント回数が一致 | wheel・drag・修飾キー・日本語変換→確定・UTF-8分割・resizeを検証。直接Input.insertTextではIMEを証明しない | VまたはH / ops・bcon |
+| E04 同一性 | Remote 2台が同時に同じBrowser世代・Targetを参照 | 同じURLの別Target・曖昧な選択を拒否。Remoteの独立Browser/Profileは0 | V / resources・ops |
+| E05 権限 | 1 writer、複数reader、読取側からの書込は0 | 生CDP/別Target/別メソッドの迂回・旧権限・同時writerを拒否 | V / ops・resources |
+| E06 作用 | 送信1回→独立した実結果で照合 | 応答喪失・mouse-down中断・古いframe・権限移転で二重送信0。不明は不明のまま保持 | V / ops |
+| E07 継続 | Viewer/SSH切断後も同じBrowser/Profileが存続 | Viewer kill、通信断、Chrome crashを区別。再起動後は認証fixtureを確認しTargetを再同定。消えたTabを保持扱いにしない | V、TTY復帰のみH / resources・ops |
+| E08 Preview | Hostの既存ChromeからRemote localhostとAtlas Webが使える | 転送断・ポート衝突・古いSSEを検出。別Browserを作って迂回しない | V / resources・apps |
+| E09 負荷 | 1/2/4消費者でCPU/RSS/帯域/入力遅延を計測 | slow consumer時も宣言済み上限を超えない。最大1280×720、5fps、60秒を初期測定条件とする | V、実GPU値はH / resources・ops |
+| E10 隔離 | 試験用Profile・鍵・データだけで実行 | 本物の認証情報・未信頼PRの実機実行・Kitty経由のファイル参照・端末制御注入を拒否 | V/H / resources |
+| E11 適用同等性 | 試験済み成果物と適用予定のuserland/moduleが一致 | VMと実機の差をハードウェア設定に限定し明示。未知GPU・boot・入力系の差はHの証拠が必要 | V＋対象H / resources |
+| E12 採否 | 必須IDと実行証拠を全件照合し、欠損0・失敗0・未実施0 | 古いsource/仕様/環境・重複ID・skip・自己申告PASS・証拠改変・必要check未設定は拒否 | CI / resources |
+
+E09のFPS等は**初期測定条件案**であって性能合格値ではない。許容CPU/RSS/帯域/p95遅延は測定前に値・単位・根拠を固定し、未固定なら完成不可。実サイト固有のSSO/WebAuthn/OSダイアログはfixtureで保証せず、使う機能を事前に宣言し必要な隔離実サイト試験をE03/E07へ加える。本物の秘密を公開CIへ渡さない。
+
+証拠は要求ID、対象commit、仕様hash、実行環境・成果物hash、実観測、判定を持つ。`raws.jsonl`が実行記録、`disruptives.jsonl`はそこから抽出するだけ。画面の自動比較は公開可能なfixtureを使い、顧客画面は保存しない。チェックの通過だけでなく、実際のapply経路がこの採否を必須にすることもE12で確認する。
+
+## 完成への閉包 — このグラフで進める
 
 ```mermaid
 flowchart TB
-  subgraph SOURCE["期待値"]
-    S["ADRS #615 の受入条件"]
-    K["resources #1 の再現・配置条件"]
+  subgraph CONTRACT["期待と実測"]
+    S["完成契約・許可範囲を固定"]
+    D["最新証拠との差分"]
+    S --> D
   end
-  subgraph ITERATE["許可された変更だけを反復"]
-    P["失敗した条件の最小修正"]
-    T["実機E2E / 破壊試験"]
-    R["実結果・費用・版の読戻し"]
-    P --> T --> R
+  subgraph WORK["実行可能な差分を埋める"]
+    X["最小修正 / 試験環境を準備"]
+    T["対象版の実試験・破綻試験"]
+    R["独立読戻し / 回帰確認"]
+    X --> T --> R --> D
   end
-  subgraph JUDGE["判定"]
-    D["期待と実測の差分判定"]
-    OK["全条件PASS | 版を固定"]
-    B["未許可・証拠不足 | BLOCK"]
+  subgraph DECISION["判定と再開"]
+    W["依存待ち | 理由・担当・解除条件"]
+    F["全必須証拠一致 | 完成版を固定"]
   end
-  S --> D
-  K --> D
-  R --> D
-  D -->|"差分あり・修正可能・明示GOあり"| P
-  D -->|"差分ゼロ・全条件実証"| OK
-  D -->|"未許可 / 必要環境なし"| B
-  OK -.->|"回帰・構成変更を検知"| D
+  D -->|"差分あり・許可内で実行可能"| X
+  D -->|"環境・権限待ちだけ"| W
+  W -->|"解除の実確認"| D
+  D -->|"欠損0・失敗0・未実施0"| F
+  F -->|"仕様・source・環境が変化"| D
 ```
 
-「反復」とは無権限の自動変更を意味しない。差分が残ったまま終わる場合は **FAIL / BLOCK / NOT_RUN** を明記し、Greenや完成として閉じない。
+実行順は **E01/E04のVM入口→E02/E03の実表示・入力→E05–E08→E09–E12**。失敗はそのIDの最小修正へ戻す。環境不足も準備可能なら修正対象であり、即座に人へ投げない。独立して実行できる枝を先に進める。同一版・同一条件の失敗を無変更で無限再実行しない。
 
-## 受入項目 — 現時点はすべてNOT_RUN
+今回の指示をresourcesの設計・試験source・CI改善の継続範囲として扱い、反復ごとの再許可待ちを増やさない。実機の占有、秘密/provider/state操作、本番apply、merge、上位ADR採択は別の権限であり勝手に進めない。依存待ちは完成ではなく、解除確認→差分評価へ戻る。停止中も無人で再発火する実行器は**未接続**であり、この図だけで自動継続実装済みとは言わない。
 
-| Gate | 実証すること | 主なowner |
-|---|---|---|
-| G1 再現 | exact Nix入力からNixOS Host・既存Viewer成果物を再現。適用/rollback可能 | resources |
-| G2 実TTY | 物理VTでKitty画像・mouse・wheel・日本語確定文字・key・dragと端末復元が機能 | resources / ops |
-| G3 Browser | Headless Chrome/ProfileはHostが所有。Viewerのattach/exitでChrome、Tab、認証、viewportを変更しない | Host / ops |
-| G4 権限 | Remote A/Bは同じTargetを参照。CDP公開なし。書込主体は強制的に単一、観測専用は書込不可 | resources / ops |
-| G5 復旧 | 断線・対象喪失・Chrome再起動を区別し、再同定、UNKNOWN作用、再送禁止を読戻す | Host / ops |
-| G6 Preview | Host ChromeからRemote localhostに安全に到達。Atlas Webを既存Tabで利用できる | resources / apps |
-| G7 性能 | 1/2/N消費主体のCPU、RSS、帯域、遅延、有限バッファ、許容値を事前に固定して実測 | resources / ops |
-| G8 証拠 | revision、package closure、Host/terminal/Chrome版、実結果、復旧経路を保存。秘密や画像を公開しない | resources |
+## 実装の現在地と残り
 
-G2の既知の旧環境不具合（wheel・日本語確定入力・診断）は [ops #433](https://github.com/roccho-org/ops/issues/433) に残す。実端末での未実施を既存CIのPASSで代用しない。G4の実現方式とG7の合格閾値は**未決**であり、先に固定すること。
+`verification/browser-host.nix`＋同名Pythonと既存GitHub Actionsだけで、実NixOS 3台・Headless Chrome・Remote A/BのSSH参照/切断/再接続を試す入口を追加した。これはE01/E04/E07の**部分試験**であり、E02/E03のbcon・cdp-ttyを含めた完成ではない。対象ハードウェアの試験機も未接続。PRをDraftのまま維持し、実結果はPRのcommit/CI参照で報告する。
 
-## 破綻試験 — これを通らなければ完成ではない
-
-1. ViewerがChrome/Tab/Profileを追加で起動・生成する。
-2. Remoteごとに認証Cookieや独立Browser正本が増える。
-3. 生CDPが公開ポート経由で外部から操作できる。
-4. 書込許可のないAgentがCDP入力を迂回して送れる。
-5. Human/Agentが同じTabへ同時に書き込み、二重作用になる。
-6. Viewer再接続時に古いTargetやFrameへ入力が届く。
-7. 不明な送信結果が自動再送され、二重送信になる。
-8. Chrome再起動後の消失Tabを「保持できた」と誤報する。
-9. Viewer/SSH切断がChromeやProfileを破壊する。
-10. 旧Nocttyで失敗したwheel・日本語確定入力を未再検証のまま合格にする。
-11. slow consumerでframeバッファやRSSが無制限に増える。
-12. Remote localhostへの接続のため別のBrowser Sessionを作る。
-13. Browser/Profile/秘密や画面そのものを公開CI証拠へ保存する。
-14. AtlasのNative TUI採用をBrowser表示の完成条件にする。
-
-## #615 の図からの差分と禁止事項
-
-| 変更箇所 | #615の現状 | 本提案の追加 |
-|---|---|---|
-| CDP経路 | Viewer/Agentが既存Chromeへ接続 | HostにTarget同一性・書込許可の**強制境界**を明示。実装方法は未決 |
-| 入力結果 | 同時書込を避ける方針と受入項目 | 世代検証→一度だけ入力→実読戻し→UNKNOWN/拒否をデータフロー化 |
-| 復旧 | detach/reconnectを要求 | 旧入力の失効、明示再選択、Browser世代の区別を図で可視化 |
-| 再現 | ホスト構成の一般論 | resourcesのflake/profile/nixosから固定版で構築する境界を追加 |
-| 完了 | 9つの実機受入項目はNOT_RUN | 実測とのgap→修正→再試験→採否の閉包を追加 |
-
-**非作用:** この文書PRではNixOS/Chrome/SSH/CDP/secret/CI/Agent設定・コード・GitHub Issue採否を変更しない。Browserの完成条件はADRS #615でのみ採択する。Windowsの既存復旧経路、envsのprovider/state、Atlas Webを退役させない。
+新DB・Queue・別Viewer・独自OSテストフレームワークは作らない。[ops #426](https://github.com/roccho-org/ops/pull/426)の実装と[ops #433](https://github.com/roccho-org/ops/issues/433)の実不具合を再利用する。Windows経路・envsの秘密/provider/state・Atlasの既存正本をこのPRで移管/退役しない。

@@ -1,21 +1,12 @@
 name: Browser Host proof
 
-on:
-  pull_request:
-    paths:
-      - 'verification/browser-host.nix'
-      - '.github/workflows/browser-host-proof.yml'
-  push:
-    branches: ['docs/nixos-tty-browser-target-615-20261010']
-    paths:
-      - 'verification/browser-host.nix'
-      - '.github/workflows/browser-host-proof.yml'
+on: pull_request
 
 permissions:
   contents: read
 
 concurrency:
-  group: browser-host-proof-${{ github.event.pull_request.number || github.ref }}
+  group: browser-host-proof-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -26,22 +17,22 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
       - name: Require actual KVM capability
-        run: |
-          set -euo pipefail
-          test -c /dev/kvm
-          sudo setfacl -m u:"$(id -un)":rw /dev/kvm
-          test -r /dev/kvm && test -w /dev/kvm
+        run: test -c /dev/kvm
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
         with:
           extra_nix_config: |
             system-features = nixos-test kvm big-parallel
+      - name: Check syntax before building VM closure
+        run: |
+          python3 -m py_compile verification/browser-host.py
+          nix-instantiate --parse verification/browser-host.nix > /dev/null
       - name: Boot NixOS and verify two independent SSH clients
         run: nix-build verification/browser-host.nix --no-out-link --show-trace
       - name: State proof boundary
         if: always()
         run: |
-          printf '%s\n' 'This job proves only the VM/session smoke scope.' >> "$GITHUB_STEP_SUMMARY"
-          printf '%s\n' 'bcon rendering, full input, isolation and hardware acceptance remain NOT_PROVEN. This is not an apply gate.' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'Scope: VM/session smoke. See the job conclusion for its result.' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'Full acceptance / bcon / cdp-tty / IME / isolation / hardware: NOT_PROVEN. No apply authority.' >> "$GITHUB_STEP_SUMMARY"
