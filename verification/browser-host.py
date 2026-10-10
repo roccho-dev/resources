@@ -1,6 +1,9 @@
 # Executed by the NixOS test driver; machine names come from browser-host.nix.
 import json
 import shlex
+import time
+from pathlib import Path
+from PIL import Image
 
 start_all()
 browser.wait_for_unit("test-chrome.service")
@@ -47,3 +50,38 @@ assert [p["id"] for p in final if p["type"] == "page"] == [target]
 print(json.dumps({"test": "vm-session-smoke", "status": "PASS", "remote_clients": 2,
                   "scope": "VM boot / concurrent same-target observation / SSH detach and reattach",
                   "preapply": "NOT_PROVEN"}))
+
+# E02: QEMU captures actual display scanout, never a fake Kitty sink or CDP image.
+def pixels(name):
+    browser.screenshot(name)
+    with Image.open(Path(browser.out_dir) / (name + ".png")) as image:
+        counts = image.convert("RGB").getcolors(image.width * image.height)
+        assert counts is not None
+        expected = ((239, 24, 43), (32, 208, 79), (40, 95, 234))
+        return [sum(count for count, color in counts
+                    if all(abs(a - b) <= 3 for a, b in zip(color, wanted)))
+                for wanted in expected]
+
+
+try:
+    browser.succeed("chvt 2; systemctl start bcon-test")
+    browser.wait_for_unit("bcon-test.service")
+    browser.wait_until_succeeds("pgrep -x login", timeout=30)
+    before = pixels("bcon-before")
+    assert min(before) < 100, "negative control unexpectedly contains the fixture"
+    browser.send_chars("root\n")
+    browser.wait_until_succeeds("pgrep -t pts/0 -x bash", timeout=30)
+    browser.succeed("printf '%s' " + shlex.quote(pages[0]["webSocketDebuggerUrl"]) + " > /run/browser-target")
+    browser.send_chars('cdp-tty "$(cat /run/browser-target)"\n')
+    browser.wait_until_succeeds("pgrep -x cdp-tty", timeout=30)
+    deadline = time.monotonic() + 30
+    while True:
+        colors = pixels("bcon-browser")
+        if min(colors) > 1000:
+            break
+        assert time.monotonic() < deadline, "Chrome fixture not rendered by actual bcon: " + str(colors)
+        time.sleep(1)
+    print(json.dumps({"test": "real-bcon-chrome-render", "status": "PASS",
+                      "colored_pixels": colors, "preapply": "NOT_PROVEN"}))
+finally:
+    browser.execute("journalctl -b -u bcon-test --no-pager -n 100")
