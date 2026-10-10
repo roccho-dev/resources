@@ -84,14 +84,14 @@ def wait_process(command, timeout=30):
         time.sleep(1)
 
 
-def input_value():
+def page_state():
     # Independent, fixed fixture read. Never inject input through the oracle.
     script = """import json, pathlib, websocket
 from contextlib import closing
 with closing(websocket.create_connection(pathlib.Path('/run/browser-target').read_text(),
                                  timeout=5, suppress_origin=True)) as ws:
     ws.send(json.dumps({'id': 1, 'method': 'Runtime.evaluate', 'params': {
-        'expression': 'document.getElementById("text").value',
+        'expression': '({text:document.getElementById("text").value,scrollY:window.scrollY,wheels:window.wheelEvents})',
         'returnByValue': True}}))
     for _ in range(100):
         reply = json.loads(ws.recv())
@@ -121,15 +121,36 @@ try:
     browser.send_chars('cdp-tty "$(cat /run/browser-target)" 2>/run/viewer-errors\n')
     wait_process("pgrep -x cdp-tty")
     colors = wait_pixels("bcon-browser", lambda colors: min(colors[:3]) > 1000)
-    assert input_value() == ""
+    assert page_state() == {"text": "", "scrollY": 0, "wheels": 0}
     # Settle the terminal acknowledgement before the one deliberately sent key.
     time.sleep(1)
     browser.send_chars("a")
     deadline = time.monotonic() + 10
-    while input_value() != "a":
+    while page_state()["text"] != "a":
         assert time.monotonic() < deadline, "physical-key route did not change the fixture"
         time.sleep(0.2)
     changed = wait_pixels("bcon-input", lambda colors: colors[3] > 1000)
+    # QMP injects a virtual physical wheel; the independent CDP client only reads.
+    assert browser.qmp_client is not None
+    for down in (True, False):
+        result = browser.qmp_client.send("input-send-event", {"events": [
+            {"type": "btn", "data": {"button": "wheel-down", "down": down}}]})
+        assert "return" in result, "QMP wheel injection rejected: " + repr(result)
+    deadline = time.monotonic() + 10
+    while True:
+        state = page_state()
+        assert state["wheels"] <= 1, "duplicated wheel event: " + repr(state)
+        if state["wheels"] == 1 and state["scrollY"] > 0:
+            break
+        assert time.monotonic() < deadline, "virtual wheel did not reach page: " + repr(state)
+        time.sleep(0.2)
+    wheel_frame = wait_pixels("bcon-wheel", lambda values:
+                              sum(values[:3]) < sum(colors[:3]) - 3000)
+    print(json.dumps({"test": "real-bcon-wheel", "status": "PASS",
+                      "wheel_events": state["wheels"], "page_scrollY": state["scrollY"],
+                      "before_pixels": colors[:3], "after_pixels": wheel_frame[:3],
+                      "scope": "one QEMU wheel event via bcon/cdp-tty + independent DOM and final scanout",
+                      "preapply": "NOT_PROVEN"}))
     browser.send_key("ctrl-q")
     wait_process("! pgrep -x cdp-tty", timeout=10)
     assert browser.succeed("stty -F /dev/pts/0 -g").strip() == saved_mode

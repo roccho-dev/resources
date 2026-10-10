@@ -7,3 +7,5 @@ input{position:absolute;top:200px;left:20px;width:300px;caret-color:transparent;
 </style>
 <div id="red"></div><div id="green"></div><div id="blue"></div>
 <input id="text" autofocus aria-label="fixture text" oninput="document.body.style.background='#e8cb29';">
+<div aria-hidden="true" style="height:1500px"></div>
+<script>window.wheelEvents = 0;window.addEventListener('wheel', () => { window.wheelEvents++; }, {passive: true});</script>
