@@ -6,14 +6,14 @@ from pathlib import Path
 from PIL import Image
 
 start_all()
-browser.wait_for_unit("test-chrome.service")
+browser.wait_for_unit("browser-host.service")
 browser.wait_for_open_port(9222)
 browser.wait_for_unit("sshd.service")
 identity = json.loads(browser.succeed("curl -fsS http://127.0.0.1:9222/json/list"))
 pages = [page for page in identity if page["type"] == "page"]
 assert len(pages) == 1, "fixture must start with exactly one existing page"
 target = pages[0]["id"]
-process = browser.succeed("systemctl show -p MainPID --value test-chrome.service").strip()
+process = browser.succeed("systemctl show -p MainPID --value browser-host.service").strip()
 assert int(process) > 0
 host_key = browser.succeed("cat /etc/ssh/ssh_host_ed25519_key.pub").strip()
 browser.succeed("install -d -m 700 /root/.ssh")
@@ -44,7 +44,7 @@ for client in clients:
     rebound = json.loads(client.succeed(read_target))
     assert [p["id"] for p in rebound if p["type"] == "page"] == [target]
     client.succeed("ssh -S /tmp/browser-ssh -O exit root@browser")
-assert browser.succeed("systemctl show -p MainPID --value test-chrome.service").strip() == process
+assert browser.succeed("systemctl show -p MainPID --value browser-host.service").strip() == process
 final = json.loads(browser.succeed("curl -fsS http://127.0.0.1:9222/json/list"))
 assert [p["id"] for p in final if p["type"] == "page"] == [target]
 print(json.dumps({"test": "vm-session-smoke", "status": "PASS", "remote_clients": 2,
@@ -156,7 +156,7 @@ try:
     browser.send_key("ctrl-q")
     wait_process("! pgrep -x cdp-tty", timeout=10)
     assert browser.succeed("stty -F /dev/pts/0 -g").strip() == saved_mode
-    assert browser.succeed("systemctl show -p MainPID --value test-chrome.service").strip() == process
+    assert browser.succeed("systemctl show -p MainPID --value browser-host.service").strip() == process
     final = json.loads(browser.succeed("curl -fsS http://127.0.0.1:9222/json/list"))
     assert [p["id"] for p in final if p["type"] == "page"] == [target]
     print(json.dumps({"test": "real-bcon-viewer", "status": "PASS",

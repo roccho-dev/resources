@@ -6,11 +6,6 @@ let
     sha256 = "sha256-bxrdOn8SCOv8tN4JbTF/TXq7kjo9ag4M+C8yzzIRYbE=";
   }) { system = "x86_64-linux"; };
   bcon = pkgs.callPackage ../nixos/bcon.nix { };
-  ops = builtins.fetchGit {
-    url = "https://github.com/roccho-org/ops.git";
-    rev = "9e6603324e5d7691dd06675c3267e887ce1e8915";
-  };
-  viewer = pkgs.callPackage (ops + "/packages/cdp-tty/default.nix") { };
   fixture = pkgs.writeText "browser-host-page.html" (builtins.readFile ./page.html);
   remote = { ... }: {
     environment.systemPackages = [ pkgs.curl pkgs.openssh pkgs.procps ];
@@ -22,8 +17,10 @@ in pkgs.testers.runNixOSTest {
   extraPythonPackages = p: [ p.pillow ];
   nodes = {
     browser = { ... }: {
+      imports = [ ../nixos/browser-host.nix ];
+      services.browserHost = { enable = true; initialUrl = "file://${fixture}"; };
       virtualisation.memorySize = 2048;
-      environment.systemPackages = [ pkgs.curl pkgs.openssh pkgs.kbd pkgs.procps bcon viewer
+      environment.systemPackages = [ pkgs.curl pkgs.openssh pkgs.kbd pkgs.procps
         (pkgs.python3.withPackages (p: [ p.websocket-client ])) ];
       hardware.graphics.enable = true;
       services.dbus.enable = true;
@@ -52,21 +49,9 @@ in pkgs.testers.runNixOSTest {
           Restart = "no";
         };
       };
-      users.users.browser = { isSystemUser = true; group = "browser"; };
-      users.groups.browser = { };
       services.openssh.enable = true;
       # Disposable VM network only; no production credentials.
       services.openssh.settings.PermitRootLogin = "prohibit-password";
-      systemd.services.test-chrome = {
-        wantedBy = [ "multi-user.target" ];
-        environment.HOME = "/var/lib/test-chrome";
-        serviceConfig = {
-          User = "browser";
-          StateDirectory = "test-chrome";
-          ExecStart = "${pkgs.chromium}/bin/chromium --headless --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --user-data-dir=/var/lib/test-chrome/profile --window-size=800,600 file://${fixture}";
-          Restart = "no";
-        };
-      };
     };
     remoteA = remote;
     remoteB = remote;

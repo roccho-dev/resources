@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   vm-session-smoke:
-    name: NixOS VM session smoke — not full acceptance
+    name: NixOS VM Browser Host proof — not full acceptance
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -29,10 +29,10 @@ jobs:
         run: |
           python3 -m py_compile verification/browser-host.py
           nix-instantiate --parse verification/browser-host.nix > /dev/null
-      - name: Boot NixOS and verify two independent SSH clients
+      - name: Boot shared Browser Host and verify remote clients and real VT input
         run: nix-build verification/browser-host.nix --no-out-link --show-trace
       - name: State proof boundary
         if: always()
         run: |
           printf '%s\n' 'Scope: VM/session smoke. See the job conclusion for its result.' >> "$GITHUB_STEP_SUMMARY"
-          printf '%s\n' 'Full acceptance / bcon / cdp-tty / IME / isolation / hardware: NOT_PROVEN. No apply authority.' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'Full E01-E12 acceptance / IME / writer isolation / target hardware / apply gate: NOT_PROVEN.' >> "$GITHUB_STEP_SUMMARY"

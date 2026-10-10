@@ -33,7 +33,7 @@ flowchart LR
   V --> A
 ```
 
-`bcon`は端末実装、Kittyはここでは画像プロトコル。別のKittyアプリやWindow Managerを追加しない。resourcesは既存ops成果物を参照し、Viewerを複製しない。共通moduleの**実装は未完**。VM専用fixtureが通っただけでは、そのmoduleや本番構成まで証明したことにしない。
+`bcon`は端末実装、Kittyはここでは画像プロトコル。別のKittyアプリやWindow Managerを追加しない。resourcesは既存ops成果物を参照し、Viewerを複製しない。共通moduleは `nixos/browser-host.nix` に定義し、VMも同じmoduleをimportする。現物CIでの合格が必要であり、VMの成功だけでは本番適用・対象実機同等性（E11）を証明しない。
 
 **操作境界の最小契約:** 生CDPへの到達をBrowser管理側に限定し、利用者には指定Targetの観測と許可された操作だけを渡す。書込中は1主体・1作用、権限変更は未確定の作用を照合してから行う。旧権限・旧Browser世代・旧Targetへの要求は拒否する。管理操作はViewerへ混ぜない。既存opsの実行境界で実現できるかを先に調べ、迂回できる間は未達。図の箱だけで新Gateway・DB・常駐監視を増設しない。
 
@@ -118,6 +118,6 @@ flowchart TB
 
 ## 実行入口と証拠
 
-`verification/browser-host.nix`＋同名Pythonを既存GitHub Actionsから実行する。実行済み範囲、現在のhead、失敗箇所、次の差分、継続タスクの状態はPRのコメントと実CIにだけ記録し、この文書へ時点情報を複製しない。描画・入力の部分成功を、E01–E12全体の完成に昇格させない。
+`nixos/browser-host.nix` をHostの構成正本とし、`verification/browser-host.nix` がそのmoduleをimportして同名Pythonを既存GitHub Actionsから実行する。実行済み範囲、現在のhead、失敗箇所、次の差分、継続タスクの状態はPRのコメントと実CIにだけ記録し、この文書へ時点情報を複製しない。描画・入力の部分成功を、E01–E12全体の完成に昇格させない。
 
 新DB・Queue・別Viewer・独自OSテストフレームワークは作らない。[ops #426](https://github.com/roccho-org/ops/pull/426)の実装と[ops #433](https://github.com/roccho-org/ops/issues/433)の実不具合を再利用する。Windows経路・envsの秘密/provider/state・Atlasの既存正本をこのPRで移管/退役しない。
