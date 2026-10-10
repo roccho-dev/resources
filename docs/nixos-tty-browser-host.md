@@ -51,8 +51,9 @@ flowchart LR
     H -->|"入力"| G
     R -->|"SSH経由の許可操作"| G
     G -->|"一度だけ実行"| C
-    C -->|"画像・実結果・不明"| H
-    C -->|"観測・実結果・不明"| R
+    C -->|"再観測・実結果・不明"| G
+    G -->|"許可された画像・結果"| H
+    G -->|"許可された観測・結果"| R
   end
   subgraph APP["アプリの正本"]
     D["Remote localhost / Atlas Web"]
@@ -113,10 +114,10 @@ flowchart TB
 
 実行順は **E01/E04のVM入口→E02/E03の実表示・入力→E05–E08→E09–E12**。失敗はそのIDの最小修正へ戻す。環境不足も準備可能なら修正対象であり、即座に人へ投げない。独立して実行できる枝を先に進める。同一版・同一条件の失敗を無変更で無限再実行しない。
 
-今回の指示をresourcesの設計・試験source・CI改善の継続範囲として扱い、反復ごとの再許可待ちを増やさない。実機の占有、秘密/provider/state操作、本番apply、merge、上位ADR採択は別の権限であり勝手に進めない。依存待ちは完成ではなく、解除確認→差分評価へ戻る。停止中も無人で再発火する実行器は**未接続**であり、この図だけで自動継続実装済みとは言わない。
+今回の指示をresourcesの設計・試験source・CI改善の継続範囲として扱い、反復ごとの再許可待ちを増やさない。実機の占有、秘密/provider/state操作、本番apply、merge、上位ADR採択は別の権限であり勝手に進めない。依存待ちは完成ではなく、解除確認→差分評価へ戻る。待機後の再評価には外部の実行入口を接続し、その設定と実際の無人再開の証拠を区別する。
 
-## 実装の現在地と残り
+## 実行入口と証拠
 
-`verification/browser-host.nix`＋同名Pythonと既存GitHub Actionsだけで、実NixOS 3台・Headless Chrome・Remote A/BのSSH参照/切断/再接続を試す入口を追加した。これはE01/E04/E07の**部分試験**であり、E02/E03のbcon・cdp-ttyを含めた完成ではない。対象ハードウェアの試験機も未接続。PRをDraftのまま維持し、実結果はPRのcommit/CI参照で報告する。
+`verification/browser-host.nix`＋同名Pythonを既存GitHub Actionsから実行する。実行済み範囲、現在のhead、失敗箇所、次の差分、継続タスクの状態はPRのコメントと実CIにだけ記録し、この文書へ時点情報を複製しない。描画・入力の部分成功を、E01–E12全体の完成に昇格させない。
 
 新DB・Queue・別Viewer・独自OSテストフレームワークは作らない。[ops #426](https://github.com/roccho-org/ops/pull/426)の実装と[ops #433](https://github.com/roccho-org/ops/issues/433)の実不具合を再利用する。Windows経路・envsの秘密/provider/state・Atlasの既存正本をこのPRで移管/退役しない。

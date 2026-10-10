@@ -51,37 +51,100 @@ print(json.dumps({"test": "vm-session-smoke", "status": "PASS", "remote_clients"
                   "scope": "VM boot / concurrent same-target observation / SSH detach and reattach",
                   "preapply": "NOT_PROVEN"}))
 
-# E02: QEMU captures actual display scanout, never a fake Kitty sink or CDP image.
+# Actual QEMU scanout, never a fake Kitty sink or a CDP screenshot.
 def pixels(name):
     browser.screenshot(name)
     with Image.open(Path(browser.out_dir) / (name + ".png")) as image:
         counts = image.convert("RGB").getcolors(image.width * image.height)
         assert counts is not None
-        expected = ((239, 24, 43), (32, 208, 79), (40, 95, 234))
+        expected = ((239, 24, 43), (32, 208, 79), (40, 95, 234), (232, 203, 41))
         return [sum(count for count, color in counts
                     if all(abs(a - b) <= 3 for a, b in zip(color, wanted)))
                 for wanted in expected]
 
 
+def wait_pixels(name, predicate):
+    deadline = time.monotonic() + 30
+    while True:
+        colors = pixels(name)
+        if predicate(colors):
+            return colors
+        assert time.monotonic() < deadline, "Missing rendered fixture: " + str(colors)
+        time.sleep(1)
+
+
+def wait_process(command, timeout=30):
+    # Preserve the first failure; no restart/recovery that hides initialization state.
+    deadline = time.monotonic() + timeout
+    while True:
+        status, output = browser.execute(command, timeout=5)
+        if status == 0:
+            return output.strip()
+        assert time.monotonic() < deadline, "Process readiness failed: " + command
+        time.sleep(1)
+
+
+def input_value():
+    # Independent, fixed fixture read. Never inject input through the oracle.
+    script = """import json, pathlib, websocket
+from contextlib import closing
+with closing(websocket.create_connection(pathlib.Path('/run/browser-target').read_text(),
+                                 timeout=5, suppress_origin=True)) as ws:
+    ws.send(json.dumps({'id': 1, 'method': 'Runtime.evaluate', 'params': {
+        'expression': 'document.getElementById("text").value',
+        'returnByValue': True}}))
+    for _ in range(100):
+        reply = json.loads(ws.recv())
+        if reply.get('id') == 1:
+            assert 'error' not in reply and 'exceptionDetails' not in reply.get('result', {})
+            print(json.dumps(reply['result']['result']['value']))
+            break
+    else:
+        raise AssertionError('missing CDP result')
+"""
+    return json.loads(browser.succeed("python3 -c " + shlex.quote(script)))
+
+
 try:
     browser.succeed("chvt 2; systemctl start bcon-test")
     browser.wait_for_unit("bcon-test.service")
-    browser.wait_until_succeeds("pgrep -x login", timeout=30)
+    wait_process("pgrep -x login")
     before = pixels("bcon-before")
-    assert min(before) < 100, "negative control unexpectedly contains the fixture"
+    assert min(before[:3]) < 100, "negative control unexpectedly contains the fixture"
     browser.send_chars("root\n")
-    browser.wait_until_succeeds("pgrep -t pts/0 -x bash", timeout=30)
+    wait_process("pgrep -t pts/0 -x bash")
+    saved_mode = browser.succeed("stty -F /dev/pts/0 -g").strip()
     browser.succeed("printf '%s' " + shlex.quote(pages[0]["webSocketDebuggerUrl"]) + " > /run/browser-target")
-    browser.send_chars('cdp-tty "$(cat /run/browser-target)"\n')
-    browser.wait_until_succeeds("pgrep -x cdp-tty", timeout=30)
-    deadline = time.monotonic() + 30
-    while True:
-        colors = pixels("bcon-browser")
-        if min(colors) > 1000:
-            break
-        assert time.monotonic() < deadline, "Chrome fixture not rendered by actual bcon: " + str(colors)
-        time.sleep(1)
-    print(json.dumps({"test": "real-bcon-chrome-render", "status": "PASS",
-                      "colored_pixels": colors, "preapply": "NOT_PROVEN"}))
+    browser.send_chars('cdp-tty "$(cat /run/browser-target)" 2>/run/viewer-errors\n')
+    wait_process("pgrep -x cdp-tty")
+    colors = wait_pixels("bcon-browser", lambda colors: min(colors[:3]) > 1000)
+    assert input_value() == ""
+    # Settle the terminal acknowledgement before the one deliberately sent key.
+    time.sleep(1)
+    browser.send_chars("a")
+    deadline = time.monotonic() + 10
+    while input_value() != "a":
+        assert time.monotonic() < deadline, "physical-key route did not change the fixture"
+        time.sleep(0.2)
+    changed = wait_pixels("bcon-input", lambda colors: colors[3] > 1000)
+    browser.send_key("ctrl-q")
+    wait_process("! pgrep -x cdp-tty", timeout=10)
+    assert browser.succeed("stty -F /dev/pts/0 -g").strip() == saved_mode
+    assert browser.succeed("systemctl show -p MainPID --value test-chrome.service").strip() == process
+    final = json.loads(browser.succeed("curl -fsS http://127.0.0.1:9222/json/list"))
+    assert [p["id"] for p in final if p["type"] == "page"] == [target]
+    print(json.dumps({"test": "real-bcon-viewer", "status": "PASS",
+                      "rendered_pixels": colors, "after_input_pixels": changed,
+                      "scope": "real VT render / one ASCII key / DOM and display update / clean viewer exit",
+                      "preapply": "NOT_PROVEN"}))
 finally:
-    browser.execute("journalctl -b -u bcon-test --no-pager -n 100")
+    # Record the failing phase without mutating/restarting the tested service.
+    for command in (
+        "systemctl show bcon-test -p MainPID -p ActiveState -p SubState -p NRestarts",
+        "journalctl -b -u bcon-test --no-pager -n 160",
+        "ps -eo pid,ppid,tty,stat,wchan:32,args",
+        "cat /sys/class/tty/tty0/active; ls -l /dev/dri/",
+        "cat /run/viewer-errors 2>/dev/null",
+    ):
+        status, output = browser.execute(command, timeout=5)
+        print(json.dumps({"diagnostic": command, "exit": status, "output": output}))

@@ -45,6 +45,7 @@ in pkgs.testers.runNixOSTest {
           StandardError = "journal";
           TTYPath = "/dev/tty2";
           RuntimeDirectory = "bcon-test";
+          TimeoutStopSec = "5s";
           Restart = "no";
         };
       };
