@@ -28,6 +28,9 @@ in pkgs.testers.runNixOSTest {
       hardware.graphics.enable = true;
       services.dbus.enable = true;
       fonts.packages = [ pkgs.noto-fonts pkgs.noto-fonts-cjk-sans ];
+      # logind autospawns getty on VT switch even if the per-instance unit is disabled.
+      # Keep tty1 as the rescue console; dedicate tty2 to the bcon session.
+      services.logind.settings.Login = { NAutoVTs = 1; ReserveVT = 1; };
       systemd.services."getty@tty2".enable = false;
       systemd.services.bcon-test = {
         after = [ "systemd-user-sessions.service" ];

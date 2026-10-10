@@ -106,7 +106,10 @@ with closing(websocket.create_connection(pathlib.Path('/run/browser-target').rea
 
 
 try:
-    browser.succeed("chvt 2; systemctl start bcon-test")
+    browser.succeed("chvt 2; test \"$(cat /sys/class/tty/tty0/active)\" = tty2")
+    # Regression: service availability is not proof while autovt's agetty owns tty2.
+    browser.fail("pgrep -f '[a]getty .*tty2'")
+    browser.succeed("systemctl start bcon-test")
     browser.wait_for_unit("bcon-test.service")
     wait_process("pgrep -x login")
     before = pixels("bcon-before")
