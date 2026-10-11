@@ -105,6 +105,21 @@ with closing(websocket.create_connection(pathlib.Path('/run/browser-target').rea
     return json.loads(browser.succeed("python3 -c " + shlex.quote(script)))
 
 
+def viewer_observation(phase, shot):
+    # Observe without sending CDP input; early failure is not Ctrl-Q success.
+    exited = browser.execute("test -f /run/viewer-exit-status")[0] == 0
+    observation = {
+        "test": "viewer-timeline", "phase": phase,
+        "process_live": browser.execute("pgrep -x cdp-tty")[0] == 0,
+        "early_exit": exited,
+        "exit": browser.succeed("cat /run/viewer-exit-status").strip() if exited else None,
+        "stderr": browser.succeed("cat /run/viewer-errors").strip(),
+        "pixels": pixels(shot),
+    }
+    print(json.dumps(observation), flush=True)
+    return observation
+
+
 try:
     # The shared module, not a test-only chvt, must activate tty2 on boot.
     browser.succeed("test \"$(cat /sys/class/tty/tty0/active)\" = tty2")
@@ -133,6 +148,13 @@ try:
         assert time.monotonic() < deadline, "physical-key route did not change the fixture"
         time.sleep(0.2)
     changed = wait_pixels("bcon-input", lambda colors: colors[3] > 1000)
+    # Negative control: no wheel and no new input; baseline should remain live
+    # beyond tty.c's 3-second no-ACK timeout.
+    for second in range(1, 5):
+        time.sleep(1)
+        idle = viewer_observation(f"ascii-idle-{second}s", "bcon-idle")
+        assert idle["process_live"] and not idle["early_exit"], "viewer died without wheel"
+        assert min(idle["pixels"][:3]) > 1000, "baseline RGB fixture vanished without wheel"
     # QMP injects a virtual physical wheel; the independent CDP client only reads.
     assert browser.qmp_client is not None
     for down in (True, False):
@@ -149,17 +171,30 @@ try:
             break
         assert time.monotonic() < deadline, "virtual wheel did not reach page: " + repr(state)
         time.sleep(0.2)
-    wheel_frame = wait_pixels("bcon-wheel", lambda values:
-                              sum(values[:3]) < sum(colors[:3]) - 3000)
+    # Scroll 80 leaves half of each 160px tile. All-zero RGB is NOT a redraw.
+    # Sample >3s so pre-quit viewer failure cannot masquerade as Ctrl-Q success.
+    wheel_samples = []
+    for index in range(8):
+        sample = viewer_observation(f"wheel-sample-{index}", f"bcon-wheel-{index}")
+        wheel_samples.append(sample)
+        if not sample["process_live"] or sample["early_exit"]:
+            break
+        time.sleep(0.5)
+    wheel_frames = [s for s in wheel_samples if s["process_live"] and
+                    min(s["pixels"][:3]) > 1000 and
+                    sum(s["pixels"][:3]) < sum(colors[:3]) - 3000]
+    assert wheel_frames, "wheel DOM changed, but no valid VT RGB redraw"
+    assert all(s["process_live"] and not s["early_exit"] for s in wheel_samples), \
+        "viewer exited after wheel but before Ctrl-Q"
+    wheel_frame = wheel_frames[-1]["pixels"]
     print(json.dumps({"test": "real-bcon-wheel", "status": "PASS",
                       "wheel_events": state["wheels"], "page_scrollY": state["scrollY"],
                       "before_pixels": colors[:3], "after_pixels": wheel_frame[:3],
-                      "scope": "one QEMU wheel event via bcon/cdp-tty + independent DOM and final scanout",
+                      "scope": "one QEMU wheel event via bcon/cdp-tty + independent DOM and VT RGB; no blank frames",
                       "preapply": "NOT_PROVEN"}))
-    print(json.dumps({"test": "viewer-pre-quit", "phase": "after-wheel",
-                      "process_live": browser.execute("pgrep -x cdp-tty")[0] == 0,
-                      "early_exit": browser.execute("test -f /run/viewer-exit-status")[0] == 0,
-                      "stderr": browser.succeed("cat /run/viewer-errors").strip()}))
+    quit_ready = viewer_observation("before-ctrl-q", "bcon-pre-quit")
+    assert quit_ready["process_live"] and not quit_ready["early_exit"], \
+        "viewer already terminated before Ctrl-Q"
     browser.send_key("ctrl-q")
     wait_process("test -f /run/viewer-exit-status", timeout=10)
     viewer_exit = browser.succeed("cat /run/viewer-exit-status").strip()
