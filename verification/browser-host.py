@@ -105,6 +105,44 @@ with closing(websocket.create_connection(pathlib.Path('/run/browser-target').rea
     return json.loads(browser.succeed("python3 -c " + shlex.quote(script)))
 
 
+def browser_geometry():
+    # Read-only, independent CDP probe. Exact fields mirror pinned cdp.c
+    # geometry(); this never sends input or modifies Chrome/CDP settings.
+    script = """import json, pathlib, websocket
+from contextlib import closing
+with closing(websocket.create_connection(
+        pathlib.Path('/run/browser-target').read_text(),
+        timeout=5, suppress_origin=True)) as ws:
+    def request(i, method, params):
+        ws.send(json.dumps({'id': i, 'method': method, 'params': params}))
+        for _ in range(100):
+            message = json.loads(ws.recv())
+            if message.get('id') == i:
+                assert 'error' not in message, (method, message['error'])
+                return message['result']
+        raise AssertionError('missing CDP response: ' + method)
+    metrics = request(1, 'Page.getLayoutMetrics', {})
+    tree = request(2, 'Page.getFrameTree', {})
+    view = request(3, 'Runtime.evaluate', {
+        'expression': '({width:innerWidth,height:innerHeight,dpr:devicePixelRatio})',
+        'returnByValue': True, 'throwOnSideEffect': True,
+        'silent': True, 'timeout': 1000})
+    assert 'exceptionDetails' not in view
+    print(json.dumps({
+        'visual': metrics.get('cssVisualViewport'),
+        'layout': metrics.get('cssLayoutViewport'),
+        'loader': tree.get('frameTree', {}).get('frame', {}).get('loaderId'),
+        'view': view.get('result', {}).get('value')}))
+"""
+    status, output = browser.execute("python3 -c " + shlex.quote(script), timeout=8)
+    if status:
+        return {"probe": "unavailable", "exit": status}
+    try:
+        return json.loads(output)
+    except ValueError:
+        return {"probe": "invalid-response"}
+
+
 def viewer_observation(phase, shot):
     # Observe without sending CDP input; early failure is not Ctrl-Q success.
     exited = browser.execute("test -f /run/viewer-exit-status")[0] == 0
@@ -115,6 +153,7 @@ def viewer_observation(phase, shot):
         "exit": browser.succeed("cat /run/viewer-exit-status").strip() if exited else None,
         "stderr": browser.succeed("cat /run/viewer-errors").strip(),
         "pixels": pixels(shot),
+        "geometry": browser_geometry(),
     }
     print(json.dumps(observation), flush=True)
     return observation
@@ -155,6 +194,7 @@ try:
         idle = viewer_observation(f"ascii-idle-{second}s", "bcon-idle")
         assert idle["process_live"] and not idle["early_exit"], "viewer died without wheel"
         assert min(idle["pixels"][:3]) > 1000, "baseline RGB fixture vanished without wheel"
+    print(json.dumps({"test": "pre-wheel-geometry", "geometry": browser_geometry()}), flush=True)
     # QMP injects a virtual physical wheel; the independent CDP client only reads.
     assert browser.qmp_client is not None
     for down in (True, False):
@@ -183,9 +223,9 @@ try:
     wheel_frames = [s for s in wheel_samples if s["process_live"] and
                     min(s["pixels"][:3]) > 1000 and
                     sum(s["pixels"][:3]) < sum(colors[:3]) - 3000]
-    assert wheel_frames, "wheel DOM changed, but no valid VT RGB redraw"
     assert all(s["process_live"] and not s["early_exit"] for s in wheel_samples), \
-        "viewer exited after wheel but before Ctrl-Q"
+        "viewer exited after wheel before Ctrl-Q: " + repr(wheel_samples[-1])
+    assert wheel_frames, "wheel DOM changed, but no valid VT RGB redraw"
     wheel_frame = wheel_frames[-1]["pixels"]
     print(json.dumps({"test": "real-bcon-wheel", "status": "PASS",
                       "wheel_events": state["wheels"], "page_scrollY": state["scrollY"],
