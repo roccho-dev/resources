@@ -119,7 +119,9 @@ try:
     wait_process("pgrep -t pts/0 -x bash")
     saved_mode = browser.succeed("stty -F /dev/pts/0 -g").strip()
     browser.succeed("printf '%s' " + shlex.quote(pages[0]["webSocketDebuggerUrl"]) + " > /run/browser-target")
-    browser.send_chars('cdp-tty "$(cat /run/browser-target)" 2>/run/viewer-errors\n')
+    browser.succeed("rm -f /run/viewer-exit-status /run/viewer-errors")
+    # Capture the original shell child status; pgrep disappearance alone is not a clean exit.
+    browser.send_chars('cdp-tty "$(cat /run/browser-target)" 2>/run/viewer-errors; printf "%s\\n" "$?" > /run/viewer-exit-status\n')
     wait_process("pgrep -x cdp-tty")
     colors = wait_pixels("bcon-browser", lambda colors: min(colors[:3]) > 1000)
     assert page_state() == {"text": "", "scrollY": 0, "wheels": 0}
@@ -154,15 +156,36 @@ try:
                       "before_pixels": colors[:3], "after_pixels": wheel_frame[:3],
                       "scope": "one QEMU wheel event via bcon/cdp-tty + independent DOM and final scanout",
                       "preapply": "NOT_PROVEN"}))
+    print(json.dumps({"test": "viewer-pre-quit", "phase": "after-wheel",
+                      "process_live": browser.execute("pgrep -x cdp-tty")[0] == 0,
+                      "early_exit": browser.execute("test -f /run/viewer-exit-status")[0] == 0,
+                      "stderr": browser.succeed("cat /run/viewer-errors").strip()}))
     browser.send_key("ctrl-q")
+    wait_process("test -f /run/viewer-exit-status", timeout=10)
+    viewer_exit = browser.succeed("cat /run/viewer-exit-status").strip()
+    viewer_stderr = browser.succeed("cat /run/viewer-errors").strip()
+    print(json.dumps({"test": "viewer-ctrl-q-outcome", "exit": viewer_exit,
+                      "stderr": viewer_stderr}))
+    assert viewer_exit == "0", "Ctrl-Q did not end viewer cleanly"
+    assert not viewer_stderr, "Ctrl-Q viewer had an error message"
     wait_process("! pgrep -x cdp-tty", timeout=10)
     assert browser.succeed("stty -F /dev/pts/0 -g").strip() == saved_mode
+    # Negative control: the exact exit-code capture must reject a failed attach.
+    browser.succeed("rm -f /run/viewer-negative-exit /run/viewer-negative-errors")
+    browser.send_chars('cdp-tty ws://127.0.0.1:1/devtools/page/none 2>/run/viewer-negative-errors; printf "%s\\n" "$?" > /run/viewer-negative-exit\n')
+    wait_process("test -f /run/viewer-negative-exit", timeout=10)
+    negative_exit = browser.succeed("cat /run/viewer-negative-exit").strip()
+    negative_error = browser.succeed("cat /run/viewer-negative-errors").strip()
+    print(json.dumps({"test": "viewer-failed-attach-negative-control",
+                      "exit": negative_exit, "stderr": negative_error}))
+    assert negative_exit == "1", "failed attach must exit nonzero"
+    assert "connection, terminal or frame rejected" in negative_error
     assert browser.succeed("systemctl show -p MainPID --value browser-host.service").strip() == process
     final = json.loads(browser.succeed("curl -fsS http://127.0.0.1:9222/json/list"))
     assert [p["id"] for p in final if p["type"] == "page"] == [target]
     print(json.dumps({"test": "real-bcon-viewer", "status": "PASS",
                       "rendered_pixels": colors, "after_input_pixels": changed,
-                      "scope": "real VT render / one ASCII key / DOM and display update / clean viewer exit",
+                      "scope": "real VT / ASCII / DOM and display; Ctrl-Q exit 0 and empty stderr / failed attach exit 1",
                       "preapply": "NOT_PROVEN"}))
 finally:
     # Record the failing phase without mutating/restarting the tested service.
