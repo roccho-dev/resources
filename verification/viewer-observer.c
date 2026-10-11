@@ -16,6 +16,7 @@ int __real_cdp_frame(Cdp *, Frame *);
 int __real_cdp_apply(Cdp *, const Frame *, const Action *);
 int __real_json_object_equal(struct json_object *, struct json_object *);
 ssize_t __real_read(int, void *, size_t);
+ssize_t __real___read_chk(int, void *, size_t, size_t);
 ssize_t __real_write(int, const void *, size_t);
 
 static long long millis(void) {
@@ -80,33 +81,42 @@ int __wrap_json_object_equal(struct json_object *a, struct json_object *b) {
     }
     return equal;
 }
+static void trace_input(int fd, const void *bytes, ssize_t n) {
+    if (fd != STDIN_FILENO || n <= 0) return;
+    /* Retain only a bounded Kitty ACK token; fragmented reads are supported. */
+    static char token[128];
+    static size_t used;
+    const unsigned char *input = bytes;
+    record("tty.read", ",\"bytes\":%lld", (long long)n);
+    for (ssize_t i = 0; i < n; ++i) {
+        unsigned char ch = input[i];
+        if (!used) { if (ch == 27) token[used++] = (char)ch; continue; }
+        if (used == 1 && ch != '_') { used = ch == 27 ? 1 : 0; continue; }
+        if (used == 2 && ch != 'G') { used = ch == 27 ? 1 : 0; continue; }
+        if (used >= sizeof(token)-1) { record("ack-token-overflow", ""); used = 0; continue; }
+        token[used++] = (char)ch;
+        if (used >= 5 && token[used-2] == 27 && ch == '\\') {
+            token[used-2] = 0;
+            unsigned id = 0;
+            char *result = strchr(token+3, ';');
+            if (sscanf(token+3, "i=%u", &id) == 1 && result)
+                record("kitty.ack", ",\"image_id\":%u,\"ok\":%s", id,
+                       strcmp(result+1, "OK") == 0 ? "true" : "false");
+            used = 0;
+        }
+    }
+}
 ssize_t __wrap_read(int fd, void *bytes, size_t size) {
     ssize_t n = __real_read(fd, bytes, size);
     int saved = errno;
-    if (fd == STDIN_FILENO && n > 0) {
-        /* Retain only a bounded Kitty ACK token; fragmented reads are supported. */
-        static char token[128];
-        static size_t used;
-        const unsigned char *input = bytes;
-        record("tty.read", ",\"bytes\":%lld", (long long)n);
-        for (ssize_t i = 0; i < n; ++i) {
-            unsigned char ch = input[i];
-            if (!used) { if (ch == 27) token[used++] = (char)ch; continue; }
-            if (used == 1 && ch != '_') { used = ch == 27 ? 1 : 0; continue; }
-            if (used == 2 && ch != 'G') { used = ch == 27 ? 1 : 0; continue; }
-            if (used >= sizeof(token)-1) { record("ack-token-overflow", ""); used = 0; continue; }
-            token[used++] = (char)ch;
-            if (used >= 5 && token[used-2] == 27 && ch == '\\') {
-                token[used-2] = 0;
-                unsigned id = 0;
-                char *result = strchr(token+3, ';');
-                if (sscanf(token+3, "i=%u", &id) == 1 && result)
-                    record("kitty.ack", ",\"image_id\":%u,\"ok\":%s", id,
-                           strcmp(result+1, "OK") == 0 ? "true" : "false");
-                used = 0;
-            }
-        }
-    }
+    trace_input(fd, bytes, n);
+    errno = saved;
+    return n;
+}
+ssize_t __wrap___read_chk(int fd, void *bytes, size_t size, size_t buffer_size) {
+    ssize_t n = __real___read_chk(fd, bytes, size, buffer_size);
+    int saved = errno;
+    trace_input(fd, bytes, n);
     errno = saved;
     return n;
 }
@@ -151,12 +161,20 @@ int main(void) {
     int channel[2]; assert(pipe(channel) == 0);
     assert(dup2(channel[0], STDIN_FILENO) == STDIN_FILENO);
     close(channel[0]);
-    const char *parts[] = {"\033_", "Gi=91;", "OK\033\\"};
-    for (size_t i = 0; i < 3; ++i) {
-        char buf[32]; size_t n = strlen(parts[i]);
-        assert(write(channel[1], parts[i], n) == (ssize_t)n);
-        assert(__wrap_read(STDIN_FILENO, buf, n) == (ssize_t)n);
-        assert(memcmp(buf, parts[i], n) == 0);
+    /* Exercise both libc entry points with split Kitty replies. */
+    const char *parts[2][3] = {
+        {"\033_", "Gi=91;", "OK\033\\"},
+        {"\033_", "Gi=92;", "OK\033\\"},
+    };
+    for (int mode = 0; mode < 2; ++mode) {
+        for (size_t i = 0; i < 3; ++i) {
+            char buf[32]; size_t n = strlen(parts[mode][i]);
+            assert(write(channel[1], parts[mode][i], n) == (ssize_t)n);
+            ssize_t got = mode ? __wrap___read_chk(STDIN_FILENO, buf, n, sizeof(buf))
+                               : __wrap_read(STDIN_FILENO, buf, n);
+            assert(got == (ssize_t)n);
+            assert(memcmp(buf, parts[mode][i], n) == 0);
+        }
     }
     close(channel[1]);
     assert(__wrap_write(STDOUT_FILENO, "fixture", 7) == 7);

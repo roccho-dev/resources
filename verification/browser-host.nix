@@ -13,10 +13,10 @@ let
     flags="-std=c11 -O2 -Wall -Wextra -Werror"
     cc $flags -I${native} $(pkg-config --cflags libcurl json-c) \
       ${native}/main.c ${native}/tty.c ${./viewer-observer.c} ${native}/libcdp-tty.a \
-      -Wl,--wrap=cdp_frame,--wrap=cdp_apply,--wrap=json_object_equal,--wrap=read,--wrap=write \
+      -Wl,--wrap=cdp_frame,--wrap=cdp_apply,--wrap=json_object_equal,--wrap=read,--wrap=__read_chk,--wrap=write \
       $(pkg-config --libs libcurl json-c) -lm -o "$out/bin/cdp-tty"
     cc $flags -DOBSERVER_SELFTEST -I${native} $(pkg-config --cflags json-c) \
-      ${./viewer-observer.c} -Wl,--wrap=json_object_equal,--wrap=read,--wrap=write \
+      ${./viewer-observer.c} -Wl,--wrap=json_object_equal,--wrap=read,--wrap=__read_chk,--wrap=write \
       $(pkg-config --libs json-c) -o observer-selftest
     CDP_TTY_TRACE="$PWD/selftest.jsonl" ./observer-selftest > selftest.stdout
     python3 - <<'PY'
@@ -26,7 +26,9 @@ let
         assert [r['status'] for r in rows if r['event'] == event] == [0, 1, 2, 3]
     changes = [r for r in rows if r['event'] == 'geometry.mismatch' and r['area'] == 'visual']
     assert len(changes) == 1 and changes[0]['before'] == {'pageY': 0} and changes[0]['after'] == {'pageY': 80}
-    assert len([r for r in rows if r['event'] == 'kitty.ack' and r['image_id'] == 91 and r['ok']]) == 1
+    for image_id in (91, 92):
+        assert len([r for r in rows if r['event'] == 'kitty.ack' and r['image_id'] == image_id and r['ok']]) == 1
+    assert sum(r['event'] == 'tty.read' for r in rows) == 6
     assert pathlib.Path('selftest.stdout').read_bytes() == b'fixture'
     print('OBSERVER_SELFTEST_PASS: status/arguments/call-count/bytes preserved; diagnostic only')
     PY
