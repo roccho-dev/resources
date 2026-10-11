@@ -31,6 +31,8 @@ jobs:
           nix-instantiate --parse verification/browser-host.nix > /dev/null
       - name: Compare pinned Chromium geometry before and after wheel (independent diagnostic)
         run: nix-shell --pure verification/cdp-geometry.nix --run 'python3 -u verification/cdp-geometry.py'
+      - name: Trace unchanged pinned C viewer geometry and strict number types
+        run: nix-shell --pure verification/cdp-geometry.nix --run 'python3 -u verification/cdp-native-trace.py'
       - name: Boot shared Browser Host and verify remote clients and real VT input
         run: nix-build verification/browser-host.nix --no-out-link --show-trace
       - name: State proof boundary
