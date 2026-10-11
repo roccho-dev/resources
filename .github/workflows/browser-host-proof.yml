@@ -40,3 +40,37 @@ jobs:
         run: |
           printf '%s\n' 'Scope: VM/session smoke. See the job conclusion for its result.' >> "$GITHUB_STEP_SUMMARY"
           printf '%s\n' 'Full E01-E12 acceptance / IME / writer isolation / target hardware / apply gate: NOT_PROVEN.' >> "$GITHUB_STEP_SUMMARY"
+
+  acceptance-evidence:
+    name: Browser Host acceptance evidence — fail closed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Test receipt guard with synthetic positive and falsifying cases
+        run: python3 -m unittest discover -s verification -p 'test_acceptance.py' -v
+      - name: Reject absent or incomplete full-acceptance evidence
+        # Collector not connected yet: NOT_PROVEN must be a real nonzero check.
+        # Never manufacture full receipts from the successful VM smoke summary.
+        run: |
+          python3 verification/acceptance.py \
+            --context "$RUNNER_TEMP/browser-host-evidence/context.json" \
+            --receipts "$RUNNER_TEMP/browser-host-evidence/receipts.jsonl" \
+            --output proof-report
+      - name: Retain verdicts including missing-evidence rejection
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: browser-host-acceptance-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+          path: proof-report/*.jsonl
+          if-no-files-found: error
+          retention-days: 14
+      - name: State acceptance boundary
+        if: always()
+        run: |
+          printf '%s\n' 'This check validates receipt shape/context and rejects missing evidence.' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'NOT_PROVEN: trusted collector, full-case coverage, target hardware and apply enforcement.' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'Synthetic guard tests are not product proofs. No merge/apply authority is granted.' >> "$GITHUB_STEP_SUMMARY"
