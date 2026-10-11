@@ -106,7 +106,8 @@ with closing(websocket.create_connection(pathlib.Path('/run/browser-target').rea
 
 
 try:
-    browser.succeed("chvt 2; test \"$(cat /sys/class/tty/tty0/active)\" = tty2")
+    # The shared module, not a test-only chvt, must activate tty2 on boot.
+    browser.succeed("test \"$(cat /sys/class/tty/tty0/active)\" = tty2")
     # Regression: service availability is not proof while autovt's agetty owns tty2.
     browser.fail("pgrep -f '[a]getty .*tty2'")
     browser.succeed("systemctl is-enabled browser-host-terminal.service")

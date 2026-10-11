@@ -35,6 +35,9 @@ in {
         RUST_LOG = "info";
       };
       serviceConfig = {
+        # Upstream bcon waits for tty2 to become active but does not activate it.
+        # Activate here before the 10s VT_WAITACTIVE deadline; keep tty1 for recovery.
+        ExecStartPre = "${pkgs.kbd}/bin/chvt 2";
         ExecStart = "${bcon}/bin/bcon";
         StandardInput = "tty";
         StandardOutput = "tty";
