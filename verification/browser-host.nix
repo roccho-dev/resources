@@ -31,7 +31,11 @@ let
     print('OBSERVER_SELFTEST_PASS: status/arguments/call-count/bytes preserved; diagnostic only')
     PY
     cp selftest.jsonl "$out/share/observer/"
-    sha256sum ${native}/libcdp-tty.a ${native}/main.c ${native}/tty.c ${./viewer-observer.c} \
+    # Fault isolation of unchanged tty.c; synthetic ports, never Host acceptance.
+    python3 -u ${./tty_stale_probe.py} --source ${native} \
+      > "$out/share/observer/tty-stale-isolation.jsonl"
+    cat "$out/share/observer/tty-stale-isolation.jsonl"
+    sha256sum ${native}/libcdp-tty.a ${native}/main.c ${native}/tty.c ${./viewer-observer.c} ${./tty_stale_probe.py} \
       > "$out/share/observer/source.sha256"
   '';
   fixture = pkgs.writeText "browser-host-page.html" (builtins.readFile ./page.html);
