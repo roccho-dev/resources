@@ -143,6 +143,21 @@ with closing(websocket.create_connection(
         return {"probe": "invalid-response"}
 
 
+def viewer_write_activity():
+    # Passive /proc sample. Distinguishes no redraw from substantial output,
+    # but a write counter alone is not proof that Kitty acknowledged the image.
+    status, output = browser.execute(
+        "p=$(pgrep -x cdp-tty) && awk '$1 == \"wchar:\" || $1 == \"syscw:\" {print $1, $2}' /proc/$p/io",
+        timeout=5)
+    if status:
+        return None
+    try:
+        return {key.rstrip(":"): int(value) for key, value in
+                (line.split() for line in output.splitlines())}
+    except (TypeError, ValueError):
+        return None
+
+
 def viewer_observation(phase, shot):
     # Observe without sending CDP input; early failure is not Ctrl-Q success.
     exited = browser.execute("test -f /run/viewer-exit-status")[0] == 0
@@ -154,6 +169,7 @@ def viewer_observation(phase, shot):
         "stderr": browser.succeed("cat /run/viewer-errors").strip(),
         "pixels": pixels(shot),
         "geometry": browser_geometry(),
+        "viewer_writes": viewer_write_activity(),
     }
     print(json.dumps(observation), flush=True)
     return observation
