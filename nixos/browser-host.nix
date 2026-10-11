@@ -9,6 +9,21 @@ let
     rev = "9e6603324e5d7691dd06675c3267e887ce1e8915";
   };
   viewer = pkgs.callPackage (ops + "/packages/cdp-tty/default.nix") { };
+  # bcon probes DRM immediately. On KVM boots udev can publish the card later;
+  # gate that required device once, instead of restarting bcon after failure.
+  drmReady = pkgs.writeShellScript "browser-host-drm-ready" ''
+    for ((i=0; i<100; i++)); do
+      for card in /dev/dri/card*; do
+        if test -c "$card"; then
+          printf 'DRM_READY card=%s checks=%d\n' "$card" "$i" >&2
+          exit 0
+        fi
+      done
+      ${pkgs.coreutils}/bin/sleep 0.1
+    done
+    echo "DRM_NOT_READY: no /dev/dri/card* after 10s" >&2
+    exit 1
+  '';
 in {
   options.services.browserHost = {
     enable = lib.mkEnableOption "one host-owned Chromium/profile with bcon and existing cdp-tty";
@@ -37,7 +52,7 @@ in {
       serviceConfig = {
         # Upstream bcon waits for tty2 to become active but does not activate it.
         # Activate here before the 10s VT_WAITACTIVE deadline; keep tty1 for recovery.
-        ExecStartPre = "${pkgs.kbd}/bin/chvt 2";
+        ExecStartPre = [ "${drmReady}" "${pkgs.kbd}/bin/chvt 2" ];
         ExecStart = "${bcon}/bin/bcon";
         StandardInput = "tty";
         StandardOutput = "tty";
