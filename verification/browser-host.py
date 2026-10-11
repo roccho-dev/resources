@@ -222,6 +222,68 @@ try:
                       "rendered_pixels": colors, "after_input_pixels": changed,
                       "scope": "real VT / ASCII / DOM and display; Ctrl-Q exit 0 and empty stderr / failed attach exit 1",
                       "preapply": "NOT_PROVEN"}))
+
+    # E08 finite positive/negative: the *existing Host Chrome target* opens a
+    # Remote A localhost HTTP fixture through reverse SSH, then the route dies
+    # without killing Chrome. This does not claim Atlas/SSE coverage.
+    preview_html = '<!doctype html><meta charset="utf-8"><main id="proof">REMOTE-A-PREVIEW-615</main>'
+    remoteA.succeed("mkdir -p /tmp/host-preview && printf '%s' " +
+                    shlex.quote(preview_html) + " > /tmp/host-preview/index.html")
+    remoteA.succeed("nohup python3 -m http.server 18080 --bind 127.0.0.1 "
+                    "--directory /tmp/host-preview >/tmp/host-preview.log 2>&1 </dev/null &")
+    remoteA.wait_for_open_port(18080)
+    remoteA.succeed("curl -fsS http://127.0.0.1:18080/index.html")
+    # A direct Host request is refused before SSH forwarding, by construction.
+    preview_url = "http://127.0.0.1:18080/index.html"
+    browser.fail("curl --connect-timeout 1 --max-time 2 -fsS " + preview_url)
+    remoteA.succeed("ssh -M -S /tmp/host-preview-ssh -fNT "
+                    "-o ExitOnForwardFailure=yes "
+                    "-R 127.0.0.1:18080:127.0.0.1:18080 root@browser")
+    assert browser.succeed("curl -fsS " + preview_url) == preview_html
+
+    # Fixture setup navigates the one existing tab, not a second browser/tab.
+    # The oracle only reads DOM after this explicit test-only navigation.
+    preview_probe = """import json, pathlib, time, websocket
+ws = websocket.create_connection(pathlib.Path('/run/browser-target').read_text(),
+                                 timeout=5, suppress_origin=True)
+def call(ident, method, params):
+    ws.send(json.dumps({'id': ident, 'method': method, 'params': params}))
+    while True:
+        reply = json.loads(ws.recv())
+        if reply.get('id') == ident:
+            assert 'error' not in reply, (method, reply.get('error'))
+            return reply['result']
+response = call(1, 'Page.navigate', {'url': 'http://127.0.0.1:18080/index.html'})
+assert 'errorText' not in response, response
+deadline = time.monotonic() + 12
+for index in range(2, 80):
+    result = call(index, 'Runtime.evaluate', {
+        'expression': '({marker:document.querySelector("#proof")?.textContent || "",url:location.href})',
+        'returnByValue': True})['result']['value']
+    if result == {'marker': 'REMOTE-A-PREVIEW-615',
+                  'url': 'http://127.0.0.1:18080/index.html'}:
+        print(json.dumps(result))
+        break
+    assert time.monotonic() < deadline, 'Host Chrome did not render remote preview: ' + repr(result)
+    time.sleep(0.15)
+else:
+    raise AssertionError('preview DOM missing')
+ws.close()
+"""
+    preview_dom = json.loads(browser.succeed("python3 -c " + shlex.quote(preview_probe)))
+    assert preview_dom["marker"] == "REMOTE-A-PREVIEW-615"
+    assert browser.succeed("systemctl show -p MainPID --value browser-host.service").strip() == process
+    same_page = json.loads(browser.succeed("curl -fsS http://127.0.0.1:9222/json/list"))
+    assert [p["id"] for p in same_page if p["type"] == "page"] == [target]
+    remoteA.succeed("ssh -S /tmp/host-preview-ssh -O exit root@browser")
+    browser.fail("curl --connect-timeout 1 --max-time 2 -fsS " + preview_url)
+    assert browser.succeed("systemctl show -p MainPID --value browser-host.service").strip() == process
+    print(json.dumps({"test": "remote-localhost-preview", "status": "PASS",
+                      "browser_target_unchanged": True, "browser_pid_unchanged": True,
+                      "remote_consumers": 1,
+                      "scope": "SSH reverse localhost tunnel + existing Chrome DOM; "
+                               "tunnel removal refused; Atlas/SSE/port-conflict NOT_RUN",
+                      "preapply": "NOT_PROVEN"}))
 finally:
     # Record the failing phase without mutating/restarting the tested service.
     for command in (

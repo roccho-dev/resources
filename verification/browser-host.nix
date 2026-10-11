@@ -5,7 +5,7 @@ let
   bcon = pkgs.callPackage ../nixos/bcon.nix { };
   fixture = pkgs.writeText "browser-host-page.html" (builtins.readFile ./page.html);
   remote = { ... }: {
-    environment.systemPackages = [ pkgs.curl pkgs.openssh pkgs.procps ];
+    environment.systemPackages = [ pkgs.curl pkgs.openssh pkgs.procps pkgs.python3 ];
     virtualisation.memorySize = 512;
   };
 in pkgs.testers.runNixOSTest {
