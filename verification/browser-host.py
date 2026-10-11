@@ -348,6 +348,7 @@ finally:
         "ps -eo pid,ppid,tty,stat,wchan:32,args",
         "cat /sys/class/tty/tty0/active; ls -l /dev/dri/",
         "cat /run/viewer-errors 2>/dev/null",
+        "cat /run/viewer-trace.jsonl 2>/dev/null",
     ):
         status, output = browser.execute(command, timeout=5)
         print(json.dumps({"diagnostic": command, "exit": status, "output": output}))
