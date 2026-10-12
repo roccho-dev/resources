@@ -33,7 +33,7 @@
 
       environment.systemPackages = [ pkgs.openssh pkgs.jq ];
       virtualisation.memorySize = 4096;
-      virtualisation.diskSize = 8192;
+      virtualisation.diskSize = 32768;
       virtualisation.cores = 2;
 
       systemd.services.versapro-own-oci-test-key = {
