@@ -41,6 +41,7 @@ jobs:
           set -o pipefail
           nix-build verification/browser-host.nix --no-out-link --show-trace 2>&1 | tee "$RUNNER_TEMP/browser-host-vm.log"
       - name: Observe real C returns, geometry and Kitty ACK in separate diagnostic VMs
+        id: diagnostic_vm
         if: ${{ !cancelled() }}
         # This result NEVER replaces the original vm outcome or its evidence.
         continue-on-error: true
@@ -75,6 +76,7 @@ jobs:
         if: always()
         run: |
           printf '%s\n' 'Scope: VM/session smoke. See the job conclusion for its result.' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'Observer-affected diagnostic outcome: ${{ steps.diagnostic_vm.outcome }}; diagnostic failure is NOT a passing product test and is NOT full acceptance.' >> "$GITHUB_STEP_SUMMARY"
           printf '%s\n' 'Full E01-E12 acceptance / IME / writer isolation / target hardware / apply gate: NOT_PROVEN.' >> "$GITHUB_STEP_SUMMARY"
 
   acceptance-evidence:
