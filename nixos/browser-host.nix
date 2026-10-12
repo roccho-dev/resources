@@ -70,6 +70,9 @@ in {
         User = "browser";
         StateDirectory = "browser-host";
         ExecStart = "${pkgs.chromium}/bin/chromium --headless --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --user-data-dir=/var/lib/browser-host/profile --window-size=800,600 ${lib.escapeShellArg cfg.initialUrl}";
+        # SIGINT requests Chromium's normal exit; SIGTERM means session ending.
+        # Keep systemd's existing group cleanup and final-kill boundary.
+        KillSignal = "SIGINT";
         Restart = "no";
       };
     };

@@ -29,7 +29,8 @@ class CollectorTests(unittest.TestCase):
                line("viewer-ctrl-q-outcome", exit="0", stderr="") +
                line("viewer-failed-attach-negative-control", exit="1",
                     stderr="connection, terminal or frame rejected") +
-               line("real-bcon-viewer") + line("remote-localhost-preview")).encode()
+               line("real-bcon-viewer") + line("chrome-profile-persistence") +
+               line("remote-localhost-preview")).encode()
         rows, _ = collect(raw, SHA, "success")
         self.assertEqual([r["id"] for r in rows if r["status"] == "PARTIAL_OBSERVED"],
                          ["E01", "E02", "E03", "E04", "E07", "E08"])
@@ -88,6 +89,12 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(len(before.splitlines()), 12)
             self.assertEqual(main(args), 2)
             self.assertEqual((root/"out"/"raws.jsonl").read_bytes(), before)
+
+    def test_cookie_observation_is_not_full_viewer_continuity(self):
+        rows, _ = collect(line("chrome-profile-persistence").encode(), SHA, "failure")
+        self.assertEqual(rows[6]["cases"]["chrome-profile-persistence"], "OBSERVED")
+        self.assertEqual(rows[6]["status"], "NOT_PROVEN")
+        self.assertEqual(rows[6]["full_acceptance"], "NOT_PROVEN")
 
     def no_observations(self, raw, outcome="success"):
         rows, gaps = collect(raw, SHA, outcome)

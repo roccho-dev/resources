@@ -380,5 +380,79 @@ ws.close()
 except Exception as exc:
     failures.append(exc)
 
+try:
+    # Disposable VM cookie-store proof, independent of Viewer/Preview success.
+    # No real login, crash durability, or physical reboot claim is made here.
+    browser.fail("pgrep -x cdp-tty")
+    assert browser.succeed("systemctl show -p MainPID --value browser-host.service").strip() == process
+    cookie_probe = """import json, pathlib, sys, time, websocket
+from contextlib import closing
+mode = sys.argv[2]
+if mode not in ('seed', 'read', 'clear'):
+    raise ValueError('invalid-profile-probe-mode')
+with closing(websocket.create_connection(pathlib.Path(sys.argv[1]).read_text(),
+        timeout=5, suppress_origin=True)) as ws:
+    ident = 0
+    def call(method, params):
+        global ident
+        ident += 1
+        ws.send(json.dumps({'id': ident, 'method': method, 'params': params}))
+        for _ in range(100):
+            reply = json.loads(ws.recv())
+            if reply.get('id') == ident:
+                if 'error' in reply:
+                    raise RuntimeError('profile-probe-cdp-error')
+                return reply['result']
+        raise RuntimeError('profile-probe-missing-response')
+    origin = 'http://127.0.0.1:18080/'
+    name = 'browser-host-fixture'
+    def cookies():
+        return [c for c in call('Storage.getCookies', {})['cookies']
+                if c['name'] == name and c['domain'] == '127.0.0.1' and c['path'] == '/']
+    if mode == 'seed':
+        if cookies():
+            raise RuntimeError('profile-fixture-not-fresh')
+        call('Storage.setCookies', {'cookies': [{'name': name, 'value': 'retained',
+            'url': origin, 'httpOnly': True, 'expires': int(time.time()) + 600}]})
+    elif mode == 'clear':
+        # Expire this one owned fixture, never clear unrelated cookies.
+        call('Storage.setCookies', {'cookies': [{'name': name, 'value': 'retained',
+            'url': origin, 'httpOnly': True, 'expires': 1}]})
+    found = cookies()
+    present = (len(found) == 1 and found[0]['value'] == 'retained'
+               and found[0]['httpOnly'] is True and found[0]['session'] is False)
+    if (mode == 'clear' and found) or (mode != 'clear' and not present):
+        raise RuntimeError('profile-fixture-not-retained')
+    print(json.dumps({'mode': mode, 'present': present}))
+"""
+    # Cookie storage belongs to Browser, not an arbitrarily selected/restored Tab.
+    version = json.loads(browser.succeed("curl -fsS http://127.0.0.1:9222/json/version"))
+    browser.succeed("printf '%s' " + shlex.quote(version["webSocketDebuggerUrl"]) + " > /run/profile-probe-browser")
+    cookie_command = "python3 -c " + shlex.quote(cookie_probe) + " /run/profile-probe-browser"
+    assert json.loads(browser.succeed(cookie_command + " seed"))["present"] is True
+    browser.succeed("systemctl restart browser-host.service")
+    browser.wait_for_unit("browser-host.service")
+    browser.wait_for_open_port(9222)
+    new_process = browser.succeed("systemctl show -p MainPID --value browser-host.service").strip()
+    assert int(new_process) > 0 and new_process != process
+    new_version = json.loads(browser.succeed("curl -fsS http://127.0.0.1:9222/json/version"))
+    assert new_version["webSocketDebuggerUrl"] != version["webSocketDebuggerUrl"]
+    browser.succeed("printf '%s' " + shlex.quote(new_version["webSocketDebuggerUrl"]) + " > /run/profile-probe-browser")
+    assert json.loads(browser.succeed(cookie_command + " read"))["present"] is True
+    # A deleted fixture must fail the same read-only oracle, not a second profile.
+    assert json.loads(browser.succeed(cookie_command + " clear"))["present"] is False
+    missing_status, missing_error = browser.execute(cookie_command + " read 2>&1", timeout=8)
+    assert missing_status == 1 and "profile-fixture-not-retained" in missing_error
+    assert browser.succeed("systemctl show -p MainPID --value browser-host.service").strip() == new_process
+    print(json.dumps({"test": "chrome-profile-persistence", "status": "PASS",
+                      "before_pid": process, "after_pid": new_process,
+                      "browser_epoch_changed": True,
+                      "missing_cookie_rejected": True,
+                      "scope": "persistent synthetic HttpOnly cookie across systemd SIGINT restart; "
+                               "Target reassignment/real login/crash/physical reboot NOT_RUN",
+                      "preapply": "NOT_PROVEN"}))
+except Exception as exc:
+    failures.append(exc)
+
 if failures:
     raise ExceptionGroup("Browser Host proof failed", failures)

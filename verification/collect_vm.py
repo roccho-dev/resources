@@ -15,7 +15,8 @@ CLAIMS = {
     "E02": ("real-bcon-wheel", "real-bcon-viewer"),
     "E03": ("real-bcon-wheel", "real-bcon-viewer"),
     "E04": ("vm-session-smoke",),
-    "E07": ("viewer-ctrl-q-outcome", "viewer-failed-attach-negative-control", "real-bcon-viewer"),
+    "E07": ("viewer-ctrl-q-outcome", "viewer-failed-attach-negative-control", "real-bcon-viewer",
+            "chrome-profile-persistence"),
     "E08": ("remote-localhost-preview",),
 }
 KNOWN = set().union(*(set(v) for v in CLAIMS.values()))
