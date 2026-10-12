@@ -2,7 +2,7 @@
 , defaultImageName
 , containerName ? "versapro-own-oci"
 }:
-{ config, lib, ... }:
+{ config, lib, pkgs, ... }:
 let
   cfg = config.services.versaproOwnOci;
   serviceName = "docker-${containerName}";
@@ -15,6 +15,19 @@ let
     else if cfg.authorizedKeyFile == null && builtins.length rootKeys == 1 then builtins.head rootKeys
     else null;
   docker = config.virtualisation.docker.package;
+  seed = pkgs.writeShellScript "${containerName}-seed" ''
+    set -eu
+    for volume in ${homeVolume} ${workVolume} ${nixVolume}; do
+      if ! ${docker}/bin/docker volume inspect "$volume" >/dev/null 2>&1; then
+        ${docker}/bin/docker volume create "$volume" >/dev/null
+      fi
+    done
+    ${docker}/bin/docker run --rm \
+      --mount=type=volume,source=${nixVolume},target=/seed,volume-nocopy \
+      --env OWN_NIX_VOLUME=${nixVolume} \
+      ${lib.escapeShellArg cfg.imageName} \
+      /bin/own-nix-seed
+  '';
 in
 {
   options.services.versaproOwnOci = {
@@ -81,26 +94,16 @@ in
       autoRemoveOnStop = true;
     };
 
-    # The standard oci-containers preStart loads imageFile first. Append the
-    # production one-volume seed before the normal three-volume container run.
+    # Keep the standard oci-containers imageFile loader as the first
+    # ExecStartPre, then seed the production /nix volume before container run.
     systemd.services.${serviceName} = {
       environment = lib.optionalAttrs (fallbackAuthorizedKey != null) {
         OWN_AUTHORIZED_KEY = fallbackAuthorizedKey;
       };
-      serviceConfig.EnvironmentFile = lib.optional (cfg.authorizedKeyFile != null) cfg.authorizedKeyFile;
-      preStart = lib.mkAfter ''
-        set -eu
-        for volume in ${homeVolume} ${workVolume} ${nixVolume}; do
-          if ! ${docker}/bin/docker volume inspect "$volume" >/dev/null 2>&1; then
-            ${docker}/bin/docker volume create "$volume" >/dev/null
-          fi
-        done
-        ${docker}/bin/docker run --rm \
-          --mount=type=volume,source=${nixVolume},target=/seed,volume-nocopy \
-          --env OWN_NIX_VOLUME=${nixVolume} \
-          ${lib.escapeShellArg cfg.imageName} \
-          /bin/own-nix-seed
-      '';
+      serviceConfig = {
+        EnvironmentFile = lib.optional (cfg.authorizedKeyFile != null) cfg.authorizedKeyFile;
+        ExecStartPre = lib.mkAfter [ seed ];
+      };
     };
   };
 }
