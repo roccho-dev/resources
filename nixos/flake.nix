@@ -25,12 +25,6 @@
           ./versapro.nix
           ownModule
           {
-            # Materialize the same accepted root partition already named by
-            # versapro.nix's kernel root argument so the full NixOS closure is buildable.
-            fileSystems."/" = {
-              device = "/dev/disk/by-uuid/31515680-c79f-4b95-aef1-15b8634be20c";
-              fsType = "ext4";
-            };
             services.versaproOwnOci.enable = true;
             system.configurationRevision = self.rev or null;
           }
