@@ -327,9 +327,9 @@ try:
     remoteB.succeed("ssh -o BatchMode=yes -o ConnectTimeout=3 root@browser true")
     conflict_status, conflict_error = remoteB.execute(
         "ssh -o BatchMode=yes -o ConnectTimeout=3 -o ExitOnForwardFailure=yes "
-        "-NT -R 127.0.0.1:18080:127.0.0.1:18080 root@browser", timeout=5)
+        "-NT -R 127.0.0.1:18080:127.0.0.1:18080 root@browser 2>&1", timeout=5)
     assert conflict_status == 255, "port conflict was not refused by SSH"
-    assert "remote port forwarding failed" in conflict_error
+    assert "remote port forwarding failed" in conflict_error, "missing SSH rejection evidence"
     assert browser.succeed("curl -fsS " + preview_url) == preview_html
 
 
