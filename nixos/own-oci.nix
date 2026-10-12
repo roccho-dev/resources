@@ -22,7 +22,7 @@ let
         ${docker}/bin/docker volume create "$volume" >/dev/null
       fi
     done
-    ${docker}/bin/docker run --rm \
+    ${docker}/bin/docker run --rm --pull=never \
       --mount=type=volume,source=${nixVolume},target=/seed,volume-nocopy \
       --env OWN_NIX_VOLUME=${nixVolume} \
       ${lib.escapeShellArg cfg.imageName} \
