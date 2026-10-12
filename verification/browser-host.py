@@ -175,6 +175,9 @@ def viewer_observation(phase, shot):
     return observation
 
 
+# Preserve failures while independent cases continue; never retry a failed Viewer.
+failures: list[Exception] = []
+browser.succeed("printf '%s' " + shlex.quote(pages[0]["webSocketDebuggerUrl"]) + " > /run/browser-target")
 try:
     # The shared module, not a test-only chvt, must activate tty2 on boot.
     browser.succeed("test \"$(cat /sys/class/tty/tty0/active)\" = tty2")
@@ -188,7 +191,6 @@ try:
     browser.send_chars("root\n")
     wait_process("pgrep -t pts/0 -x bash")
     saved_mode = browser.succeed("stty -F /dev/pts/0 -g").strip()
-    browser.succeed("printf '%s' " + shlex.quote(pages[0]["webSocketDebuggerUrl"]) + " > /run/browser-target")
     browser.succeed("rm -f /run/viewer-exit-status /run/viewer-errors")
     # Capture the original shell child status; pgrep disappearance alone is not a clean exit.
     browser.send_chars('cdp-tty "$(cat /run/browser-target)" 2>/run/viewer-errors; printf "%s\\n" "$?" > /run/viewer-exit-status\n')
@@ -279,6 +281,30 @@ try:
                       "scope": "real VT / ASCII / DOM and display; Ctrl-Q exit 0 and empty stderr / failed attach exit 1",
                       "preapply": "NOT_PROVEN"}))
 
+except Exception as exc:
+    failures.append(exc)
+finally:
+    try:
+        # Record the failing phase without mutating/restarting the tested service.
+        for command in (
+            "systemctl show browser-host-terminal -p MainPID -p ActiveState -p SubState -p NRestarts",
+            "journalctl -b -u browser-host-terminal --no-pager -n 160",
+            "ps -eo pid,ppid,tty,stat,wchan:32,args",
+            "cat /sys/class/tty/tty0/active; ls -l /dev/dri/",
+            "cat /run/viewer-errors 2>/dev/null",
+            "cat /run/viewer-trace.jsonl 2>/dev/null",
+        ):
+            status, output = browser.execute(command, timeout=5)
+            print(json.dumps({"diagnostic": command, "exit": status, "output": output}))
+    except Exception as exc:
+        failures.append(exc)
+
+try:
+    # Preview owns no Viewer: require the same live Browser and no active input client.
+    browser.fail("pgrep -x cdp-tty")
+    assert browser.succeed("systemctl show -p MainPID --value browser-host.service").strip() == process
+    current = json.loads(browser.succeed("curl -fsS http://127.0.0.1:9222/json/list"))
+    assert [p["id"] for p in current if p["type"] == "page"] == [target]
     # E08 finite positive/negative: the *existing Host Chrome target* opens a
     # Remote A localhost HTTP fixture through reverse SSH, then the route dies
     # without killing Chrome. This does not claim Atlas/SSE coverage.
@@ -296,6 +322,16 @@ try:
                     "-o ExitOnForwardFailure=yes "
                     "-R 127.0.0.1:18080:127.0.0.1:18080 root@browser")
     assert browser.succeed("curl -fsS " + preview_url) == preview_html
+
+    # B has working authentication, but cannot replace A's occupied Host listen port.
+    remoteB.succeed("ssh -o BatchMode=yes -o ConnectTimeout=3 root@browser true")
+    conflict_status, conflict_error = remoteB.execute(
+        "ssh -o BatchMode=yes -o ConnectTimeout=3 -o ExitOnForwardFailure=yes "
+        "-NT -R 127.0.0.1:18080:127.0.0.1:18080 root@browser", timeout=5)
+    assert conflict_status == 255, "port conflict was not refused by SSH"
+    assert "remote port forwarding failed" in conflict_error
+    assert browser.succeed("curl -fsS " + preview_url) == preview_html
+
 
     # Fixture setup navigates the one existing tab, not a second browser/tab.
     # The oracle only reads DOM after this explicit test-only navigation.
@@ -336,19 +372,13 @@ ws.close()
     assert browser.succeed("systemctl show -p MainPID --value browser-host.service").strip() == process
     print(json.dumps({"test": "remote-localhost-preview", "status": "PASS",
                       "browser_target_unchanged": True, "browser_pid_unchanged": True,
-                      "remote_consumers": 1,
+                      "remote_consumers": 1, "port_conflict_exit": conflict_status,
+                      "original_route_unchanged": True,
                       "scope": "SSH reverse localhost tunnel + existing Chrome DOM; "
-                               "tunnel removal refused; Atlas/SSE/port-conflict NOT_RUN",
+                               "tunnel removal and port conflict refused; Atlas/SSE NOT_RUN",
                       "preapply": "NOT_PROVEN"}))
-finally:
-    # Record the failing phase without mutating/restarting the tested service.
-    for command in (
-        "systemctl show browser-host-terminal -p MainPID -p ActiveState -p SubState -p NRestarts",
-        "journalctl -b -u browser-host-terminal --no-pager -n 160",
-        "ps -eo pid,ppid,tty,stat,wchan:32,args",
-        "cat /sys/class/tty/tty0/active; ls -l /dev/dri/",
-        "cat /run/viewer-errors 2>/dev/null",
-        "cat /run/viewer-trace.jsonl 2>/dev/null",
-    ):
-        status, output = browser.execute(command, timeout=5)
-        print(json.dumps({"diagnostic": command, "exit": status, "output": output}))
+except Exception as exc:
+    failures.append(exc)
+
+if failures:
+    raise ExceptionGroup("Browser Host proof failed", failures)
