@@ -2,8 +2,8 @@
   "A": {
     "owner": "roccho-org",
     "repo": "ops",
-    "rev": "b0ef47daf015d623f9566f232056e3e69fd82d9b",
-    "narHash": "sha256-Nkwzc2TlH+r/j0X7FN9MDk2U1lqnuWIY2SeCIkexd+k="
+    "rev": "7f8666c4f15ed051b3f771a40726e202f9b17eaf",
+    "narHash": "sha256-sfYlEA/kZ7aY7Kqv3cZrpXxOOmZpkXQBJisCRsau6hU="
   },
   "B": {
     "owner": "roccho-dev",
