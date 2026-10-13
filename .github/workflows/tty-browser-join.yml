@@ -1,0 +1,50 @@
+name: tty-browser-join
+on:
+  pull_request:
+    paths: ['verification/tty-browser-join/**', 'docs/split-tty-browser-join.md', '.github/workflows/tty-browser-join.yml', 'nixos/flake.lock']
+  push:
+    branches: ['split/tty-browser-join-20261013']
+    paths: ['verification/tty-browser-join/**', 'docs/split-tty-browser-join.md', '.github/workflows/tty-browser-join.yml', 'nixos/flake.lock']
+permissions:
+  contents: read
+jobs:
+  intake-unit-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
+      - name: Parse C code and test rejection without upstream builds
+        run: |
+          set -euo pipefail
+          python3 -c "import ast,pathlib; ast.parse(pathlib.Path('verification/tty-browser-join/test.py').read_text())"
+          for file in verification/tty-browser-join/*.nix; do nix-instantiate --parse "$file" >/dev/null; done
+          nix-instantiate --eval --strict --json verification/tty-browser-join/test-contract.nix | tee "$RUNNER_TEMP/c-intake.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: c-intake-${{ github.sha }}
+          path: ${{ runner.temp }}/c-intake.json
+          if-no-files-found: error
+  ordinary-input-smoke-not-closure:
+    needs: intake-unit-only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
+        with:
+          extra_nix_config: |
+            system-features = nixos-test kvm big-parallel
+      - name: Require actual upstreams; never skip or replace missing products
+        run: |
+          set -euo pipefail
+          nix-build verification/tty-browser-join -o "$RUNNER_TEMP/c-smoke" --show-trace 2>&1 | tee "$RUNNER_TEMP/c-smoke.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c-smoke-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/c-smoke.log
+            ${{ runner.temp }}/c-smoke/*.png
+            ${{ runner.temp }}/c-smoke/raws.jsonl
+          if-no-files-found: error
