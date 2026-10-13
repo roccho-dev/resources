@@ -23,7 +23,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -c "import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('verification/tty-browser-join').glob('*.py')]"
-          python3 -m unittest discover -s verification/tty-browser-join -p test_unit.py -v 2>&1 | tee "$RUNNER_TEMP/c-unit.log"
+          python3 -m unittest discover -s verification/tty-browser-join -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/c-unit.log"
           git rev-parse HEAD > "$RUNNER_TEMP/c-checkout.txt"
           git rev-parse 'HEAD^{tree}' >> "$RUNNER_TEMP/c-checkout.txt"
           git archive --format=tar.gz HEAD verification/tty-browser-join docs/split-tty-browser-join.md .github/workflows/tty-browser-join.yml nixos/flake.lock > "$RUNNER_TEMP/c-source.tar.gz"
@@ -95,7 +95,21 @@ jobs:
             ${{ runner.temp }}/c-smoke.log
             ${{ runner.temp }}/b-artifact.json
             ${{ runner.temp }}/c-smoke/*.png
-            ${{ runner.temp }}/c-smoke/raws.jsonl
-            ${{ runner.temp }}/c-smoke/disruptives.jsonl
+            ${{ runner.temp }}/c-smoke/*.jsonl
             ${{ runner.temp }}/c-smoke/*.json
           if-no-files-found: error
+      - name: Download the just-saved evidence, not the build directory
+        uses: actions/download-artifact@v4
+        with:
+          name: c-smoke-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/c-saved
+      - name: Require byte-exact saved references without granting acceptance
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, "verification/tty-browser-join")
+          from archive import verify_saved
+          root = Path(os.environ["RUNNER_TEMP"])
+          print(json.dumps(verify_saved(root / "c-saved/c-smoke", root / "c-smoke"), sort_keys=True))
+          PYTHON
