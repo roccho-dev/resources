@@ -7,7 +7,77 @@ import importlib.util
 import json
 from pathlib import Path
 import re
+import shlex
 import time
+
+
+
+# Only two bounded test-owned observations are transported through failed-build
+# logs. Their hashes preserve bytes; they are not acceptance or trusted provenance.
+FILES = {"unknown-effect-audit.json", "unknown-effect-diagnostic.json"}
+MARKER = "C_FAULT_FILE "
+LIMIT = 64 * 1024
+
+
+def viewer_command(target, error_path):
+    """Observe A's stderr after B's forkpty; do not confuse it with B's stderr.
+
+    The shell execs the unchanged viewer, preserving its PID, argv, stdin/stdout
+    PTY and exit status. Only this isolated fault case redirects diagnostic fd 2.
+    """
+    return "sh -c " + shlex.quote('exec cdp-tty "$1" 2>"$2"') + " cdp-tty " + shlex.quote(target) + " " + shlex.quote(error_path)
+
+
+def retain(output, audit_raw, parent_stderr, viewer_stderr):
+    """Persist raw observations BEFORE parsing or asserting their correctness."""
+    contents = {
+        "unknown-effect-audit.json": audit_raw,
+        "unknown-effect-diagnostic.json": json.dumps({
+            "parentStderr": parent_stderr, "viewerStderr": viewer_stderr}, ensure_ascii=False, sort_keys=True),
+    }
+    for name, text in contents.items():
+        data = text.encode("utf-8")
+        if len(data) > LIMIT:
+            raise ValueError("fault-observation-too-large:" + name)
+        (output / name).write_bytes(data)
+        print(MARKER + json.dumps({"path": name, "sha256": hashlib.sha256(data).hexdigest(),
+            "text": text}, ensure_ascii=True, sort_keys=True), flush=True)
+    return list(contents)
+
+
+def recover(log, output):
+    """Recover exact observations even if Nix cannot publish a failed output.
+
+    No marker means NOT_OBSERVED, not a successful diagnostic. Malformed, duplicate,
+    partial, oversized, hash-mismatched or non-allowlisted records are rejected.
+    """
+    from evidence import decode
+    records = {}
+    if log.is_file():
+        with log.open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.startswith(MARKER):
+                    continue
+                if len(line) > 7 * LIMIT:
+                    raise ValueError("fault-record-too-large")
+                record = decode(line[len(MARKER):])
+                if type(record) is not dict or set(record) != {"path", "sha256", "text"}:
+                    raise ValueError("invalid-fault-record")
+                name = record["path"]
+                if type(name) is not str or name not in FILES or name in records or type(record["text"]) is not str:
+                    raise ValueError("invalid-fault-path-or-duplicate")
+                data = record["text"].encode("utf-8")
+                if len(data) > LIMIT or hashlib.sha256(data).hexdigest() != record["sha256"]:
+                    raise ValueError("invalid-fault-bytes")
+                records[name] = data
+    if records and set(records) != FILES:
+        raise ValueError("incomplete-fault-records")
+    if records:
+        output.mkdir()
+        for name, data in records.items():
+            (output / name).write_bytes(data)
+    return {"state": "RECOVERED" if records else "NOT_OBSERVED", "files": sorted(records),
+        "admission": "NOT_PERFORMED"}
 
 
 def valid_result(value, expected_source):

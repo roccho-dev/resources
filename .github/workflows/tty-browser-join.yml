@@ -87,6 +87,17 @@ jobs:
           set -euo pipefail
           test -c /dev/kvm
           nix-build verification/tty-browser-join --argstr packagePath "$RUNNER_TEMP/b-build/Meltype-linux" --argstr evidenceRun "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" -o "$RUNNER_TEMP/c-smoke" --show-trace 2>&1 | tee "$RUNNER_TEMP/c-smoke.log"
+      - name: Preserve raw fault observations even when the VM assertion fails
+        if: always()
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, sys
+          from pathlib import Path
+          sys.path.insert(0, "verification/tty-browser-join")
+          from fault import recover
+          root = Path(os.environ["RUNNER_TEMP"])
+          print(json.dumps(recover(root / "c-smoke.log", root / "c-fault-diagnostics"), sort_keys=True))
+          PYTHON
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -97,6 +108,7 @@ jobs:
             ${{ runner.temp }}/c-smoke/*.png
             ${{ runner.temp }}/c-smoke/*.jsonl
             ${{ runner.temp }}/c-smoke/*.json
+            ${{ runner.temp }}/c-fault-diagnostics/*.json
           if-no-files-found: error
       - name: Download the just-saved evidence, not the build directory
         uses: actions/download-artifact@v4

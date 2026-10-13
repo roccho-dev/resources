@@ -91,8 +91,12 @@ def begin(name, mode=None, websocket=None, expect_ready=True):
         command("rm -f /run/c-provider/held /run/c-provider/release; : > /run/c-provider/requests.jsonl; : > /run/c-provider/responses.jsonl")
     env = "MELTYPE_PROPOSAL_URL=http://127.0.0.1:8031/proposal " if mode else ""
     target = shlex.quote(websocket) if websocket is not None else '"$(cat /run/c-proof/ws)"'
+    viewer = "cdp-tty " + target
+    if name == "unknown-effect":
+        assert websocket is not None, "fault observer target is required"
+        viewer = fault.viewer_command(websocket, prefix + ".viewer.errors")
     script = (f"umask 077\nprintf %s $$ > {prefix}.parent\nstty -g > {prefix}.before\n"
-        + env + 'meltype-tty --raw-text --selection-fd 3 -- cdp-tty ' + target
+        + env + 'meltype-tty --raw-text --selection-fd 3 -- ' + viewer
         + f" 3>>{prefix}.selection.jsonl 2>{prefix}.errors\nrc=$?\nstty -g > {prefix}.after\nprintf %s \"$rc\" > {prefix}.exit\n")
     put(prefix + ".trial", script)
     machine.send_chars("bash " + prefix + ".trial\n")
@@ -300,21 +304,23 @@ try:
     cleanup = finish(after, fault=True)
     command("touch /run/c-proof/unknown-transport/stop")
     wait("test -s /run/c-proof/unknown-transport/result.json")
-    audit = json.loads(command("cat /run/c-proof/unknown-transport/result.json"))
-    errors = command("cat /run/c-proof/unknown-effect.errors")
+    audit_raw = command("cat /run/c-proof/unknown-transport/result.json")
+    parent_errors = command("cat /run/c-proof/unknown-effect.errors")
+    errors = command("cat /run/c-proof/unknown-effect.viewer.errors")
+    # These bytes must survive even a bad audit or an empty/wrong diagnostic.
+    saved_fault = fault.retain(out, audit_raw, parent_errors, errors)
+    audit = json.loads(audit_raw)
     assert fault.valid_result(audit, meta["faultSource"]), audit
     assert "stage=input-dispatch" in errors and "completion=unknown" in errors, errors
     assert before["target"] == after["target"] and before["field"] == after["field"]
     assert before["browserPid"] == after["browserPid"]
-    (out / "unknown-effect-audit.json").write_text(json.dumps(audit, sort_keys=True))
-    (out / "unknown-effect-diagnostic.json").write_text(json.dumps({"stderr": errors}))
     # Independent means the separate wire observer and read-only DOM channel,
     # not a different person/actor or an independent merge/admission reviewer.
     record("unknown-effect", {"positive": [meta["evidenceRun"]], "negative": [meta["evidenceRun"]],
         "execution": "nixos-vm", "observers": "A-wire-audit-and-read-only-C-DOM",
         "before": before, "after": after, "preeditText": preedit["text"],
         "cleanup": cleanup, "audit": audit, "input": "vm-keyboard", "effectCount": 1,
-        "admission": "NOT_PERFORMED"}, ["unknown-effect-audit.json", "unknown-effect-diagnostic.json"])
+        "admission": "NOT_PERFORMED"}, saved_fault)
     machine.fail("pgrep -f '[f]citx5|[i]bus-daemon|[t]tyskk'")
 except Exception as error:
     if context is not None and not any(row["case"] == current for row in rows):
