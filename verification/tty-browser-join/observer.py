@@ -99,14 +99,21 @@ def main():
         # This observer is restricted to a disposable fixture. Preserve the
         # actual rejected value and existing product diagnostics; do not change
         # input, weaken the expected value, or silently retry a product effect.
-        errors = {}
-        for path in sorted(STATE.glob("*.errors"))[:16]:
-            if path.is_symlink() or not path.is_file():
-                continue
-            with path.open("rb") as handle:
-                errors[path.name] = handle.read(4096).decode("utf-8", errors="replace")
+        diagnostics = {}
+        for suffix in ("errors", "selection.jsonl"):
+            files = {}
+            for path in sorted(STATE.glob("*." + suffix))[:16]:
+                if path.is_symlink() or not path.is_file():
+                    continue
+                with path.open("rb") as handle:
+                    files[path.name] = handle.read(4096).decode("utf-8", errors="replace")
+            diagnostics[suffix] = files
+        # B publishes this existing private selection record only after its
+        # complete child-PTY write. It is NOT evidence of A's DOM effect.
         print("C_FIXTURE_DOM_MISMATCH " + json.dumps({
-            "expected": args.value, "observed": result, "productErrors": errors
+            "expected": args.value, "observed": result,
+            "productErrors": diagnostics["errors"],
+            "productSelections": diagnostics["selection.jsonl"]
         }, ensure_ascii=False), file=sys.stderr, flush=True)
         raise ValueError("fixture-DOM-text-mismatch")
     print(json.dumps(result, ensure_ascii=False))
