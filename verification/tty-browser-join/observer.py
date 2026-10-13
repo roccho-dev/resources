@@ -17,7 +17,7 @@ import time
 import urllib.request
 
 STATE = Path("/run/c-proof")
-EXPRESSION = "JSON.stringify({text:document.getElementById('editor').value,field:document.activeElement.id})"
+EXPRESSION = "JSON.stringify({text:document.querySelector('#editor').value,field:document.activeElement.id})"
 
 
 def dom():
