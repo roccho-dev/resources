@@ -95,6 +95,18 @@ def main():
     args = parser.parse_args()
     result = dom() if args.mode == "dom" else session(args.value or "")
     if args.mode == "dom" and args.value is not None and result["text"] != args.value:
+        # This observer is restricted to a disposable fixture. Preserve the
+        # actual rejected value and existing product diagnostics; do not change
+        # input, weaken the expected value, or silently retry a product effect.
+        errors = {}
+        for path in sorted(STATE.glob("*.errors"))[:16]:
+            if path.is_symlink() or not path.is_file():
+                continue
+            with path.open("rb") as handle:
+                errors[path.name] = handle.read(4096).decode("utf-8", errors="replace")
+        print("C_FIXTURE_DOM_MISMATCH " + json.dumps({
+            "expected": args.value, "observed": result, "productErrors": errors
+        }, ensure_ascii=False), flush=True)
         raise ValueError("fixture-DOM-text-mismatch")
     print(json.dumps(result, ensure_ascii=False))
 
