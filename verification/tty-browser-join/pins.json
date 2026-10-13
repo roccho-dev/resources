@@ -18,11 +18,13 @@
       "packageNarHash": "sha256-xanJjaEwjSk21I8hIi4pi4V4KyegP5zD7lSjMXMroUo=",
       "nativeSha256": "2ff590ea05c722a7c7355460eed5e077a26aa293cdafa3d9b852cfb213272f0d",
       "mozcSha256": "28e060a0cadc1405045cb8ae1516e938de143cb8347307be459f6052e7c9fbd9"
-    }
+    },
+    "narHash": "sha256-yIiBzSPaJ/ARu8XBCvq7grqyKTAnZmXxtC8jFXvQMok="
   },
   "terminal": {
     "owner": "roccho-dev",
     "repo": "resources",
-    "rev": "cfe7483db1658d299965c608a07f17f973fd79f7"
+    "rev": "cfe7483db1658d299965c608a07f17f973fd79f7",
+    "narHash": "sha256-e7yJIYplBs1stlvIfu5PstbU3kf3QBSbESTyJTRtm5w="
   }
 }

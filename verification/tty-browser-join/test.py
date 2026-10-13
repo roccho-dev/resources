@@ -176,8 +176,12 @@ try:
     pins = json.loads(command("cat /etc/c-source-pins.json"))
     executables = command("sha256sum $(readlink -f $(command -v cdp-tty)) $(readlink -f $(command -v meltype-tty)) $(readlink -f $(command -v bcon))")
     meta = json.loads(command("cat /etc/c-code.json"))
+    environment = {"meta": meta, "kernel": command("uname -sr"), "system": command("nixos-version")}
     context = {"code": meta["code"], "inputs": evidence.digest({"pins": pins, "executables": executables}),
-        "environment": evidence.digest({"meta": meta, "kernel": command("uname -sr"), "system": command("nixos-version")})}
+        "environment": evidence.digest(environment)}
+    # Retain the original observations, not only an irreversible environment hash.
+    # This attests this VM, never a physical Windows/NixOS host.
+    (out / "environment.json").write_text(json.dumps(environment, sort_keys=True))
     (out / "context.json").write_text(json.dumps(context, sort_keys=True))
     (out / "inputs.json").write_text(json.dumps({"pins": pins, "executables": executables, "meta": meta}, sort_keys=True))
 
