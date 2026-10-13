@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import struct
 import subprocess
+import sys
 import termios
 import time
 import urllib.request
@@ -106,7 +107,7 @@ def main():
                 errors[path.name] = handle.read(4096).decode("utf-8", errors="replace")
         print("C_FIXTURE_DOM_MISMATCH " + json.dumps({
             "expected": args.value, "observed": result, "productErrors": errors
-        }, ensure_ascii=False), flush=True)
+        }, ensure_ascii=False), file=sys.stderr, flush=True)
         raise ValueError("fixture-DOM-text-mismatch")
     print(json.dumps(result, ensure_ascii=False))
 
