@@ -24,6 +24,13 @@ let
     non_object = invalid [];
     valid_shape_is_not_e2e = state all == "INPUT_SHAPE_VALID_NOT_E2E";
     pending_is_not_ready = state { A = item; } == "WAITING_UPSTREAM_EXPORTS";
+    missing_does_not_force_other_package = state {
+      A = item // { package = throw "MUST_NOT_FORCE_PARTIAL_SUPPLY"; };
+    } == "WAITING_UPSTREAM_EXPORTS";
+    extra_rejects_without_forcing_package = state {
+      A = item // { package = throw "MUST_NOT_FORCE_INVALID_SET"; };
+      X = item;
+    } == "INVALID_UPSTREAM_INPUT";
     missing_is_rejected = !(builtins.tryEval (contract.require {})).success;
     invalid_is_rejected = !(builtins.tryEval (contract.require (all // { A = "stub"; }))).success;
   };

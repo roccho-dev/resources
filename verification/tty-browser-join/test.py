@@ -1,112 +1,250 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Port of the ordinary-input section of Meltype#2@d673872 tests/bcon.py.
-# Only this VM's keyboard enters text. The second CDP connection observes it.
+# C input/fault collection; extends the preserved ordinary-input test, not A/B.
+# Fixed-loopback fixture != real Shared Provider. Missing original-ID/target
+# observation remains absent; do not infer it from a matching display string.
+import base64
 import hashlib
 import json
 from pathlib import Path
 import shlex
 import time
 from PIL import Image
+import evidence
 
-start_all()
-machine.wait_for_unit("c-console.service")
-machine.wait_for_unit("c-browser.service")
-machine.succeed('test "$(cat /sys/class/tty/tty0/active)" = tty2')
-machine.wait_until_succeeds("pgrep -x login")
-machine.wait_until_succeeds("journalctl -u c-console.service --no-pager | grep -F 'All phases complete, entering main loop'")
-machine.send_chars("root\n")
-machine.wait_until_succeeds("pgrep -t pts/0 -x bash")
-machine.succeed("mkdir -p /run/c-proof")
+out = Path(machine.out_dir)
+rows = []
+context = None
+current = "ordinary"
+trial = None
+last_image = None
 
-# Setup is not input proof; never write the editor's value from this observer.
-probe = r'''import json,sys,urllib.request,websocket
-from pathlib import Path
-with urllib.request.urlopen('http://127.0.0.1:9222/json/list',timeout=2) as response:
-    pages=[p for p in json.load(response) if p.get('type')=='page']
-assert len(pages)==1,pages
-page=pages[0]
-identity=Path('/run/c-proof/target')
-if identity.exists(): assert identity.read_text()==page['id']
-else: identity.write_text(page['id'])
-Path('/run/c-proof/ws').write_text(page['webSocketDebuggerUrl'])
-ws=websocket.create_connection(page['webSocketDebuggerUrl'],timeout=2,suppress_origin=True)
-try:
-    ws.send(json.dumps({'id':1,'method':'Runtime.evaluate','params':{
-        'expression':"JSON.stringify({text:document.getElementById('editor').value,focus:document.activeElement.id})",
-        'returnByValue':True,'throwOnSideEffect':True}}))
-    while True:
-        data=json.loads(ws.recv())
-        if data.get('id')==1: break
-    assert 'error' not in data and 'exceptionDetails' not in data['result'],data
-    value=json.loads(data['result']['result']['value'])
-    assert value=={'text':sys.argv[1],'focus':'editor'},value
-    print(json.dumps({'target':page['id'],**value},ensure_ascii=False))
-finally: ws.close()
-'''
-machine.succeed("printf %s " + shlex.quote(probe) + " > /run/c-proof/probe.py")
 
-def observed(text):
-    return "python3 /run/c-proof/probe.py " + shlex.quote(text)
+def command(value):
+    return machine.succeed(value, timeout=5)
 
-machine.wait_until_succeeds(observed(""))
-browser_pid = machine.succeed("systemctl show -p MainPID --value c-browser").strip()
-assert browser_pid.isdigit() and int(browser_pid) > 0
-pins = json.loads(machine.succeed("cat /etc/c-source-pins.json"))
-executables = machine.succeed("sha256sum $(readlink -f $(command -v cdp-tty)) $(readlink -f $(command -v meltype-tty)) $(readlink -f $(command -v bcon))")
 
-# Compare termios in the same foreground-command phase, not Readline's prompt.
-# --raw-text is scoped to this known text fixture; it is not secret-field proof.
-script = '''stty -g > /run/c-proof/before
-meltype-tty --raw-text -- cdp-tty "$(cat /run/c-proof/ws)" 2>/run/c-proof/errors
-rc=$?
-stty -g > /run/c-proof/after
-printf %s "$rc" > /run/c-proof/exit
-'''
-machine.succeed("printf %s " + shlex.quote(script) + " > /run/c-proof/trial")
-machine.send_chars("bash /run/c-proof/trial\n")
+def wait(value, seconds=15):
+    return machine.wait_until_succeeds(value, timeout=seconds)
 
-def scanout(name):
+
+def put(path, value):
+    command("printf %s " + shlex.quote(value) + " > " + shlex.quote(path))
+
+
+def observer(mode="dom", value=None):
+    return "python3 /etc/c-observer.py " + mode + (" " + shlex.quote(value) if value is not None else "")
+
+
+def snapshot(text=None):
+    if text is not None:
+        wait(observer(value=text))
+    result = json.loads(command(observer()))
+    assert evidence.snapshot(result), result
+    return result
+
+
+def png(name):
+    global last_image
     machine.screenshot(name)
-    with Image.open(Path(machine.out_dir) / (name + ".png")) as image:
+    last_image = name + ".png"
+    with Image.open(out / last_image) as image:
         return image.convert("RGB").copy()
+
 
 def pixels(image, color):
     return sum(n for n, rgb in image.getcolors(image.width * image.height)
         if all(abs(a - b) <= 2 for a, b in zip(rgb, color)))
 
+
 def await_image(name, predicate):
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline:
-        status, _ = machine.execute("test -e /run/c-proof/exit")
-        assert status != 0, machine.succeed("cat /run/c-proof/exit /run/c-proof/errors")
-        image = scanout(name)
+    until = time.monotonic() + 15
+    while time.monotonic() < until:
+        status, _ = machine.execute("test -e /run/c-proof/" + trial + ".exit", timeout=5)
+        assert status != 0, command("cat /run/c-proof/" + trial + ".exit /run/c-proof/" + trial + ".errors")
+        image = png(name)
         if predicate(image):
             return image
         time.sleep(.2)
     raise AssertionError("C scanout missing: " + name)
 
-base = await_image("browser-before", lambda im: pixels(im, (215, 225, 240)) > 2000)
-machine.send_chars("nihongo ")
-await_image("candidate", lambda im: pixels(im, (24, 26, 32)) > pixels(base, (24, 26, 32)) + 1000)
-machine.succeed(observed(""))  # Preedit has not leaked to the browser.
-machine.send_key("ret")
-machine.wait_until_succeeds(observed("日本語"))
-scanout("browser-after")
-machine.send_key("ctrl-q")
-machine.wait_until_succeeds("test -e /run/c-proof/exit")
-assert machine.succeed("cat /run/c-proof/exit").strip() == "0"
-assert machine.succeed("cat /run/c-proof/before") == machine.succeed("cat /run/c-proof/after")
-assert machine.succeed("systemctl show -p MainPID --value c-browser").strip() == browser_pid
-readback = json.loads(machine.succeed(observed("日本語")))
-machine.fail("pgrep -f '[f]citx5|[i]bus-daemon|[t]tyskk'")
-proof = {
-    "gate": "C_ORDINARY_INPUT_SMOKE_ONLY", "status": "PASS", "pins": pins,
-    "executables_sha256": executables, "readback": readback,
-    "candidate_png_sha256": hashlib.sha256((Path(machine.out_dir) / "candidate.png").read_bytes()).hexdigest(),
-    "terminal_restored": True, "browser_pid_preserved": True,
-    "input": "NixOS VM keyboard", "provider": "NOT_RUN",
-    "C1_C7": "NOT_COMPLETE", "typed_proposals": "NOT_RUN",
-    "physical_host": "NOT_RUN", "independent_review": "NOT_RUN",
-}
-(Path(machine.out_dir) / "raws.jsonl").write_text(json.dumps(proof, ensure_ascii=False) + "\n")
-print(json.dumps(proof, ensure_ascii=False), flush=True)
+
+def record(name, facts, images=(), status="PASS"):
+    capture = {"case": name, "status": status, "scope": "vm", "context": context, "facts": facts}
+    path = out / ("capture-" + name + ".json")
+    path.write_text(json.dumps(capture, ensure_ascii=False))
+    names = [path.name] + list(images)
+    row = {**capture, "artifacts": [{"path": n, "sha256": hashlib.sha256((out / n).read_bytes()).hexdigest()} for n in names]}
+    rows.append(row)
+    with (out / "raws.jsonl").open("a") as handle:
+        handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    print("C_OBSERVATION " + json.dumps(row, ensure_ascii=False), flush=True)
+
+
+def begin(name, mode=None):
+    global trial
+    trial = name
+    prefix = "/run/c-proof/" + name
+    if mode is not None:
+        put("/run/c-provider/mode", mode)
+        command("rm -f /run/c-provider/held /run/c-provider/release; : > /run/c-provider/requests.jsonl; : > /run/c-provider/responses.jsonl")
+    env = "MELTYPE_PROPOSAL_URL=http://127.0.0.1:8031/proposal " if mode else ""
+    script = (f"printf %s $$ > {prefix}.parent\nstty -g > {prefix}.before\n"
+        + env + 'meltype-tty --raw-text -- cdp-tty "$(cat /run/c-proof/ws)"'
+        + f" 2>{prefix}.errors\nrc=$?\nstty -g > {prefix}.after\nprintf %s \"$rc\" > {prefix}.exit\n")
+    put(prefix + ".trial", script)
+    machine.send_chars("bash " + prefix + ".trial\n")
+    image = await_image(name + "-before", lambda im: pixels(im, (215, 225, 240)) > 2000)
+    info = json.loads(command(observer("session", name)))
+    return image, info
+
+
+def finish(before, *, fault=False):
+    prefix = "/run/c-proof/" + trial
+    if not fault:
+        machine.send_key("ctrl-q")
+    wait("test -e " + prefix + ".exit")
+    result = {"before": before, "after": snapshot(),
+        "termiosBefore": command("cat " + prefix + ".before").strip(),
+        "termiosAfter": command("cat " + prefix + ".after").strip(),
+        "profileBefore": profile_marker,
+        "profileAfter": command("cat /run/c-browser/profile/c-fixture-marker").strip(),
+        "exitCode": int(command("cat " + prefix + ".exit").strip())}
+    assert result["termiosBefore"] == result["termiosAfter"]
+    assert result["profileBefore"] == result["profileAfter"]
+    assert before == result["after"], result
+    if fault:
+        assert result["exitCode"] != 0
+    else:
+        assert result["exitCode"] == 0
+    return result
+
+
+def offered():
+    wait("test -s /run/c-provider/responses.jsonl")
+    return [json.loads(line) for line in command("cat /run/c-provider/responses.jsonl").splitlines()]
+
+
+try:
+    start_all()
+    machine.wait_for_unit("c-console.service", timeout=90)
+    machine.wait_for_unit("c-browser.service", timeout=90)
+    command('test "$(cat /sys/class/tty/tty0/active)" = tty2')
+    wait("pgrep -x login")
+    wait("journalctl -u c-console.service --no-pager | grep -F 'All phases complete, entering main loop'")
+    machine.send_chars("root\n")
+    wait("pgrep -t pts/0 -x bash")
+    command("mkdir -p /run/c-proof /run/c-provider")
+    before = snapshot("")
+    profile_marker = "C-fixture-profile-not-user-data"
+    put("/run/c-browser/profile/c-fixture-marker", profile_marker)
+    pins = json.loads(command("cat /etc/c-source-pins.json"))
+    executables = command("sha256sum $(readlink -f $(command -v cdp-tty)) $(readlink -f $(command -v meltype-tty)) $(readlink -f $(command -v bcon))")
+    meta = json.loads(command("cat /etc/c-code.json"))
+    context = {"code": meta["code"], "inputs": evidence.digest({"pins": pins, "executables": executables}),
+        "environment": evidence.digest({"meta": meta, "kernel": command("uname -sr"), "system": command("nixos-version")})}
+    (out / "context.json").write_text(json.dumps(context, sort_keys=True))
+    (out / "inputs.json").write_text(json.dumps({"pins": pins, "executables": executables, "meta": meta}, sort_keys=True))
+
+    base, _ = begin("ordinary")
+    machine.send_chars("nihongo ")
+    await_image("ordinary-candidate", lambda im: pixels(im, (24, 26, 32)) > pixels(base, (24, 26, 32)) + 1000)
+    preedit = snapshot("")
+    machine.send_key("ret")
+    after = snapshot("日本語")
+    png("ordinary-after")
+    record(current, {"before": before, "after": after, "preeditText": preedit["text"], "input": "vm-keyboard"},
+        ["ordinary-candidate.png", "ordinary-after.png"])
+    cleanup = finish(after)
+    record("cleanup", cleanup, ["ordinary-after.png"])
+
+    put("/run/c-provider/mode", "typed")
+    command("systemctl start c-provider.service")
+    wait("test -e /run/c-provider/ready")
+    for name in ("typed", "cancel", "stale", "duplicate-confirm", "invalid-json", "duplicate-id", "action", "control-text", "wrong-raw"):
+        current = name
+        mode = "typed" if name in ("cancel", "duplicate-confirm") else name
+        before = snapshot()
+        base, _ = begin(name, mode)
+        machine.send_chars("u")
+        if name == "stale":
+            wait("test -e /run/c-provider/held")
+            machine.send_chars("x")
+            command("touch /run/c-provider/release")
+            wait("test $(wc -l < /run/c-provider/responses.jsonl) -ge 2")
+        offered()
+        if name in ("typed", "cancel", "stale", "duplicate-confirm"):
+            # Rendering threshold is only readiness. DOM and IDs are distinct evidence.
+            threshold = 45000 if name != "stale" else 38000
+            await_image(name + "-candidate", lambda im: pixels(im, (24, 26, 32)) > pixels(base, (24, 26, 32)) + threshold)
+        preedit = snapshot(before["text"])
+        if name == "cancel":
+            machine.send_key("esc"); time.sleep(.1); machine.send_key("esc")
+            expected = before["text"]
+        else:
+            if name in ("typed", "duplicate-confirm"):
+                machine.send_key("down")
+            elif name not in ("stale",):
+                # Explicit user's original-text fallback, never injected into DOM.
+                machine.send_key("f10")
+            machine.send_key("ret")
+            if name == "duplicate-confirm":
+                snapshot(before["text"] + "乙候補")
+                machine.send_key("ret")
+            expected = before["text"] + evidence.catalog()["cases"][name].get("suffix", "")
+        after = snapshot(expected)
+        png(name + "-after")
+        record(name, {"before": before, "after": after, "preeditText": preedit["text"], "input": "vm-keyboard",
+            "provider": "C-local-fixture", "responses": offered()}, [name + "-after.png"])
+        finish(after)
+
+    current = "resize"
+    before = snapshot()
+    _, first = begin("resize")
+    size = first["size"]
+    changed = [max(10, size[0] - 3), max(20, size[1] - 7)]
+    tty = shlex.quote(first["tty"])
+    command(f"stty -F {tty} rows {changed[0]} cols {changed[1]}")
+    measured = json.loads(command(observer("session", "resize")))["size"]
+    assert measured == changed and measured != size
+    await_image("resized", lambda im: pixels(im, (215, 225, 240)) > 2000)
+    command(f"stty -F {tty} rows {size[0]} cols {size[1]}")
+    restored = json.loads(command(observer("session", "resize")))["size"]
+    after = snapshot(before["text"])
+    record("resize", {"before": before, "after": after, "sizeBefore": size, "sizeChanged": measured, "sizeRestored": restored}, ["resized.png"])
+    finish(after)
+
+    current = "reconnect"
+    before = snapshot()
+    _, second = begin("reconnect")
+    after = snapshot(before["text"])
+    png("reattached")
+    facts = finish(after)
+    facts["viewerPids"] = [first["viewerPid"], second["viewerPid"]]
+    record("reconnect", facts, ["reattached.png"])
+
+    current = "disconnect"
+    before = snapshot()
+    begin("disconnect")
+    # Fault injection in the isolated VM, not a CDP writer or replacement Viewer.
+    killed = command("ss -K -Hnt dst 127.0.0.1 dport = :9222").strip()
+    assert killed, "kernel did not confirm any closed socket"
+    facts = finish(before, fault=True)
+    facts.update(fault="tcp-disconnect", closedSockets=killed)
+    record("disconnect", facts)
+    command("systemctl stop c-provider.service")
+    machine.fail("pgrep -f '[f]citx5|[i]bus-daemon|[t]tyskk'")
+except Exception as error:
+    if context is not None and not any(row["case"] == current for row in rows):
+        record(current, {"error": type(error).__name__}, status="FAIL")
+    if last_image is not None:
+        raw = (out / last_image).read_bytes()
+        if len(raw) <= 1024 * 1024:
+            print("C_FAILURE_PNG " + last_image + " " + base64.b64encode(raw).decode(), flush=True)
+    raise
+finally:
+    report = evidence.assess(context, rows, out)
+    (out / "assessment.json").write_text(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    (out / "disruptives.jsonl").write_text("".join(json.dumps(row) + "\n" for row in report["cases"] if row["reasons"]))
+    print("C_ASSESSMENT " + json.dumps(report, ensure_ascii=False), flush=True)
+    # Original-ID capture, wrong-target denial, external proofs and independent
+    # R remain NOT_PROVEN. All matching DOM strings cannot erase those gaps.

@@ -1,4 +1,4 @@
-# C's first real integration slice. No A/B build recipes or live configuration.
+# C input/fault collection. No A/B build recipes, live configuration or admission.
 # Assembly follows Meltype#2@d673872 linux/tty/tests/bcon.nix; products are arguments.
 { pkgs, inputs }:
 let
@@ -11,6 +11,19 @@ let
     <style>body{background:rgb(215,225,240)}textarea{font:28px sans-serif;width:600px;height:120px}</style>
     <textarea id="editor" autofocus></textarea>
   '';
+  support = pkgs.linkFarm "c-evidence-support" [
+    { name = "evidence.py"; path = ./evidence.py; }
+    { name = "coverage.json"; path = ./coverage.json; }
+  ];
+  code = pkgs.writeText "c-code.json" (builtins.toJSON {
+    code = builtins.hashString "sha256" (builtins.concatStringsSep "\n"
+      (map builtins.readFile [ ./default.nix ./contract.nix ./suppliers.nix
+        ./test.nix ./test.py ./observer.py ./fixture.py ./evidence.py ./coverage.json
+        ./test-contract.nix ./test_unit.py ]));
+    nixpkgs = toString pkgs.path;
+    chrome = toString pkgs.chromium;
+    system = "x86_64-linux";
+  });
   sourcePins = pkgs.writeText "c-source-pins.json" (builtins.toJSON
     (builtins.mapAttrs (_: value: {
       inherit (value) rev narHash;
@@ -19,7 +32,8 @@ let
     }) inputs));
 in pkgs.testers.runNixOSTest {
   name = "tty-browser-join-smoke";
-  globalTimeout = 240;
+  # The additional bounded scenarios extend coverage, not a prior timeout workaround.
+  globalTimeout = 420;
   extraPythonPackages = p: [ p.pillow ];
   nodes.machine = { ... }: {
     virtualisation.memorySize = 3072;
@@ -27,9 +41,20 @@ in pkgs.testers.runNixOSTest {
     hardware.graphics.enable = true;
     services.dbus.enable = true;
     fonts.packages = [ pkgs.noto-fonts-cjk-sans ];
-    environment.systemPackages = [ viewer input terminal python pkgs.kbd pkgs.procps ];
+    environment.systemPackages = [ viewer input terminal python pkgs.kbd pkgs.procps pkgs.iproute2 ];
     environment.etc."bcon/config.toml".text = "[terminal]\nime = false\n";
     environment.etc."c-source-pins.json".source = sourcePins;
+    environment.etc."c-code.json".source = code;
+    environment.etc."c-observer.py".source = ./observer.py;
+    environment.etc."c-fixture.py".source = ./fixture.py;
+    systemd.services.c-provider = {
+      # Starts only in this isolated test after the ordinary-input scenario.
+      serviceConfig = {
+        RuntimeDirectory = "c-provider";
+        ExecStart = "${python}/bin/python3 /etc/c-fixture.py --state-dir /run/c-provider --port 8031";
+        Restart = "no";
+      };
+    };
     services.logind.settings.Login = { NAutoVTs = 1; ReserveVT = 1; };
     systemd.services."getty@tty2".enable = false;
     users.groups.c-browser = {};
@@ -79,5 +104,8 @@ in pkgs.testers.runNixOSTest {
       };
     };
   };
-  testScript = builtins.readFile ./test.py;
+  testScript = ''
+    import sys
+    sys.path.insert(0, "${support}")
+  '' + builtins.readFile ./test.py;
 }

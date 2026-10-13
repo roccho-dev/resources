@@ -2,9 +2,8 @@ name: tty-browser-join
 on:
   pull_request:
     paths: ['verification/tty-browser-join/**', 'docs/split-tty-browser-join.md', '.github/workflows/tty-browser-join.yml', 'nixos/flake.lock']
-  push:
-    branches: ['split/tty-browser-join-20261013']
-    paths: ['verification/tty-browser-join/**', 'docs/split-tty-browser-join.md', '.github/workflows/tty-browser-join.yml', 'nixos/flake.lock']
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
 permissions:
   contents: read
 jobs:
@@ -17,13 +16,18 @@ jobs:
       - name: Parse C code and test rejection without upstream builds
         run: |
           set -euo pipefail
-          python3 -c "import ast,pathlib; ast.parse(pathlib.Path('verification/tty-browser-join/test.py').read_text())"
+          python3 -c "import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('verification/tty-browser-join').glob('*.py')]"
+          python3 -m unittest discover -s verification/tty-browser-join -p test_unit.py -v 2>&1 | tee "$RUNNER_TEMP/c-unit.log"
+          git rev-parse HEAD > "$RUNNER_TEMP/c-checkout.txt"
           for file in verification/tty-browser-join/*.nix; do nix-instantiate --parse "$file" >/dev/null; done
           nix-instantiate --eval --strict --json verification/tty-browser-join/test-contract.nix | tee "$RUNNER_TEMP/c-intake.json"
       - uses: actions/upload-artifact@v4
         with:
           name: c-intake-${{ github.sha }}
-          path: ${{ runner.temp }}/c-intake.json
+          path: |
+            ${{ runner.temp }}/c-intake.json
+            ${{ runner.temp }}/c-unit.log
+            ${{ runner.temp }}/c-checkout.txt
           if-no-files-found: error
   ordinary-input-smoke-not-closure:
     needs: intake-unit-only
@@ -47,4 +51,6 @@ jobs:
             ${{ runner.temp }}/c-smoke.log
             ${{ runner.temp }}/c-smoke/*.png
             ${{ runner.temp }}/c-smoke/raws.jsonl
+            ${{ runner.temp }}/c-smoke/disruptives.jsonl
+            ${{ runner.temp }}/c-smoke/*.json
           if-no-files-found: error
