@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Synthetic predicate/fault tests and local fixture HTTP. Not VM/E2E evidence."""
+import ast
 import copy
 import hashlib
 import json
@@ -338,8 +339,59 @@ class FixtureTests(unittest.TestCase):
                 self.assertEqual(result["proposals"][1]["id"], "typed-B")
                 self.assertEqual(json.loads((state / "requests.jsonl").read_text())["query"], query)
                 self.assertEqual(len((state / "responses.jsonl").read_text().splitlines()), 1)
+                observed = json.loads((state / "responses.jsonl").read_text())
+                self.assertEqual(json.loads(observed["body"]), result)
+                self.assertEqual(hashlib.sha256(observed["body"].encode()).hexdigest(), observed["sha256"])
             finally:
                 instance.shutdown(); instance.server_close(); thread.join(2)
+
+
+class DriverBoundaryTests(unittest.TestCase):
+    def function(self, name, **values):
+        nodes = ast.parse((ROOT / "test.py").read_text()).body
+        node = next(n for n in nodes if isinstance(n, ast.FunctionDef) and n.name == name)
+        space = {"hashlib": hashlib, "json": json, "evidence": e, **values}
+        exec(compile(ast.Module(body=[node], type_ignores=[]), str(ROOT / "test.py"), "exec"), space)
+        return space[name]
+
+    def test_missing_session_fails_before_terminal_access(self):
+        for name, args in (("await_image", ("image", lambda _: True)), ("finish", ({},))):
+            with self.subTest(name=name), self.assertRaisesRegex(AssertionError, "not started"):
+                self.function(name, trial="")(*args)
+
+    def test_selection_correlates_original_id_not_label(self):
+        query = {"generation": 4, "raw": "u"}
+        candidates = [fixture.candidate("A", "same"), fixture.candidate("B", "same")]
+        body = json.dumps({**query, "proposals": candidates})
+        response = {"query": query, "body": body, "sha256": hashlib.sha256(body.encode()).hexdigest()}
+        selection = {**query, "proposal": candidates[1]}
+        fn = self.function("selection_facts")
+        self.assertEqual(fn([selection], [response])["selected"]["id"], "B")
+        for selections, responses in (([], [response]), ([selection, selection], [response]),
+                ([selection], []), ([selection], [response, response]),
+                ([{**selection, "generation": 3}], [response]),
+                ([{**selection, "proposal": {**candidates[1], "id": "unknown"}}], [response]),
+                ([selection], [{**response, "sha256": "0" * 64}])):
+            with self.subTest(selections=selections), self.assertRaises(AssertionError): fn(selections, responses)
+
+    def test_all_vm_cases_required_without_inventing_external_acceptance(self):
+        cases = [{"case": n, "status": "CONSISTENT" if s["scope"] == "vm" else "NOT_PROVEN",
+            "reasons": [] if s["scope"] == "vm" else ["missing"]} for n, s in e.catalog()["cases"].items()]
+        fn = self.function("require_vm_cases")
+        required = fn({"errors": [], "cases": cases})
+        self.assertEqual(len(required), 16)
+        for name in required:
+            bad = copy.deepcopy(cases)
+            next(c for c in bad if c["case"] == name).update(status="NOT_PROVEN", reasons=["missing"])
+            with self.subTest(case=name), self.assertRaises(AssertionError): fn({"errors": [], "cases": bad})
+        with self.assertRaises(AssertionError): fn({"errors": ["bad-context"], "cases": cases})
+
+    def test_evidence_module_available_to_static_checker(self):
+        text = (ROOT / "test.nix").read_text()
+        self.assertIn("python3Packages.toPythonModule", text)
+        self.assertIn("extraPythonPackages = p: [ p.pillow support ]", text)
+        self.assertNotIn("sys.path.insert", text)
+        self.assertNotIn("skipTypeCheck", text)
 
 
 if __name__ == "__main__":

@@ -11,10 +11,13 @@ let
     <style>body{background:rgb(215,225,240)}textarea{font:28px sans-serif;width:600px;height:120px}</style>
     <textarea id="editor" autofocus></textarea>
   '';
-  support = pkgs.linkFarm "c-evidence-support" [
-    { name = "evidence.py"; path = ./evidence.py; }
-    { name = "coverage.json"; path = ./coverage.json; }
-  ];
+  # A real Python module is visible to both the test driver's static checker
+  # and runtime. Do not bypass type checking or inject a runtime-only sys.path.
+  support = pkgs.python3Packages.toPythonModule (pkgs.runCommand "c-evidence-support" {} ''
+    mkdir -p "$out/${pkgs.python3.sitePackages}"
+    cp ${./evidence.py} "$out/${pkgs.python3.sitePackages}/evidence.py"
+    cp ${./coverage.json} "$out/${pkgs.python3.sitePackages}/coverage.json"
+  '');
   code = pkgs.writeText "c-code.json" (builtins.toJSON {
     code = builtins.hashString "sha256" (builtins.concatStringsSep "\n"
       (map builtins.readFile [ ./default.nix ./contract.nix ./suppliers.nix ./pins.json
@@ -34,7 +37,7 @@ in pkgs.testers.runNixOSTest {
   name = "tty-browser-join-smoke";
   # The additional bounded scenarios extend coverage, not a prior timeout workaround.
   globalTimeout = 420;
-  extraPythonPackages = p: [ p.pillow ];
+  extraPythonPackages = p: [ p.pillow support ];
   nodes.machine = { ... }: {
     virtualisation.memorySize = 3072;
     virtualisation.cores = 2;
@@ -104,8 +107,5 @@ in pkgs.testers.runNixOSTest {
       };
     };
   };
-  testScript = ''
-    import sys
-    sys.path.insert(0, "${support}")
-  '' + builtins.readFile ./test.py;
+  testScript = builtins.readFile ./test.py;
 }

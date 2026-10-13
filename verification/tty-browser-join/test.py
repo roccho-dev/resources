@@ -15,7 +15,7 @@ out = Path(machine.out_dir)
 rows = []
 context = None
 current = "ordinary"
-trial = None
+trial: str = ""
 last_image = None
 
 
@@ -57,6 +57,7 @@ def pixels(image, color):
 
 
 def await_image(name, predicate):
+    assert trial, "test session has not started"
     until = time.monotonic() + 15
     while time.monotonic() < until:
         status, _ = machine.execute("test -e /run/c-proof/" + trial + ".exit", timeout=5)
@@ -80,7 +81,7 @@ def record(name, facts, images=(), status="PASS"):
     print("C_OBSERVATION " + json.dumps(row, ensure_ascii=False), flush=True)
 
 
-def begin(name, mode=None):
+def begin(name, mode=None, websocket=None, expect_ready=True):
     global trial
     trial = name
     prefix = "/run/c-proof/" + name
@@ -88,17 +89,21 @@ def begin(name, mode=None):
         put("/run/c-provider/mode", mode)
         command("rm -f /run/c-provider/held /run/c-provider/release; : > /run/c-provider/requests.jsonl; : > /run/c-provider/responses.jsonl")
     env = "MELTYPE_PROPOSAL_URL=http://127.0.0.1:8031/proposal " if mode else ""
-    script = (f"printf %s $$ > {prefix}.parent\nstty -g > {prefix}.before\n"
-        + env + 'meltype-tty --raw-text -- cdp-tty "$(cat /run/c-proof/ws)"'
-        + f" 2>{prefix}.errors\nrc=$?\nstty -g > {prefix}.after\nprintf %s \"$rc\" > {prefix}.exit\n")
+    target = shlex.quote(websocket) if websocket is not None else '"$(cat /run/c-proof/ws)"'
+    script = (f"umask 077\nprintf %s $$ > {prefix}.parent\nstty -g > {prefix}.before\n"
+        + env + 'meltype-tty --raw-text --selection-fd 3 -- cdp-tty ' + target
+        + f" 3>>{prefix}.selection.jsonl 2>{prefix}.errors\nrc=$?\nstty -g > {prefix}.after\nprintf %s \"$rc\" > {prefix}.exit\n")
     put(prefix + ".trial", script)
     machine.send_chars("bash " + prefix + ".trial\n")
+    if not expect_ready:
+        return None, None
     image = await_image(name + "-before", lambda im: pixels(im, (215, 225, 240)) > 2000)
     info = json.loads(command(observer("session", name)))
     return image, info
 
 
 def finish(before, *, fault=False):
+    assert trial, "test session has not started"
     prefix = "/run/c-proof/" + trial
     if not fault:
         machine.send_key("ctrl-q")
@@ -122,6 +127,32 @@ def finish(before, *, fault=False):
 def offered():
     wait("test -s /run/c-provider/responses.jsonl")
     return [json.loads(line) for line in command("cat /run/c-provider/responses.jsonl").splitlines()]
+
+
+def selection_facts(selections, responses):
+    assert len(selections) == 1, "one original product selection is required"
+    selected = selections[0]
+    query = {key: selected[key] for key in ("generation", "raw")}
+    matching = [response for response in responses if response["query"] == query]
+    assert len(matching) == 1, "selection response is missing or ambiguous"
+    response = matching[0]
+    body = response["body"]
+    assert hashlib.sha256(body.encode("utf-8")).hexdigest() == response["sha256"]
+    supplied = json.loads(body)
+    assert {key: supplied[key] for key in ("generation", "raw")} == query
+    facts = {"offered": supplied["proposals"], "selected": selected["proposal"],
+        "query": query, "selectedQuery": query, "effectCount": 1, "capture": "B-original-selection"}
+    assert evidence.facts_valid({"kind": "selection"}, facts), "invalid original selected ID"
+    return facts
+
+
+def require_vm_cases(report):
+    required = {name for name, spec in evidence.catalog()["cases"].items() if spec["scope"] == "vm"}
+    checked = {case["case"]: case for case in report["cases"]}
+    failures = sorted(name for name in required
+        if name not in checked or checked[name]["status"] != "CONSISTENT" or checked[name]["reasons"])
+    assert not report["errors"] and not failures, {"errors": report["errors"], "vm": failures}
+    return sorted(required)
 
 
 try:
@@ -195,7 +226,25 @@ try:
         png(name + "-after")
         record(name, {"before": before, "after": after, "preeditText": preedit["text"], "input": "vm-keyboard",
             "provider": "C-local-fixture", "responses": offered()}, [name + "-after.png"])
+        if name == "typed":
+            # Product writes its existing original selection through the caller's
+            # explicit private fd. DOM observation is a distinct receipt.
+            raw_selection = command("cat /run/c-proof/typed.selection.jsonl")
+            selections = [json.loads(line) for line in raw_selection.splitlines()]
+            selected = selection_facts(selections, offered())
+            (out / "B-original-selection.jsonl").write_text(raw_selection)
+            record("typed-id", selected, ["B-original-selection.jsonl", "typed-after.png"])
         finish(after)
+
+    current = "wrong-target"
+    before = snapshot()
+    attempted = "0" * 32 if before["target"] != "0" * 32 else "1" * 32
+    original_ws = command("cat /run/c-proof/ws").strip()
+    bad_ws = original_ws.rsplit("/", 1)[0] + "/" + attempted
+    begin("wrong-target", websocket=bad_ws, expect_ready=False)
+    facts = finish(before, fault=True)
+    facts.update(attemptedTarget=attempted, refused=True)
+    record("wrong-target", facts)
 
     current = "resize"
     before = snapshot()
@@ -246,5 +295,8 @@ finally:
     (out / "assessment.json").write_text(json.dumps(report, ensure_ascii=False, sort_keys=True))
     (out / "disruptives.jsonl").write_text("".join(json.dumps(row) + "\n" for row in report["cases"] if row["reasons"]))
     print("C_ASSESSMENT " + json.dumps(report, ensure_ascii=False), flush=True)
-    # Original-ID capture, wrong-target denial, external proofs and independent
-    # R remain NOT_PROVEN. All matching DOM strings cannot erase those gaps.
+    # Every declared VM observation is mandatory. External provider/physical/
+    # review evidence stays NOT_PROVEN, not fabricated from a VM success.
+    verified_vm = require_vm_cases(report)
+    print("C_VM_RESULT " + json.dumps({"cases": verified_vm, "status": "PASS",
+        "fullAcceptance": "NOT_PROVEN"}), flush=True)

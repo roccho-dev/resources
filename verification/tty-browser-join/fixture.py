@@ -79,7 +79,7 @@ def server(state: Path, port=0):
                         raise ValueError("fixture-release-missing")
                 with (state / "responses.jsonl").open("a") as log:
                     log.write(json.dumps({"mode": mode, "query": query,
-                        "sha256": hashlib.sha256(body).hexdigest()}, ensure_ascii=False) + "\n")
+                        "sha256": hashlib.sha256(body).hexdigest(), "body": body.decode("utf-8")}, ensure_ascii=False) + "\n")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
