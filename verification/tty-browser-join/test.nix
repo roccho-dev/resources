@@ -1,6 +1,6 @@
 # C input/fault collection. No A/B build recipes, live configuration or admission.
 # Assembly follows Meltype#2@d673872 linux/tty/tests/bcon.nix; products are arguments.
-{ pkgs, inputs }:
+{ pkgs, inputs, evidenceRun }:
 let
   viewer = inputs.A.package;
   input = inputs.B.package;
@@ -16,16 +16,19 @@ let
   support = pkgs.python3Packages.toPythonModule (pkgs.runCommand "c-evidence-support" {} ''
     mkdir -p "$out/${pkgs.python3.sitePackages}"
     cp ${./evidence.py} "$out/${pkgs.python3.sitePackages}/evidence.py"
+    cp ${./fault.py} "$out/${pkgs.python3.sitePackages}/fault.py"
     cp ${./coverage.json} "$out/${pkgs.python3.sitePackages}/coverage.json"
   '');
   code = pkgs.writeText "c-code.json" (builtins.toJSON {
     code = builtins.hashString "sha256" (builtins.concatStringsSep "\n"
       (map builtins.readFile [ ./default.nix ./contract.nix ./suppliers.nix ./pins.json
         ./test.nix ./test.py ./observer.py ./fixture.py ./evidence.py ./coverage.json
-        ./test-contract.nix ./test_unit.py ]));
+        ./test-contract.nix ./test_unit.py ./fault.py ]));
     nixpkgs = toString pkgs.path;
     chrome = toString pkgs.chromium;
     system = "x86_64-linux";
+    inherit evidenceRun;
+    faultSource = builtins.hashFile "sha256" inputs.A.proofSource;
   });
   sourcePins = pkgs.writeText "c-source-pins.json" (builtins.toJSON
     (builtins.mapAttrs (_: value: {
@@ -50,6 +53,14 @@ in pkgs.testers.runNixOSTest {
     environment.etc."c-code.json".source = code;
     environment.etc."c-observer.py".source = ./observer.py;
     environment.etc."c-fixture.py".source = ./fixture.py;
+    environment.etc."c-fault.py".source = ./fault.py;
+    systemd.services.c-unknown-effect = {
+      # Test-only reuse of A's observer. It never launches or changes Chrome.
+      serviceConfig = {
+        ExecStart = "${python}/bin/python3 /etc/c-fault.py --source ${inputs.A.proofSource}";
+        Restart = "no";
+      };
+    };
     systemd.services.c-provider = {
       # Starts only in this isolated test after the ordinary-input scenario.
       serviceConfig = {

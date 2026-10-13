@@ -86,7 +86,7 @@ jobs:
         run: |
           set -euo pipefail
           test -c /dev/kvm
-          nix-build verification/tty-browser-join --argstr packagePath "$RUNNER_TEMP/b-build/Meltype-linux" -o "$RUNNER_TEMP/c-smoke" --show-trace 2>&1 | tee "$RUNNER_TEMP/c-smoke.log"
+          nix-build verification/tty-browser-join --argstr packagePath "$RUNNER_TEMP/b-build/Meltype-linux" --argstr evidenceRun "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" -o "$RUNNER_TEMP/c-smoke" --show-trace 2>&1 | tee "$RUNNER_TEMP/c-smoke.log"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -10,6 +10,7 @@ import shlex
 import time
 from PIL import Image
 import evidence
+import fault
 
 out = Path(machine.out_dir)
 rows = []
@@ -70,7 +71,7 @@ def await_image(name, predicate):
 
 
 def record(name, facts, images=(), status="PASS"):
-    capture = {"case": name, "status": status, "scope": "vm", "context": context, "facts": facts}
+    capture = {"case": name, "status": status, "scope": evidence.catalog()["cases"][name]["scope"], "context": context, "facts": facts}
     path = out / ("capture-" + name + ".json")
     path.write_text(json.dumps(capture, ensure_ascii=False))
     names = [path.name] + list(images)
@@ -281,6 +282,39 @@ try:
     facts.update(fault="tcp-disconnect", closedSockets=killed)
     record("disconnect", facts)
     command("systemctl stop c-provider.service")
+
+    current = "unknown-effect"
+    before = snapshot()
+    command("systemctl start c-unknown-effect.service")
+    wait("test -s /run/c-proof/unknown-transport/ready.json")
+    ready = json.loads(command("cat /run/c-proof/unknown-transport/ready.json"))
+    assert ready["sourceSha256"] == meta["faultSource"]
+    base, _ = begin("unknown-effect", websocket=ready["url"])
+    machine.send_chars("nihongo ")
+    await_image("unknown-effect-candidate", lambda im: pixels(im, (24, 26, 32)) > pixels(base, (24, 26, 32)) + 1000)
+    preedit = snapshot(before["text"])
+    machine.send_key("ret")
+    after = snapshot(before["text"] + "日本語")
+    # The real effect was acknowledged to A's audit, but that response was not
+    # forwarded to the viewer. A/B must exit without replay or reconnection.
+    cleanup = finish(after, fault=True)
+    command("touch /run/c-proof/unknown-transport/stop")
+    wait("test -s /run/c-proof/unknown-transport/result.json")
+    audit = json.loads(command("cat /run/c-proof/unknown-transport/result.json"))
+    errors = command("cat /run/c-proof/unknown-effect.errors")
+    assert fault.valid_result(audit, meta["faultSource"]), audit
+    assert "stage=input-dispatch" in errors and "completion=unknown" in errors, errors
+    assert before["target"] == after["target"] and before["field"] == after["field"]
+    assert before["browserPid"] == after["browserPid"]
+    (out / "unknown-effect-audit.json").write_text(json.dumps(audit, sort_keys=True))
+    (out / "unknown-effect-diagnostic.json").write_text(json.dumps({"stderr": errors}))
+    # Independent means the separate wire observer and read-only DOM channel,
+    # not a different person/actor or an independent merge/admission reviewer.
+    record("unknown-effect", {"positive": [meta["evidenceRun"]], "negative": [meta["evidenceRun"]],
+        "execution": "nixos-vm", "observers": "A-wire-audit-and-read-only-C-DOM",
+        "before": before, "after": after, "preeditText": preedit["text"],
+        "cleanup": cleanup, "audit": audit, "input": "vm-keyboard", "effectCount": 1,
+        "admission": "NOT_PERFORMED"}, ["unknown-effect-audit.json", "unknown-effect-diagnostic.json"])
     machine.fail("pgrep -f '[f]citx5|[i]bus-daemon|[t]tyskk'")
 except Exception as error:
     if context is not None and not any(row["case"] == current for row in rows):
@@ -298,5 +332,7 @@ finally:
     # Every declared VM observation is mandatory. External provider/physical/
     # review evidence stays NOT_PROVEN, not fabricated from a VM success.
     verified_vm = require_vm_cases(report)
+    unknown = next(case for case in report["cases"] if case["case"] == "unknown-effect")
+    assert unknown["status"] == "CONSISTENT", unknown
     print("C_VM_RESULT " + json.dumps({"cases": verified_vm, "status": "PASS",
-        "fullAcceptance": "NOT_PROVEN"}), flush=True)
+        "additionalCI": ["unknown-effect"], "fullAcceptance": "NOT_PROVEN"}), flush=True)

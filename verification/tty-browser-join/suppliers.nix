@@ -26,7 +26,9 @@ else let
     inherit package;
   };
 in builtins.seq verifiedPackage {
-  A = supplied "A" a (import (a.outPath + "/packages/cdp-tty/proof.nix")).out;
+  A = (supplied "A" a (import (a.outPath + "/packages/cdp-tty/proof.nix")).out) // {
+    proofSource = a.outPath + "/verification/cdp-tty/proof.py";
+  };
   B = supplied "B" b (import (b.outPath + "/linux/tty/package.nix") {
     inherit pkgs; packagePath = verifiedPackage;
   });
