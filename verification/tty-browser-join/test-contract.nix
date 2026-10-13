@@ -33,13 +33,14 @@ let
     } == "INVALID_UPSTREAM_INPUT";
     missing_is_rejected = !(builtins.tryEval (contract.require {})).success;
     invalid_is_rejected = !(builtins.tryEval (contract.require (all // { A = "stub"; }))).success;
+    no_artifact_does_not_fetch = state (import ./suppliers.nix {}) == "WAITING_UPSTREAM_EXPORTS";
   };
   failed = builtins.filter (name: !tests.${name}) (builtins.attrNames tests);
 in assert failed == []; {
   gate = "C_INTAKE_UNIT_ONLY";
   cases = builtins.length (builtins.attrNames tests);
   inherit failed;
-  upstream = (contract.inspect (import ./suppliers.nix)).state;
+  upstream = (contract.inspect (import ./suppliers.nix {})).state;
   e2e = "NOT_RUN";
   upstreamAgreement = "NOT_CLAIMED";
 }

@@ -1,5 +1,5 @@
 # Dedicated C test entry. Missing exports fail BEFORE any network/build/VM work.
-{ supplied ? import ./suppliers.nix }:
+{ packagePath ? null, supplied ? import ./suppliers.nix { inherit packagePath; } }:
 let
   inputs = (import ./contract.nix).require supplied;
   # Reuse only the existing package-set lock; do not evaluate own-OCI/windows.

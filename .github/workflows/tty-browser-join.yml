@@ -2,6 +2,9 @@ name: tty-browser-join
 on:
   pull_request:
     paths: ['verification/tty-browser-join/**', 'docs/split-tty-browser-join.md', '.github/workflows/tty-browser-join.yml', 'nixos/flake.lock']
+  push:
+    branches: [proposals]
+    paths: ['verification/tty-browser-join/**', 'docs/split-tty-browser-join.md', '.github/workflows/tty-browser-join.yml', 'nixos/flake.lock']
 env:
   PYTHONDONTWRITEBYTECODE: '1'
 permissions:
@@ -12,6 +15,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
       - name: Parse C code and test rejection without upstream builds
         run: |
@@ -19,36 +25,75 @@ jobs:
           python3 -c "import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('verification/tty-browser-join').glob('*.py')]"
           python3 -m unittest discover -s verification/tty-browser-join -p test_unit.py -v 2>&1 | tee "$RUNNER_TEMP/c-unit.log"
           git rev-parse HEAD > "$RUNNER_TEMP/c-checkout.txt"
+          git rev-parse 'HEAD^{tree}' >> "$RUNNER_TEMP/c-checkout.txt"
+          git archive --format=tar.gz HEAD verification/tty-browser-join docs/split-tty-browser-join.md .github/workflows/tty-browser-join.yml nixos/flake.lock > "$RUNNER_TEMP/c-source.tar.gz"
           for file in verification/tty-browser-join/*.nix; do nix-instantiate --parse "$file" >/dev/null; done
           nix-instantiate --eval --strict --json verification/tty-browser-join/test-contract.nix | tee "$RUNNER_TEMP/c-intake.json"
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: c-intake-${{ github.sha }}
+          name: c-intake-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             ${{ runner.temp }}/c-intake.json
             ${{ runner.temp }}/c-unit.log
             ${{ runner.temp }}/c-checkout.txt
+            ${{ runner.temp }}/c-source.tar.gz
           if-no-files-found: error
   ordinary-input-smoke-not-closure:
     needs: intake-unit-only
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
         with:
           extra_nix_config: |
+            extra-experimental-features = nix-command flakes
             system-features = nixos-test kvm big-parallel
+      - name: Read and verify the pinned B producer artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          pins=verification/tty-browser-join/pins.json
+          repository="$(jq -r '.B.owner + "/" + .B.repo' "$pins")"
+          id="$(jq -r .B.artifact.id "$pins")"
+          api="https://api.github.com/repos/$repository/actions/artifacts/$id"
+          curl -fsSL --max-time 60 -H "Authorization: Bearer $GH_TOKEN" "$api" -o "$RUNNER_TEMP/b-artifact.json"
+          jq -e --slurpfile pins "$pins" '
+            .id == $pins[0].B.artifact.id and .expired == false and
+            .workflow_run.id == $pins[0].B.artifact.run and
+            .workflow_run.head_sha == $pins[0].B.rev and
+            .digest == ("sha256:" + $pins[0].B.artifact.sha256)
+          ' "$RUNNER_TEMP/b-artifact.json"
+          curl -fsSL --max-time 60 -H "Authorization: Bearer $GH_TOKEN" "$api/zip" -o "$RUNNER_TEMP/b-owner.zip"
+          printf '%s  %s\n' "$(jq -r .B.artifact.sha256 "$pins")" "$RUNNER_TEMP/b-owner.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/b-owner.zip" -d "$RUNNER_TEMP/b-owner"
+          member="$RUNNER_TEMP/b-owner/$(jq -r .B.artifact.member "$pins")"
+          printf '%s  %s\n' "$(jq -r .B.artifact.memberSha256 "$pins")" "$member" | sha256sum -c -
+          unzip -q "$member" -d "$RUNNER_TEMP/b-build"
+          package="$RUNNER_TEMP/b-build/Meltype-linux"
+          test "$(nix hash path --type sha256 "$package")" = "$(jq -r .B.artifact.packageNarHash "$pins")"
+          printf '%s  %s\n' "$(jq -r .B.artifact.nativeSha256 "$pins")" "$package/libMeltypeNative.so" | sha256sum -c -
+          printf '%s  %s\n' "$(jq -r .B.artifact.mozcSha256 "$pins")" "$package/mozc/meltype_mozc_helper" | sha256sum -c -
       - name: Require actual upstreams; never skip or replace missing products
         run: |
           set -euo pipefail
-          nix-build verification/tty-browser-join -o "$RUNNER_TEMP/c-smoke" --show-trace 2>&1 | tee "$RUNNER_TEMP/c-smoke.log"
+          test -c /dev/kvm
+          nix-build verification/tty-browser-join --argstr packagePath "$RUNNER_TEMP/b-build/Meltype-linux" -o "$RUNNER_TEMP/c-smoke" --show-trace 2>&1 | tee "$RUNNER_TEMP/c-smoke.log"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: c-smoke-${{ github.sha }}
+          name: c-smoke-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             ${{ runner.temp }}/c-smoke.log
+            ${{ runner.temp }}/b-artifact.json
             ${{ runner.temp }}/c-smoke/*.png
             ${{ runner.temp }}/c-smoke/raws.jsonl
             ${{ runner.temp }}/c-smoke/disruptives.jsonl

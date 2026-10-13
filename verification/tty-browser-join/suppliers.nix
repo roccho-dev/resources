@@ -1,11 +1,35 @@
-# C-side expectations, NOT A/B acceptance or product/version authority.
-# Related: https://github.com/roccho-dev/adrs/issues/630#issuecomment-6139949993
-# Fill only after an owner-provided export and its exact source are confirmed.
-# Each value: { package = <existing Nix derivation>; rev = <source commit>;
-#               narHash = <source NAR hash>; }
-# No mutable branch, local ZIP/path, recreated package recipe, or test substitute.
-{
-  A = null; # ops PR534: bin/cdp-tty, attach-only, TTY/Kitty, no input retry.
-  B = null; # Meltype PR3: bin/meltype-tty, existing Core/Mozc, --raw-text -- child.
-  terminal = null; # Existing bcon Producer export; C does not copy its recipe.
+# C consumes existing producer definitions, never copies their build recipes.
+# A package input is accepted only by its entire fixed NAR hash. The temporary
+# download location is not an identity or authority; pins.json is the only pin set.
+# No archive means no source fetch, package evaluation or VM launch.
+{ packagePath ? null }:
+if packagePath == null then { A = null; B = null; terminal = null; }
+else let
+  pins = builtins.fromJSON (builtins.readFile ./pins.json);
+  verifiedPackage = builtins.path {
+    path = builtins.toPath packagePath;
+    name = "same-build-meltype";
+    sha256 = pins.B.artifact.packageNarHash;
+  };
+  source = name:
+    let pin = pins.${name};
+    in builtins.fetchTree ({ type = "github"; inherit (pin) owner repo rev; }
+      // (if pin ? narHash then { inherit (pin) narHash; } else {}));
+  a = source "A";
+  b = source "B";
+  terminalSource = source "terminal";
+  # Reuse B's tested package set and the existing terminal producer.
+  pkgs = import (terminalSource.outPath + "/verification/pkgs.nix");
+  supplied = name: src: package: {
+    rev = pins.${name}.rev;
+    inherit (src) narHash;
+    inherit package;
+  };
+in builtins.seq verifiedPackage {
+  A = supplied "A" a (import (a.outPath + "/packages/cdp-tty/proof.nix")).out;
+  B = supplied "B" b (import (b.outPath + "/linux/tty/package.nix") {
+    inherit pkgs; packagePath = verifiedPackage;
+  });
+  terminal = supplied "terminal" terminalSource
+    (pkgs.callPackage (terminalSource.outPath + "/nixos/bcon.nix") {});
 }

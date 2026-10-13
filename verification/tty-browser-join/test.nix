@@ -17,7 +17,7 @@ let
   ];
   code = pkgs.writeText "c-code.json" (builtins.toJSON {
     code = builtins.hashString "sha256" (builtins.concatStringsSep "\n"
-      (map builtins.readFile [ ./default.nix ./contract.nix ./suppliers.nix
+      (map builtins.readFile [ ./default.nix ./contract.nix ./suppliers.nix ./pins.json
         ./test.nix ./test.py ./observer.py ./fixture.py ./evidence.py ./coverage.json
         ./test-contract.nix ./test_unit.py ]));
     nixpkgs = toString pkgs.path;

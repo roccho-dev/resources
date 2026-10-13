@@ -1,0 +1,28 @@
+{
+  "A": {
+    "owner": "roccho-org",
+    "repo": "ops",
+    "rev": "8c53ed3b9bd4efed1c40dd218c36b27f25380923",
+    "narHash": "sha256-sbVQKoWcmC+MdagPFeMSZCHvWCpCvsOHH3BIWRrqJEo="
+  },
+  "B": {
+    "owner": "roccho-dev",
+    "repo": "Meltype",
+    "rev": "bbea8a45c1976ebb19afb5080132e91db60b7d1f",
+    "artifact": {
+      "id": 11798104666,
+      "run": 38370150090,
+      "sha256": "9c8dd70039c1cd5f603ca11ca511309477d1d4efb61ac3685a73e699a3a58b22",
+      "member": "Meltype-linux-test-20261013-0836.zip",
+      "memberSha256": "bc07121a65d2bcfdb25e8841f7553a1ee7b151f4790e04ca8b31cbc25cdb2e11",
+      "packageNarHash": "sha256-jrgTrMyiulvTMTOlHXEORUkjs1merZ7InGRcWtxlvHs=",
+      "nativeSha256": "85a41ad22fde58117bc3e2107ba7833c2dcc8c9d433005d19c8f558e814afce3",
+      "mozcSha256": "28e060a0cadc1405045cb8ae1516e938de143cb8347307be459f6052e7c9fbd9"
+    }
+  },
+  "terminal": {
+    "owner": "roccho-dev",
+    "repo": "resources",
+    "rev": "cfe7483db1658d299965c608a07f17f973fd79f7"
+  }
+}
