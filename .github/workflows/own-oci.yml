@@ -1,0 +1,40 @@
+name: own OCI
+
+on:
+  pull_request:
+    paths:
+      - 'nixos/flake.nix'
+      - 'nixos/flake.lock'
+      - 'nixos/own-oci.nix'
+      - 'nixos/tests/own-oci.nix'
+      - '.github/workflows/own-oci.yml'
+  push:
+    branches: [proposals]
+    paths:
+      - 'nixos/flake.nix'
+      - 'nixos/flake.lock'
+      - 'nixos/own-oci.nix'
+      - 'nixos/tests/own-oci.nix'
+      - '.github/workflows/own-oci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  source-vm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
+      - name: Verify fixed inputs
+        run: |
+          set -euo pipefail
+          nix flake lock ./nixos --update-input windows
+          cat nixos/flake.lock
+          git diff --exit-code -- nixos/flake.lock
+      - name: Build host, production images, and standard VM proof
+        run: nix flake check ./nixos --no-write-lock-file --print-build-logs
