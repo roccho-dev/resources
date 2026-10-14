@@ -3,6 +3,8 @@
 , extendedImage
 , extendedImageName
 , codexVersion
+, nativeProfile
+, nativeProfileNext
 }:
 {
   name = "versapro-own-oci";
@@ -65,10 +67,21 @@
       };
     };
 
+  # The same host platform without any OCI module: Native T is a separate root-owned
+  # Nix profile, not part of system.build.toplevel or an obligatory OCI wrapper.
+  nodes.native = { pkgs, ... }: {
+    virtualisation.memorySize = 1024;
+    virtualisation.diskSize = 8192;
+    virtualisation.cores = 1;
+    virtualisation.writableStore = true;
+    virtualisation.additionalPaths = [ nativeProfile nativeProfileNext ];
+    environment.systemPackages = [ pkgs.nix ];
+  };
+
   testScript = ''
     import shlex
 
-    start_all()
+    machine.start()
     machine.wait_for_unit("docker-versapro-own-oci.service")
     machine.wait_for_open_port(2223)
 
@@ -154,5 +167,35 @@
     assert machine.succeed("docker exec versapro-own-oci cat /home/dev/.ssh/ssh_host_ed25519_key.pub").strip() == before_key
     after_profile = ssh("readlink /nix/var/nix/profiles/own-dev").strip()
     assert after_profile != before_profile
+
+    # Synthetic Native-only VM: independent T generations without a NixOS switch or OCI.
+    # The profile closures are injected solely into this disposable VM store; no auth is read.
+    existing_oci_image = machine.succeed("docker inspect -f '{{.Image}}' versapro-own-oci").strip()
+    native.start()
+    native.wait_for_unit("multi-user.target")
+    before_system = native.succeed("readlink -f /run/current-system").strip()
+    native.succeed("! systemctl list-unit-files | grep -q docker-versapro-own-oci")
+    native.succeed("! command -v docker; ! test -e /run/current-system/sw/bin/codex")
+    native.succeed("test -x ${nativeProfile}/bin/codex; test -x ${nativeProfileNext}/bin/codex")
+    native.succeed("test ! -e ${nativeProfile}/bin/hello; test -x ${nativeProfileNext}/bin/hello")
+
+    p = "/nix/var/nix/profiles/host-native-tool"
+    native.succeed(f"nix-env --profile {p} --set ${nativeProfile}")
+    native.succeed(f'test "$(readlink -f {p})" = "${nativeProfile}"')
+    native.succeed(f'test "$({p}/bin/codex --version)" = "codex-cli ${codexVersion}"')
+    generation0 = native.succeed(f"readlink {p}").strip()
+    native.succeed(f"nix-env --profile {p} --set ${nativeProfileNext}")
+    native.succeed(f'test "$(readlink -f {p})" = "${nativeProfileNext}"; {p}/bin/hello >/dev/null')
+    generation1 = native.succeed(f"readlink {p}").strip()
+    assert generation1 != generation0
+
+    native.succeed(f"nix-env --profile {p} --rollback")
+    native.succeed(f'test "$(readlink {p})" = "{generation0}"; ! test -e {p}/bin/hello')
+    native.succeed(f"nix-env --profile {p} --set ${nativeProfileNext}")
+    native.succeed(f"nix-store --check-validity ${nativeProfileNext}; test -x {p}/bin/hello")
+    native.succeed(f'test "$(readlink -f /run/current-system)" = "{before_system}"')
+    # Native profile selection must not replace this other VM node's fixed OCI.
+    assert machine.succeed("docker inspect -f '{{.Image}}' versapro-own-oci").strip() == existing_oci_image
+    native.shutdown()
   '';
 }
