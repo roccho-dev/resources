@@ -1,5 +1,6 @@
 { defaultImage
 , defaultImageName
+, defaultProfile
 , containerName ? "versapro-own-oci"
 }:
 { config, lib, pkgs, ... }:
@@ -28,6 +29,33 @@ let
       ${lib.escapeShellArg cfg.imageName} \
       /bin/own-nix-seed
   '';
+  # The producer's B carries no apps; its T (the own tool profile) is selected natively as own-dev. The host already
+  # holds T (it is in this system's closure), so it is copied into the OCI's own nix-daemon with standard `nix copy`
+  # and set with native nix-env. It runs only in a freshly started OCI (a changed T restarts the container), keeps
+  # every earlier generation as rollback, and never touches home/work/auth.
+  daemonSocket = "/var/lib/docker/volumes/${nixVolume}/_data/var/nix/daemon-socket/socket";
+  selectProfile = pkgs.writeShellScript "${containerName}-profile" ''
+    set -eu
+    want=${cfg.profile}
+    for _ in $(${pkgs.coreutils}/bin/seq 180); do
+      if [ -S ${daemonSocket} ] && ${docker}/bin/docker exec ${containerName} test -S /nix/var/nix/daemon-socket/socket; then
+        break
+      fi
+      ${pkgs.coreutils}/bin/sleep 1
+    done
+    [ -S ${daemonSocket} ] || { echo "own-profile: ${containerName} nix-daemon socket is absent" >&2; exit 1; }
+    current=$(${docker}/bin/docker exec ${containerName} readlink -f /nix/var/nix/profiles/own-dev 2>/dev/null || true)
+    if [ "$current" = "$want" ]; then
+      echo "own-profile: selected=$want unchanged"
+      exit 0
+    fi
+    ${config.nix.package}/bin/nix --extra-experimental-features nix-command \
+      copy --no-check-sigs --to unix://${daemonSocket} "$want"
+    ${docker}/bin/docker exec -u 0 -e NIX_REMOTE=daemon ${containerName} \
+      nix-env --profile /nix/var/nix/profiles/own-dev --set "$want"
+    test "$(${docker}/bin/docker exec ${containerName} readlink -f /nix/var/nix/profiles/own-dev)" = "$want"
+    echo "own-profile: selected=$want"
+  '';
 in
 {
   options.services.versaproOwnOci = {
@@ -43,6 +71,12 @@ in
       type = lib.types.str;
       default = defaultImageName;
       description = "Name and tag contained in imageFile.";
+    };
+
+    profile = lib.mkOption {
+      type = lib.types.pathInStore;
+      default = defaultProfile;
+      description = "Fixed own tool profile (T) selected as own-dev in the OCI's own store.";
     };
 
     authorizedKey = lib.mkOption {
@@ -100,9 +134,23 @@ in
       environment = lib.optionalAttrs (fallbackAuthorizedKey != null) {
         OWN_AUTHORIZED_KEY = fallbackAuthorizedKey;
       };
+      # A different T recreates the OCI, so selection never swaps tools under running sessions.
+      restartTriggers = [ cfg.profile ];
       serviceConfig = {
         EnvironmentFile = lib.optional (cfg.authorizedKeyFile != null) cfg.authorizedKeyFile;
         ExecStartPre = lib.mkAfter [ seed ];
+      };
+    };
+
+    systemd.services."${containerName}-profile" = {
+      description = "Select the declared own tool profile in ${containerName}";
+      after = [ "${serviceName}.service" ];
+      bindsTo = [ "${serviceName}.service" ];
+      wantedBy = [ "${serviceName}.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = selectProfile;
       };
     };
   };
