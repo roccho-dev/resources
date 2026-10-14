@@ -15,6 +15,10 @@
         extra = [ pkgs.hello ];
         tag = "resources-next";
       };
+      # Candidate Native T comes from the same fixed windows producer, but is NOT installed
+      # in the NixOS system profile or owned by the OCI image lifecycle.
+      nativeT0 = defaultOwn.profile;
+      nativeT1 = extendedOwn.profile;
       ownModule = import ./own-oci.nix {
         defaultImage = defaultOwn.image;
         defaultImageName = "ghcr.io/roccho-dev/windows-own:nix";
@@ -34,6 +38,11 @@
     {
       nixosModules."versapro-own-oci" = ownModule;
       nixosConfigurations.versapro = versapro;
+      # SOURCE candidates only; envs acceptance and actual native selection stay separate.
+      packages.${system} = {
+        native-tool-candidate = nativeT0;
+        native-tool-next-fixture = nativeT1;
+      };
 
       checks.${system} = {
         versapro-own-oci-host = versapro.config.system.build.toplevel;
@@ -43,6 +52,8 @@
           inherit pkgs ownModule extendedImageName;
           extendedImage = extendedOwn.image;
           codexVersion = windows.releaseVersions.codex;
+          nativeProfile = nativeT0;
+          nativeProfileNext = nativeT1;
         });
       };
     };
