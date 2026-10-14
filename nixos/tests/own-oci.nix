@@ -120,7 +120,7 @@
         # The TCP port and systemd unit may precede sshd in a newly loaded OCI.
         # Retry only a strict read-only probe, never repeat a switch or effect.
         for _ in range(45):
-            status, _out = machine.execute(f"{ssh_base} true", check_return=False)
+            status, _out = machine.execute(f"{ssh_base} true")
             if status == 0:
                 return
             time.sleep(1)
