@@ -2,22 +2,30 @@
   description = "Minimal BIOS SSD bootstrap and own OCI for VersaPro";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/2efa67fd26b6df417c33e4603185c701f260dd83";
-  inputs.windows.url = "github:roccho-dev/windows/d8e980b3dcf502dd2cda3e1d81b92147aad8e0f9";
+  inputs.windows.url = "github:roccho-dev/windows/1ac80060979feec04ad9a2eeff0b91b766cec20f";
 
   outputs = { self, nixpkgs, windows, ... }:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
       mkOwn = windows.lib.${system}.mkOwn;
-      defaultOwn = mkOwn { };
-      extendedImageName = "ghcr.io/roccho-dev/windows-own:resources-next";
+      # This OCI's fixed Pi target (names only): no key, ciphertext or Go use follows from declaring it.
+      piTarget = {
+        bindingId = "opencode-go.versapro-own-oci";
+        target = { repository = "roccho-dev/resources"; host = "versapro-own-oci"; kind = "pi_auth_command"; };
+        identity = "/work/repos/.auth/roccho-dev/age/versapro-own-oci.key";
+        agentDir = "/home/dev/.pi/agent-versapro-own-oci";
+      };
+      # B (image) carries no apps; T (profile) is Codex, Claude, the target-bound Pi and the fixed helper.
+      defaultOwn = mkOwn { inherit piTarget; };
       extendedOwn = mkOwn {
+        inherit piTarget;
         extra = [ pkgs.hello ];
-        tag = "resources-next";
       };
       ownModule = import ./own-oci.nix {
         defaultImage = defaultOwn.image;
         defaultImageName = "ghcr.io/roccho-dev/windows-own:nix";
+        defaultProfile = defaultOwn.profile;
       };
       versapro = nixpkgs.lib.nixosSystem {
         inherit system;
@@ -38,11 +46,14 @@
       checks.${system} = {
         versapro-own-oci-host = versapro.config.system.build.toplevel;
         own-image = defaultOwn.image;
-        own-image-extended = extendedOwn.image;
+        own-profile = defaultOwn.profile;
+        own-profile-extended = extendedOwn.profile;
         own-oci-vm = pkgs.testers.runNixOSTest (import ./tests/own-oci.nix {
-          inherit pkgs ownModule extendedImageName;
-          extendedImage = extendedOwn.image;
+          inherit pkgs ownModule;
+          extendedProfile = extendedOwn.profile;
           codexVersion = windows.releaseVersions.codex;
+          piAgentDir = piTarget.agentDir;
+          piBindingId = piTarget.bindingId;
         });
       };
     };
