@@ -80,6 +80,7 @@
 
   testScript = ''
     import shlex
+    import time
 
     machine.start()
     machine.wait_for_unit("docker-versapro-own-oci.service")
@@ -115,7 +116,18 @@
     def ssh_fails(command):
         return machine.fail(f"{ssh_base} {shlex.quote(strict(command))}")
 
+    def ssh_ready():
+        # The TCP port and systemd unit may precede sshd in a newly loaded OCI.
+        # Retry only a strict read-only probe, never repeat a switch or effect.
+        for _ in range(45):
+            status, _out = machine.execute(f"{ssh_base} true", check_return=False)
+            if status == 0:
+                return
+            time.sleep(1)
+        raise AssertionError("own OCI SSH was not actually ready")
+
     pin_host_key()
+    ssh_ready()
 
     # Prove an earlier failed SSH assertion cannot be hidden by a later success.
     ssh_fails('test "$(id -u)" = 9999; test "$HOME" = /home/dev')
@@ -151,6 +163,7 @@
     after_restart_id = machine.succeed("docker inspect -f '{{.Id}}' versapro-own-oci").strip()
     assert after_restart_id != before_id
     pin_host_key()
+    ssh_ready()
     ssh('test "$(cat ~/.own-oci-home)" = home; test "$(cat /work/repos/own-oci-test/marker)" = work')
     assert machine.succeed("docker exec versapro-own-oci cat /home/dev/.ssh/ssh_host_ed25519_key.pub").strip() == before_key
 
@@ -162,6 +175,7 @@
     extended_id = machine.succeed("docker inspect -f '{{.Id}}' versapro-own-oci").strip()
     assert extended_id != after_restart_id
     pin_host_key()
+    ssh_ready()
     ssh('test "$(cat ~/.own-oci-home)" = home; test "$(cat /work/repos/own-oci-test/marker)" = work')
     ssh('test "$(codex --version)" = "codex-cli ${codexVersion}"; hello >/dev/null')
     assert machine.succeed("docker exec versapro-own-oci cat /home/dev/.ssh/ssh_host_ed25519_key.pub").strip() == before_key
