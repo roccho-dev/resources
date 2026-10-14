@@ -2,7 +2,7 @@
   description = "Minimal BIOS SSD bootstrap and own OCI for VersaPro";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/2efa67fd26b6df417c33e4603185c701f260dd83";
-  inputs.windows.url = "github:roccho-dev/windows/d8e980b3dcf502dd2cda3e1d81b92147aad8e0f9";
+  inputs.windows.url = "github:roccho-dev/windows/355b038bcbe2b24a8ad0121f79b7cc4c72b76b3f";
 
   outputs = { self, nixpkgs, windows, ... }:
     let
