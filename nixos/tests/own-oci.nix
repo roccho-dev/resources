@@ -33,7 +33,10 @@
         authorizedKeyFile = "/run/versapro-own-oci-test/authorized-key.env";
       };
 
-      environment.systemPackages = [ pkgs.openssh pkgs.jq ];
+      environment.systemPackages = [ pkgs.openssh pkgs.jq pkgs.nix ];
+      # CI-only: keep both exact Tool closures in this VM's *host* store for a
+      # synthetic import to the B-only OCI. Neither is a NixOS systemPackage.
+      virtualisation.additionalPaths = [ nativeProfile nativeProfileNext ];
       virtualisation.memorySize = 4096;
       virtualisation.diskSize = 32768;
       virtualisation.cores = 2;
@@ -133,8 +136,21 @@
     ssh_fails('test "$(id -u)" = 9999; test "$HOME" = /home/dev')
 
     ssh('test "$(id -u)" = 1000; test "$HOME" = /home/dev; test "$NIX_REMOTE" = daemon')
-    ssh('test "$(codex --version)" = "codex-cli ${codexVersion}"; ! command -v hello')
+    # The new B-only OCI starts admin-ready, but MUST NOT silently select Tool.
+    ssh("! test -e /nix/var/nix/profiles/own-dev; ! test -L /nix/var/nix/profiles/own-dev; ! test -x /bin/codex")
     ssh("nix store ping --store daemon >/dev/null; ! touch /nix/store/dev-write")
+    # The only selector is this *disposable VM fixture*: import exact immutable Tool
+    # closures independently of B, then explicitly select T0 using native Nix.
+    machine_succeed(
+        "set -o pipefail; "
+        "nix-store --export $(nix-store --query --requisites ${nativeProfile} ${nativeProfileNext}) | "
+        "docker exec -i -e NIX_REMOTE=daemon versapro-own-oci /bin/nix-store --import >/dev/null"
+    )
+    machine_succeed(
+        "docker exec -e NIX_REMOTE=daemon versapro-own-oci /bin/nix-env "
+        "--profile /nix/var/nix/profiles/own-dev --set ${nativeProfile}"
+    )
+    ssh('test "$(codex --version)" = "codex-cli ${codexVersion}"; ! command -v hello')
 
     mount_probe = (
         "mounts=$(docker inspect --format '{{range .Mounts}}{{println .Name .Destination .RW}}{{end}}' versapro-own-oci); "
@@ -177,10 +193,22 @@
     pin_host_key()
     ssh_ready()
     ssh('test "$(cat ~/.own-oci-home)" = home; test "$(cat /work/repos/own-oci-test/marker)" = work')
-    ssh('test "$(codex --version)" = "codex-cli ${codexVersion}"; hello >/dev/null')
+    # B image replacement must retain the selected T0; image change is not an
+    # implicit Tool update and must not make the T1-only hello executable appear.
+    ssh('test "$(codex --version)" = "codex-cli ${codexVersion}"; ! command -v hello')
     assert machine.succeed("docker exec versapro-own-oci cat /home/dev/.ssh/ssh_host_ed25519_key.pub").strip() == before_key
     after_profile = ssh("readlink /nix/var/nix/profiles/own-dev").strip()
-    assert after_profile != before_profile
+    assert after_profile == before_profile
+    image_before_tool = machine.succeed("docker inspect -f '{{.Image}}' versapro-own-oci").strip()
+
+    # Explicit T-only generation switch, without replacing this already running OCI.
+    machine_succeed(
+        "docker exec -e NIX_REMOTE=daemon versapro-own-oci /bin/nix-env "
+        "--profile /nix/var/nix/profiles/own-dev --set ${nativeProfileNext}"
+    )
+    ssh('test "$(codex --version)" = "codex-cli ${codexVersion}"; hello >/dev/null')
+    assert ssh("readlink /nix/var/nix/profiles/own-dev").strip() != before_profile
+    assert machine.succeed("docker inspect -f '{{.Image}}' versapro-own-oci").strip() == image_before_tool
 
     # Synthetic Native-only VM: independent T generations without a NixOS switch or OCI.
     # The profile closures are injected solely into this disposable VM store; no auth is read.
@@ -191,6 +219,8 @@
     native.succeed("! systemctl list-unit-files | grep -q docker-versapro-own-oci")
     native.succeed("! command -v docker; ! test -e /run/current-system/sw/bin/codex")
     native.succeed("test -x ${nativeProfile}/bin/codex; test -x ${nativeProfileNext}/bin/codex")
+    # The candidate is genuinely Tool-only: no Nix, Git or SSH Core in T.
+    native.succeed("! test -e ${nativeProfile}/bin/nix; ! test -e ${nativeProfile}/bin/git; ! test -e ${nativeProfile}/bin/ssh")
     native.succeed("test ! -e ${nativeProfile}/bin/hello; test -x ${nativeProfileNext}/bin/hello")
 
     p = "/nix/var/nix/profiles/host-native-tool"
