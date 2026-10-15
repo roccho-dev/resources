@@ -59,6 +59,105 @@ class DiagnosticTests(unittest.TestCase):
             self.assertEqual(machine.last_key, 'ctrl-q')
             self.assertEqual(saved['admission'], 'NOT_PERFORMED')
 
+    def test_ordinary_finish_quits_before_any_new_synchronous_observation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            events = []
+            class Machine:
+                out_dir = str(root)
+                def send_key(self, key):
+                    events.append(("key", key))
+                def execute(self, value, timeout=5):
+                    events.append(("diagnostic", value))
+                    return 0, '{"trial":"cancel","files":{}}'
+            scope, _, _ = self.driver(Machine())
+            snap = {'text': 'unchanged', 'field': 'editor', 'target': 'unit', 'browserPid': 1}
+            def command(value):
+                events.append(("command", value))
+                return '0' if value.endswith('.exit') else 'fixture' if 'c-fixture-marker' in value else 'same'
+            scope.update(trial='cancel', profile_marker='fixture', command=command,
+                wait=lambda value: events.append(("wait", value)), snapshot=lambda: snap)
+            with contextlib.redirect_stdout(io.StringIO()):
+                scope['finish'](snap)
+            self.assertEqual(events[0], ('key', 'ctrl-q'))
+            self.assertEqual([v for k, v in events if k == 'key'], ['ctrl-q'])
+            self.assertFalse((root / 'trial-cancel-before-finish.json').exists())
+            saved = json.loads((root / 'trial-cancel-after-finish.json').read_text())
+            conditions = saved['observation']['conditions']
+            self.assertEqual(conditions['mode'], 'ordinary-untraced')
+            self.assertFalse(conditions['traceRequested'])
+            self.assertEqual(conditions['extraBeforeInput'], [])
+            self.assertEqual(conditions['extraBeforeQuit'], [])
+            self.assertEqual(conditions['guestReadPhase'], 'after-finish')
+            self.assertEqual(saved['observation']['result']['before'], snap)
+            self.assertEqual(saved['admission'], 'NOT_PERFORMED')
+
+    def test_cancel_trace_is_explicit_and_never_selected_by_normal_cases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            events = []
+            class Machine:
+                out_dir = directory
+                def send_chars(self, value): events.append(('input', value))
+            scope, main, _ = self.driver(Machine())
+            info = {'wrapperPid': 123, 'viewerPid': 456}
+            def command(value):
+                events.append(('command', value))
+                if 'trace-cancel' in value:
+                    return json.dumps({'traces': [{'pid': 123, 'tracerPid': 789}]})
+                return json.dumps(info)
+            scope.update(put=lambda *args: None, command=command,
+                await_image=lambda *args: 'image', wait=lambda value, seconds=15: events.append(('wait', value)))
+            scope['begin']('cancel', 'typed')
+            self.assertFalse(scope['trace_requested'])
+            self.assertFalse(any('trace-cancel' in str(v) or 'TracerPid' in str(v) for _, v in events))
+            events.clear()
+            scope['begin']('cancel', 'typed', diagnostic_trace=True)
+            self.assertTrue(scope['trace_requested'])
+            self.assertEqual(sum('trace-cancel' in str(v) for _, v in events), 1)
+            self.assertEqual(sum('TracerPid' in str(v) for _, v in events), 1)
+            # Inspect the real acceptance entry: none of its calls selects tracing.
+            for node in ast.walk(main):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'begin':
+                    self.assertFalse(any(k.arg == 'diagnostic_trace' for k in node.keywords))
+            # The driver contains one finite case loop, not retry-until-success.
+            loops = [node for node in ast.walk(main) if isinstance(node, ast.For)
+                and isinstance(node.iter, ast.Tuple) and any(isinstance(v, ast.Constant) and v.value == 'cancel' for v in node.iter.elts)]
+            self.assertEqual(len(loops), 1)
+            self.assertEqual(sum(isinstance(v, ast.Constant) and v.value == 'cancel' for v in loops[0].iter.elts), 1)
+
+    def test_tracing_cannot_leak_into_another_trial(self):
+        with tempfile.TemporaryDirectory() as directory:
+            class Machine: out_dir = directory
+            scope, _, _ = self.driver(Machine())
+            with self.assertRaisesRegex(ValueError, 'explicit-cancel'):
+                scope['begin']('ordinary', diagnostic_trace=True)
+            with self.assertRaisesRegex(ValueError, 'explicit-cancel'):
+                scope['begin']('cancel', expect_ready=False, diagnostic_trace=True)
+            self.assertFalse(scope['trace_requested'])
+            self.assertEqual(scope['trial'], '')
+
+    def test_traced_finish_records_its_different_pre_quit_condition(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            events = []
+            class Machine:
+                out_dir = directory
+                def send_key(self, key): events.append('quit')
+                def execute(self, value, timeout=5):
+                    events.append('observation')
+                    return 0, '{"trial":"cancel"}'
+            scope, _, _ = self.driver(Machine())
+            snap = {'text': 'unchanged', 'field': 'editor', 'target': 'unit', 'browserPid': 1}
+            scope.update(trial='cancel', trace_requested=True, profile_marker='fixture',
+                wait=lambda value: None, snapshot=lambda: snap,
+                command=lambda value: '0' if value.endswith('.exit') else 'fixture' if 'c-fixture-marker' in value else 'same')
+            with contextlib.redirect_stdout(io.StringIO()): scope['finish'](snap)
+            self.assertEqual(events, ['observation', 'quit', 'observation'])
+            saved = json.loads((root / 'trial-cancel-before-finish.json').read_text())
+            self.assertEqual(saved['observation']['conditions']['mode'], 'traced-diagnostic')
+            self.assertEqual(saved['observation']['conditions']['extraBeforeQuit'], ['diagnostic-file-and-DOM-read'])
+            self.assertNotIn('status', saved)
+
     def test_trial_failure_roundtrip_preserves_abnormal_and_missing_values(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -228,11 +327,11 @@ class DiagnosticTests(unittest.TestCase):
             root = Path(directory)
             names, log = self.retained(root, audit='{broken\n')
             self.assertEqual(set(names), fault.FILES)
-            self.assertEqual((root / 'unknown-effect-audit.json').read_text(), '{broken\n')
-            diagnostic = json.loads((root / 'unknown-effect-diagnostic.json').read_text())
+            self.assertEqual((root / names[0]).read_text(), '{broken\n')
+            diagnostic = json.loads((root / names[1]).read_text())
             self.assertEqual(diagnostic, {'parentStderr': '', 'viewerStderr': ''})
             self.assertEqual(log.count(fault.MARKER), 2)
-            self.assertNotIn('"status": "PASS"', log)
+            self.assertNotIn('"status": "PASS"', log.getvalue())
 
     def test_failed_log_roundtrip_recovers_exact_bytes(self):
         with tempfile.TemporaryDirectory() as directory:

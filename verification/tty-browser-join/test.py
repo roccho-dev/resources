@@ -19,6 +19,8 @@ current = "ordinary"
 trial: str = ""
 last_image = None
 failed = False
+# Diagnostic timing must never be an implicit prerequisite of ordinary acceptance.
+trace_requested = False
 
 
 def command(value):
@@ -83,9 +85,12 @@ def record(name, facts, images=(), status="PASS"):
     print("C_OBSERVATION " + json.dumps(row, ensure_ascii=False), flush=True)
 
 
-def begin(name, mode=None, websocket=None, expect_ready=True):
-    global trial
+def begin(name, mode=None, websocket=None, expect_ready=True, *, diagnostic_trace=False):
+    global trial, trace_requested
+    if diagnostic_trace and (name != "cancel" or not expect_ready):
+        raise ValueError("trace-is-only-for-an-explicit-cancel-diagnostic")
     trial = name
+    trace_requested = diagnostic_trace
     prefix = "/run/c-proof/" + name
     if mode is not None:
         put("/run/c-provider/mode", mode)
@@ -105,7 +110,7 @@ def begin(name, mode=None, websocket=None, expect_ready=True):
         return None, None
     image = await_image(name + "-before", lambda im: pixels(im, (215, 225, 240)) > 2000)
     info = json.loads(command(observer("session", name)))
-    if name == "cancel":
+    if diagnostic_trace:
         traces = json.loads(command(observer("trace-cancel")))
         for trace in traces["traces"]:
             wait("grep -Eq '^TracerPid:[[:space:]]+" + str(trace["tracerPid"]) +
@@ -114,7 +119,12 @@ def begin(name, mode=None, websocket=None, expect_ready=True):
 
 
 def capture_trial(phase, result=None, error=None):
-    value = {"result": result, "error": error, "observedAtNs": time.monotonic_ns()}
+    value = {"result": result, "error": error, "observedAtNs": time.monotonic_ns(),
+        "conditions": {"mode": "traced-diagnostic" if trace_requested else "ordinary-untraced",
+            "traceRequested": trace_requested,
+            "extraBeforeInput": ["strace-attach", "TracerPid-wait"] if trace_requested else [],
+            "extraBeforeQuit": ["diagnostic-file-and-DOM-read"] if trace_requested else [],
+            "guestReadPhase": phase}}
     try:
         code, text = machine.execute(observer("diagnostic", trial), timeout=5)
         value["collectorExit"] = code
@@ -127,7 +137,11 @@ def capture_trial(phase, result=None, error=None):
 def finish(before, *, fault=False):
     assert trial, "test session has not started"
     prefix = "/run/c-proof/" + trial
-    capture_trial("before-finish", {"before": before, "faultExpected": fault})
+    # The ordinary path sends the original quit immediately. The already
+    # observed `before` value is retained in result after exit, not re-read
+    # synchronously before quit. Traced observations remain explicit diagnostics.
+    if trace_requested:
+        capture_trial("before-finish", {"before": before, "faultExpected": fault})
     if not fault:
         machine.send_key("ctrl-q")
     wait("test -e " + prefix + ".exit")
