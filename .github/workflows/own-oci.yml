@@ -26,7 +26,8 @@ permissions:
 
 jobs:
   # The VersaPro client aliases as native OpenSSH resolves them: exact shape, one parseable pin per host key alias,
-  # and RED for missing/duplicate/mismatched pins, Include/Match, a missing jump or weakened host key checking.
+  # and RED for missing/duplicate/mismatched pins, Include/Match, a missing jump, weakened host key checking or pins
+  # outside the windows ClientSsh slot (~/.ssh/windows-client/known_hosts).
   client-ssh:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -39,7 +40,7 @@ jobs:
         run: |
           set -euo pipefail
           check() { # config pins: succeeds only for the exact declared shape
-            local cfg=$1 pins=$2 kh="$HOME/.ssh/versapro/known_hosts" alias key tmp
+            local cfg=$1 pins=$2 kh="$HOME/.ssh/windows-client/known_hosts" alias key tmp
             if grep -Eiq '^[[:space:]]*(include|match)([[:space:]]|$)' "$cfg"; then echo 'Include/Match is not allowed' >&2; return 1; fi
             expect() { # alias option value ('' = unset)
               local got
@@ -81,6 +82,7 @@ jobs:
           { cat "$cfg"; printf 'Match host versapro-own-oci\n  User root\n'; } > "$t/match"; neg "$t/match" "$pins" 'Match'
           sed 's/ProxyJump versapro-ssd/ProxyJump none/' "$cfg" > "$t/nojump"; neg "$t/nojump" "$pins" 'missing jump'
           sed '0,/StrictHostKeyChecking yes/s//StrictHostKeyChecking accept-new/' "$cfg" > "$t/weak"; neg "$t/weak" "$pins" 'weakened host key checking'
+          sed '0,/windows-client\/known_hosts/s//versapro\/known_hosts/' "$cfg" > "$t/slot"; neg "$t/slot" "$pins" 'pins outside the owned windows-client slot'
   source-vm:
     runs-on: ubuntu-latest
     timeout-minutes: 90
