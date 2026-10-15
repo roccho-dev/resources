@@ -3,8 +3,12 @@
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/2efa67fd26b6df417c33e4603185c701f260dd83";
   inputs.windows.url = "github:roccho-dev/windows/1ac80060979feec04ad9a2eeff0b91b766cec20f";
+  # Physical-console Japanese input (meltype-console.nix): bcon, and fork Meltype's Direct TTY from one release.
+  inputs.bcon = { url = "github:sanohiro/bcon/v1.5.1"; flake = false; };
+  inputs.meltype-src = { url = "github:roccho-dev/Meltype/v1.2.1.3"; flake = false; };
+  inputs.meltype-linux = { url = "https://github.com/roccho-dev/Meltype/releases/download/v1.2.1.3/Meltype-1.2.1.3-linux.zip"; flake = false; };
 
-  outputs = { self, nixpkgs, windows, ... }:
+  outputs = { self, nixpkgs, windows, bcon, meltype-src, meltype-linux, ... }:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
@@ -32,6 +36,7 @@
         modules = [
           ./versapro.nix
           ownModule
+          (import ./meltype-console.nix { inherit bcon meltype-src meltype-linux; })
           {
             services.versaproOwnOci.enable = true;
             system.configurationRevision = self.rev or null;

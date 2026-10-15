@@ -1,0 +1,29 @@
+name: t5c lock (temporary)
+
+# Temporary: generate nixos/flake.lock with nix on this branch and commit it from the same job.
+# This file is deleted by the next commit on the branch; it never reaches proposals.
+on:
+  push:
+    branches: [feat/meltype-console]
+
+permissions:
+  contents: read
+
+jobs:
+  lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
+      - name: Lock new inputs and commit
+        run: |
+          set -euo pipefail
+          nix flake lock ./nixos
+          git add nixos/flake.lock
+          if git diff --cached --quiet; then echo 'flake.lock unchanged'; exit 0; fi
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m 'nixos: lock meltype-console inputs (nix flake lock on GitHub Actions)'
+          git push origin HEAD:refs/heads/feat/meltype-console
