@@ -18,10 +18,16 @@ let
     '';
     meta = { license = pkgs.lib.licenses.mit; mainProgram = "bcon"; platforms = pkgs.lib.platforms.linux; };
   };
-  # Split B's own package expression, fed with the same release's Linux zip (unpacked by the input).
+  # The release's Linux zip is a plain file input: it has a non-ASCII member name that the flake
+  # tarball fetcher cannot unpack, so unzip it here.
+  meltypeLinux = pkgs.runCommand "meltype-linux-1.2.1.3" { nativeBuildInputs = [ pkgs.unzip ]; } ''
+    unzip -q ${meltype-linux}
+    mv Meltype-linux $out
+  '';
+  # Split B's own package expression, fed with that unpacked zip.
   meltypeTty = import "${meltype-src}/linux/tty/package.nix" {
     inherit pkgs;
-    packagePath = "${meltype-linux}";
+    packagePath = "${meltypeLinux}";
   };
 in
 {
