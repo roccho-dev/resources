@@ -327,11 +327,11 @@ class DiagnosticTests(unittest.TestCase):
             root = Path(directory)
             names, log = self.retained(root, audit='{broken\n')
             self.assertEqual(set(names), fault.FILES)
-            self.assertEqual((root / names[0]).read_text(), '{broken\n')
-            diagnostic = json.loads((root / names[1]).read_text())
+            self.assertEqual((root / 'unknown-effect-audit.json').read_text(), '{broken\n')
+            diagnostic = json.loads((root / 'unknown-effect-diagnostic.json').read_text())
             self.assertEqual(diagnostic, {'parentStderr': '', 'viewerStderr': ''})
             self.assertEqual(log.count(fault.MARKER), 2)
-            self.assertNotIn('"status": "PASS"', log.getvalue())
+            self.assertNotIn('"status": "PASS"', log)
 
     def test_failed_log_roundtrip_recovers_exact_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
