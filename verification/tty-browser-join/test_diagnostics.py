@@ -18,15 +18,24 @@ import unittest
 from unittest.mock import patch
 import fault
 import observer
+import evidence
 
 
 class DiagnosticTests(unittest.TestCase):
-    def test_finish_saves_nonzero_result_before_the_original_assertion(self):
-        # Execute the actual driver definitions, not a replacement finish().
+    def driver(self, machine):
+        # Load the actual functions/globals only. These lifecycle tests never
+        # render an image; importing the VM-only PIL dependency is unnecessary.
         source = Path(__file__).with_name('test.py')
         tree = ast.parse(source.read_text())
-        definitions = ast.Module(body=tree.body[:next(i for i, n in enumerate(tree.body)
-            if isinstance(n, ast.Try))], type_ignores=[])
+        index = next(i for i, node in enumerate(tree.body) if isinstance(node, ast.Try))
+        definitions = [node for node in tree.body[:index]
+            if not isinstance(node, (ast.Import, ast.ImportFrom))]
+        scope = {**globals(), 'machine': machine}
+        exec(compile(ast.Module(body=definitions, type_ignores=[]), str(source), 'exec'), scope)
+        return scope, tree.body[index], source
+
+    def test_finish_saves_nonzero_result_before_the_original_assertion(self):
+        # Execute the actual driver definitions, not a replacement finish().
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             class Machine:
@@ -36,8 +45,7 @@ class DiagnosticTests(unittest.TestCase):
                 def execute(self, value, timeout=5):
                     return 0, '{"fixture":"synthetic-only"}'
             machine = Machine()
-            scope = {'machine': machine}
-            exec(compile(definitions, str(source), 'exec'), scope)
+            scope, _, _ = self.driver(machine)
             snapshot = {'text': 'unchanged', 'field': 'editor', 'target': 'unit', 'browserPid': 1}
             scope.update(trial='cancel', current='cancel', profile_marker='fixture',
                 wait=lambda value: None, snapshot=lambda: snapshot,
@@ -124,20 +132,15 @@ class DiagnosticTests(unittest.TestCase):
             self.assertEqual(value['dom']['state'], 'ERROR')
 
     def test_first_failure_survives_an_existing_partial_case_and_missing_later_cases(self):
-        source = Path(__file__).with_name('test.py')
-        tree = ast.parse(source.read_text())
-        index = next(i for i, n in enumerate(tree.body) if isinstance(n, ast.Try))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             class Machine:
                 out_dir = str(root)
                 def execute(self, value, timeout=5):
                     return 0, '{"exitCode":23}'
-            scope = {'machine': Machine()}
-            exec(compile(ast.Module(body=tree.body[:index], type_ignores=[]), str(source), 'exec'), scope)
+            scope, failure, source = self.driver(Machine())
             scope.update(trial='cancel', current='cancel', context=None,
                 rows=[{'case': 'cancel'}])
-            failure = tree.body[index]
             failure.body = ast.parse('raise RuntimeError("original-cancel-exit")').body
             report = {'cases': [{'case': 'cancel', 'status': 'NOT_PROVEN', 'reasons': ['incomplete']}],
                 'errors': ['partial'], 'consistent': False}
