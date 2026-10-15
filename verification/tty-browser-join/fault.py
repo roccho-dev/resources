@@ -12,11 +12,40 @@ import time
 
 
 
-# Only two bounded test-owned observations are transported through failed-build
-# logs. Their hashes preserve bytes; they are not acceptance or trusted provenance.
+# Bounded test-owned observations use the existing failed-build log transport.
+# Hashes preserve bytes; they are not acceptance or trusted provenance.
 FILES = {"unknown-effect-audit.json", "unknown-effect-diagnostic.json"}
 MARKER = "C_FAULT_FILE "
 LIMIT = 64 * 1024
+TRIAL_LIMIT = 512 * 1024
+
+
+def trial_identity(name):
+    from evidence import catalog
+    match = re.fullmatch(r"trial-([a-z-]+)-(before-finish|after-finish|failure)\.json", name)
+    if match and match[1] in catalog()["cases"]:
+        return match[1], match[2]
+    return None
+
+
+def retain_trial(output, trial, phase, context, observation):
+    """Keep raw lifecycle/diagnostics even when a later assertion fails."""
+    name = f"trial-{trial}-{phase}.json"
+    if trial_identity(name) != (trial, phase):
+        raise ValueError("invalid-trial-observation")
+    value = {"trial": trial, "phase": phase, "context": context,
+        "observation": observation, "admission": "NOT_PERFORMED"}
+    text = json.dumps(value, ensure_ascii=True, sort_keys=True, allow_nan=False)
+    data = text.encode("utf-8")
+    if len(data) > TRIAL_LIMIT:
+        raise ValueError("trial-observation-too-large")
+    # A repeated phase is an error, never replacement of a previous failure.
+    with (output / name).open("xb") as handle:
+        handle.write(data)
+    print(MARKER + json.dumps({"path": name,
+        "sha256": hashlib.sha256(data).hexdigest(), "text": text},
+        ensure_ascii=True, sort_keys=True), flush=True)
+    return name
 
 
 def viewer_command(target, error_path):
@@ -58,19 +87,26 @@ def recover(log, output):
             for line in handle:
                 if not line.startswith(MARKER):
                     continue
-                if len(line) > 7 * LIMIT:
+                if len(line) > 7 * TRIAL_LIMIT:
                     raise ValueError("fault-record-too-large")
                 record = decode(line[len(MARKER):])
                 if type(record) is not dict or set(record) != {"path", "sha256", "text"}:
                     raise ValueError("invalid-fault-record")
                 name = record["path"]
-                if type(name) is not str or name not in FILES or name in records or type(record["text"]) is not str:
+                identity = trial_identity(name) if type(name) is str else None
+                if (type(name) is not str or (name not in FILES and identity is None)
+                        or name in records or type(record["text"]) is not str):
                     raise ValueError("invalid-fault-path-or-duplicate")
                 data = record["text"].encode("utf-8")
-                if len(data) > LIMIT or hashlib.sha256(data).hexdigest() != record["sha256"]:
+                if len(data) > (TRIAL_LIMIT if identity else LIMIT) or hashlib.sha256(data).hexdigest() != record["sha256"]:
                     raise ValueError("invalid-fault-bytes")
+                if identity:
+                    value = decode(record["text"])
+                    if (type(value) is not dict or (value.get("trial"), value.get("phase")) != identity
+                            or value.get("admission") != "NOT_PERFORMED"):
+                        raise ValueError("trial-record-binding")
                 records[name] = data
-    if records and set(records) != FILES:
+    if set(records) & FILES and not FILES <= set(records):
         raise ValueError("incomplete-fault-records")
     if records:
         output.mkdir()

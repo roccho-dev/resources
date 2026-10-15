@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Fault-observer routing/persistence only; synthetic child != actual A/B E2E."""
 import contextlib
+import ast
 import hashlib
 import io
 import json
@@ -14,10 +15,160 @@ import tempfile
 import termios
 import time
 import unittest
+from unittest.mock import patch
 import fault
+import observer
 
 
 class DiagnosticTests(unittest.TestCase):
+    def test_finish_saves_nonzero_result_before_the_original_assertion(self):
+        # Execute the actual driver definitions, not a replacement finish().
+        source = Path(__file__).with_name('test.py')
+        tree = ast.parse(source.read_text())
+        definitions = ast.Module(body=tree.body[:next(i for i, n in enumerate(tree.body)
+            if isinstance(n, ast.Try))], type_ignores=[])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            class Machine:
+                out_dir = str(root)
+                def send_key(self, key):
+                    self.last_key = key
+                def execute(self, value, timeout=5):
+                    return 0, '{"fixture":"synthetic-only"}'
+            machine = Machine()
+            scope = {'machine': machine}
+            exec(compile(definitions, str(source), 'exec'), scope)
+            snapshot = {'text': 'unchanged', 'field': 'editor', 'target': 'unit', 'browserPid': 1}
+            scope.update(trial='cancel', current='cancel', profile_marker='fixture',
+                wait=lambda value: None, snapshot=lambda: snapshot,
+                command=lambda value: '-7' if value.endswith('.exit') else
+                    'fixture' if 'c-fixture-marker' in value else 'same-termios')
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(AssertionError):
+                scope['finish'](snapshot)
+            saved = json.loads((root / 'trial-cancel-after-finish.json').read_text())
+            self.assertEqual(saved['observation']['result']['exitCode'], -7)
+            self.assertEqual(saved['observation']['result']['after'], snapshot)
+            self.assertEqual(machine.last_key, 'ctrl-q')
+            self.assertEqual(saved['admission'], 'NOT_PERFORMED')
+
+    def test_trial_failure_roundtrip_preserves_abnormal_and_missing_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw = {'exitCode': 23, 'parentStderr': '', 'viewerStderr': None,
+                'dom': {'state': 'ERROR', 'error': 'read-only-observer-failed'}}
+            log = io.StringIO()
+            with contextlib.redirect_stdout(log):
+                name = fault.retain_trial(root, 'cancel', 'failure', None, raw)
+            path = root / 'failed.log'; path.write_text(log.getvalue())
+            report = fault.recover(path, root / 'recovered')
+            saved = json.loads((root / 'recovered' / name).read_text())
+            self.assertEqual(saved['observation'], raw)
+            self.assertEqual(saved['admission'], 'NOT_PERFORMED')
+            self.assertEqual(report['admission'], 'NOT_PERFORMED')
+            self.assertNotIn('PASS', log.getvalue())
+
+    def test_trial_record_never_overwrites_the_first_observation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with contextlib.redirect_stdout(io.StringIO()):
+                name = fault.retain_trial(root, 'cancel', 'failure', None, {'exitCode': 19})
+                with self.assertRaises(FileExistsError):
+                    fault.retain_trial(root, 'cancel', 'failure', None, {'exitCode': 0})
+            self.assertEqual(json.loads((root / name).read_text())['observation']['exitCode'], 19)
+
+    def test_trial_name_phase_and_recovery_binding_are_checked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, phase in (('../cancel', 'failure'), ('not-a-case', 'failure'), ('cancel', 'PASS')):
+                with self.assertRaises(ValueError):
+                    fault.retain_trial(root, name, phase, None, {})
+            log = io.StringIO()
+            with contextlib.redirect_stdout(log):
+                fault.retain_trial(root, 'cancel', 'failure', None, {})
+            record = json.loads(log.getvalue()[len(fault.MARKER):])
+            record['path'] = 'trial-typed-failure.json'
+            path = root / 'bad.log'; path.write_text(fault.MARKER + json.dumps(record) + '\n')
+            with self.assertRaisesRegex(ValueError, 'trial-record-binding'):
+                fault.recover(path, root / 'saved')
+
+    def test_observed_bytes_distinguish_empty_missing_invalid_and_oversize(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual(observer.read_observation(root / 'absent')['state'], 'MISSING')
+            path = root / 'raw'; path.write_bytes(b'')
+            value = observer.read_observation(path)
+            self.assertEqual(value['state'], 'OBSERVED')
+            self.assertEqual(value['dataBase64'], '')
+            path.write_bytes(b'\xffraw-exit\n')
+            value = observer.read_observation(path)
+            import base64
+            self.assertEqual(base64.b64decode(value['dataBase64']), path.read_bytes())
+            path.write_bytes(b'x' * (observer.OBSERVATION_LIMIT + 1))
+            self.assertEqual(observer.read_observation(path)['state'], 'TOO_LARGE')
+            link = root / 'link'; link.symlink_to(path)
+            self.assertEqual(observer.read_observation(link)['state'], 'NOT_REGULAR')
+            fifo = root / 'fifo'; os.mkfifo(fifo)
+            self.assertEqual(observer.read_observation(fifo)['state'], 'NOT_REGULAR')
+
+    def test_failed_dom_read_does_not_erase_exit_or_stderr(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'cancel.exit').write_bytes(b'23')
+            (root / 'cancel.errors').write_bytes(b'')
+            with patch.object(observer, 'STATE', root), patch.object(observer, 'dom',
+                    side_effect=ValueError('unavailable')):
+                value = observer.diagnostic('cancel')
+            self.assertEqual(value['files']['exit']['dataBase64'], 'MjM=')
+            self.assertEqual(value['files']['errors']['dataBase64'], '')
+            self.assertEqual(value['files']['viewer.errors']['state'], 'MISSING')
+            self.assertEqual(value['dom']['state'], 'ERROR')
+
+    def test_first_failure_survives_an_existing_partial_case_and_missing_later_cases(self):
+        source = Path(__file__).with_name('test.py')
+        tree = ast.parse(source.read_text())
+        index = next(i for i, n in enumerate(tree.body) if isinstance(n, ast.Try))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            class Machine:
+                out_dir = str(root)
+                def execute(self, value, timeout=5):
+                    return 0, '{"exitCode":23}'
+            scope = {'machine': Machine()}
+            exec(compile(ast.Module(body=tree.body[:index], type_ignores=[]), str(source), 'exec'), scope)
+            scope.update(trial='cancel', current='cancel', context=None,
+                rows=[{'case': 'cancel'}])
+            failure = tree.body[index]
+            failure.body = ast.parse('raise RuntimeError("original-cancel-exit")').body
+            report = {'cases': [{'case': 'cancel', 'status': 'NOT_PROVEN', 'reasons': ['incomplete']}],
+                'errors': ['partial'], 'consistent': False}
+            with patch('evidence.assess', return_value=report), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(RuntimeError, 'original-cancel-exit'):
+                    exec(compile(ast.fix_missing_locations(ast.Module(body=[failure],
+                        type_ignores=[])), str(source), 'exec'), scope)
+            saved = json.loads((root / 'trial-cancel-failure.json').read_text())
+            self.assertEqual(saved['observation']['error']['message'], 'original-cancel-exit')
+            self.assertEqual(json.loads((root / 'assessment.json').read_text()), report)
+
+    def test_observer_attachment_is_not_an_input_wrapper_or_injector(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            info = {'wrapperPid': 123, 'viewerPid': 456, 'tty': '/dev/pts/0', 'size': [30, 90]}
+            with patch.object(observer, 'STATE', root), patch.object(observer, 'session', return_value=info), \
+                    patch.object(observer.os, 'umask'), \
+                    patch.object(observer.subprocess, 'Popen') as spawn, \
+                    patch.object(observer.subprocess, 'check_output', return_value='strace fixed-test\n'):
+                spawn.return_value.pid = 789
+                value = observer.trace_cancel()
+            self.assertEqual(value['session'], info)
+            self.assertEqual(spawn.call_count, 2)
+            for call, pid in zip(spawn.call_args_list, (123, 456)):
+                args = call.args[0]
+                self.assertEqual(args[args.index('-p') + 1], str(pid))
+                self.assertIn('--trace-fds=0,2', args)
+                self.assertIn('--trace=read,write', args)
+                self.assertNotIn('cdp-tty', args)
+                self.assertFalse(any('inject' in word or 'kill-on-exit' in word for word in args))
+
     def test_forkpty_stderr_is_not_parent_stderr_and_exec_capture_preserves_status(self):
         message = 'cdp-tty: stage=input-dispatch completion=unknown; no input replay\n'
         with tempfile.TemporaryDirectory() as directory:

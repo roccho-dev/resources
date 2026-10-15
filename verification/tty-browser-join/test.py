@@ -18,6 +18,7 @@ context = None
 current = "ordinary"
 trial: str = ""
 last_image = None
+failed = False
 
 
 def command(value):
@@ -104,12 +105,29 @@ def begin(name, mode=None, websocket=None, expect_ready=True):
         return None, None
     image = await_image(name + "-before", lambda im: pixels(im, (215, 225, 240)) > 2000)
     info = json.loads(command(observer("session", name)))
+    if name == "cancel":
+        traces = json.loads(command(observer("trace-cancel")))
+        for trace in traces["traces"]:
+            wait("grep -Eq '^TracerPid:[[:space:]]+" + str(trace["tracerPid"]) +
+                "$' /proc/" + str(trace["pid"]) + "/status", seconds=5)
     return image, info
+
+
+def capture_trial(phase, result=None, error=None):
+    value = {"result": result, "error": error, "observedAtNs": time.monotonic_ns()}
+    try:
+        code, text = machine.execute(observer("diagnostic", trial), timeout=5)
+        value["collectorExit"] = code
+        value["guest"] = json.loads(text) if code == 0 else {"raw": text}
+    except Exception as failure:
+        value["collectorError"] = type(failure).__name__
+    return fault.retain_trial(out, trial, phase, context, value)
 
 
 def finish(before, *, fault=False):
     assert trial, "test session has not started"
     prefix = "/run/c-proof/" + trial
+    capture_trial("before-finish", {"before": before, "faultExpected": fault})
     if not fault:
         machine.send_key("ctrl-q")
     wait("test -e " + prefix + ".exit")
@@ -119,6 +137,7 @@ def finish(before, *, fault=False):
         "profileBefore": profile_marker,
         "profileAfter": command("cat /run/c-browser/profile/c-fixture-marker").strip(),
         "exitCode": int(command("cat " + prefix + ".exit").strip())}
+    capture_trial("after-finish", result)
     assert result["termiosBefore"] == result["termiosAfter"]
     assert result["profileBefore"] == result["profileAfter"]
     assert before == result["after"], result
@@ -327,6 +346,14 @@ try:
         "admission": "NOT_PERFORMED"}, saved_fault)
     machine.fail("pgrep -f '[f]citx5|[i]bus-daemon|[t]tyskk'")
 except Exception as error:
+    failed = True
+    # Capture even when this case already has a partial DOM PASS. Do not turn
+    # that partial observation or another trial's cleanup into exit success.
+    if trial:
+        try:
+            capture_trial("failure", error={"type": type(error).__name__, "message": str(error)})
+        except Exception as secondary:
+            print("C_DIAGNOSTIC_ERROR " + type(secondary).__name__, flush=True)
     if context is not None and not any(row["case"] == current for row in rows):
         record(current, {"error": type(error).__name__}, status="FAIL")
     if last_image is not None:
@@ -341,8 +368,11 @@ finally:
     print("C_ASSESSMENT " + json.dumps(report, ensure_ascii=False), flush=True)
     # Every declared VM observation is mandatory. External provider/physical/
     # review evidence stays NOT_PROVEN, not fabricated from a VM success.
-    verified_vm = require_vm_cases(report)
-    unknown = next(case for case in report["cases"] if case["case"] == "unknown-effect")
-    assert unknown["status"] == "CONSISTENT", unknown
-    print("C_VM_RESULT " + json.dumps({"cases": verified_vm, "status": "PASS",
-        "additionalCI": ["unknown-effect"], "fullAcceptance": "NOT_PROVEN"}), flush=True)
+    # The original exception remains primary. A second coverage assertion must
+    # not replace it; this never converts a failing run to success.
+    if not failed:
+        verified_vm = require_vm_cases(report)
+        unknown = next(case for case in report["cases"] if case["case"] == "unknown-effect")
+        assert unknown["status"] == "CONSISTENT", unknown
+        print("C_VM_RESULT " + json.dumps({"cases": verified_vm, "status": "PASS",
+            "additionalCI": ["unknown-effect"], "fullAcceptance": "NOT_PROVEN"}), flush=True)

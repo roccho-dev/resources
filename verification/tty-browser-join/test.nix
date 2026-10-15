@@ -47,7 +47,9 @@ in pkgs.testers.runNixOSTest {
     hardware.graphics.enable = true;
     services.dbus.enable = true;
     fonts.packages = [ pkgs.noto-fonts-cjk-sans ];
-    environment.systemPackages = [ viewer input terminal python pkgs.kbd pkgs.procps pkgs.iproute2 ];
+    # strace only observes the existing cancel-trial PIDs. Product packages,
+    # argv, PTYs, workflow, pins and the fixed CI/VM runner are unchanged.
+    environment.systemPackages = [ viewer input terminal python pkgs.kbd pkgs.procps pkgs.iproute2 pkgs.strace ];
     environment.etc."bcon/config.toml".text = "[terminal]\nime = false\n";
     environment.etc."c-source-pins.json".source = sourcePins;
     environment.etc."c-code.json".source = code;

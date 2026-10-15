@@ -5,7 +5,9 @@ No input/DOM-write method, arbitrary JS argument, provider response or keyboard
 injection exists here. The fixture is exactly one page and one named input field.
 """
 import argparse
+import base64
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,6 +20,7 @@ import time
 import urllib.request
 
 STATE = Path("/run/c-proof")
+OBSERVATION_LIMIT = 64 * 1024
 EXPRESSION = "JSON.stringify({text:document.querySelector('#editor').value,field:document.activeElement.id})"
 
 
@@ -89,12 +92,78 @@ def session(name):
     return {"wrapperPid": wrapper, "viewerPid": owned[0], "tty": tty_path, "size": [rows, cols]}
 
 
+def read_observation(path):
+    """Read fixed fixture files byte-exactly; absence/empty/error are distinct."""
+    try:
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            return {"state": "NOT_REGULAR"}
+        with path.open("rb") as handle:
+            data = handle.read(OBSERVATION_LIMIT + 1)
+        if len(data) > OBSERVATION_LIMIT:
+            return {"state": "TOO_LARGE", "limit": OBSERVATION_LIMIT}
+        return {"state": "OBSERVED", "bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "dataBase64": base64.b64encode(data).decode("ascii")}
+    except FileNotFoundError:
+        return {"state": "MISSING"}
+    except OSError as error:
+        return {"state": "ERROR", "error": type(error).__name__, "errno": error.errno}
+
+
+def diagnostic(name):
+    if re.fullmatch(r"[a-z-]+", name) is None:
+        raise ValueError("invalid-test-session")
+    # Only this disposable trial, its provider fixture, and the fixture marker.
+    paths = {suffix: STATE / (name + "." + suffix) for suffix in (
+        "parent", "before", "after", "exit", "errors", "viewer.errors", "selection.jsonl",
+        "terminal.trace", "viewer.trace", "terminal.tracer", "viewer.tracer", "trace.json")}
+    paths.update({"provider-" + name: Path("/run/c-provider") / (name + ".jsonl")
+        for name in ("requests", "responses")})
+    paths["profile"] = Path("/run/c-browser/profile/c-fixture-marker")
+    result = {"trial": name, "observedAtNs": time.monotonic_ns(),
+        "files": {key: read_observation(path) for key, path in paths.items()}}
+    # A dead browser must not erase an already-written exit or diagnostic.
+    try:
+        result["dom"] = {"state": "OBSERVED", "value": dom()}
+    except Exception as error:
+        result["dom"] = {"state": "ERROR", "error": type(error).__name__}
+    return result
+
+
+def trace_cancel():
+    """Attach the standard observer to existing processes, never wrap input.
+
+    No syscall injection, input relay, product edit, extra writer, or retry.
+    Tracing changes scheduling; a successful traced run is not a race fix.
+    """
+    info = session("cancel")
+    os.umask(0o077)
+    traces = []
+    for role, key in (("terminal", "wrapperPid"), ("viewer", "viewerPid")):
+        path = STATE / ("cancel." + role + ".trace")
+        args = ["strace", "-ttt", "-xx", "-s", "8192", "--trace=read,write",
+            "--trace-fds=0,2", "--syscall-limit=512", "-p", str(info[key]), "-o", str(path)]
+        with (STATE / ("cancel." + role + ".tracer")).open("xb") as errors:
+            child = subprocess.Popen(args, stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=errors, start_new_session=True)
+        traces.append({"role": role, "pid": info[key], "tracerPid": child.pid, "argv": args})
+    result = {"session": info, "traces": traces, "scope": "cancel-fixture-only",
+        "version": subprocess.check_output(["strace", "-V"], text=True).splitlines()[0]}
+    (STATE / "cancel.trace.json").write_text(json.dumps(result, sort_keys=True))
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("dom", "session"))
+    parser.add_argument("mode", choices=("dom", "session", "diagnostic", "trace-cancel"))
     parser.add_argument("value", nargs="?")
     args = parser.parse_args()
-    result = dom() if args.mode == "dom" else session(args.value or "")
+    if args.mode == "diagnostic":
+        result = diagnostic(args.value or "")
+    elif args.mode == "trace-cancel":
+        result = trace_cancel()
+    else:
+        result = dom() if args.mode == "dom" else session(args.value or "")
     if args.mode == "dom" and args.value is not None and result["text"] != args.value:
         # This observer is restricted to a disposable fixture. Preserve the
         # actual rejected value and existing product diagnostics; do not change
