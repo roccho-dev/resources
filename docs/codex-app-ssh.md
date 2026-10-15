@@ -20,14 +20,32 @@ Codex App は `~/.ssh/config` とその Include だけから alias を見つけ�
 
 実行の条件:
 
-- 宣言された host（G6I3）の通常ユーザーの権限で実行する（`HostCaller` の条件）。
-- `win.ps1` は、install 済みの windows host runtime のもの（`<runtime>`）を使う。
+- `ClientSsh` / `ClientSshTest` は、install 済みの logon 用 runtime（`kind=own-resume-runtime`）では動かない。
+  その runtime は `OwnResume` / `OwnResumeTest` しか受け付けない。
+- 使うのは、windows の canonical な公開 Release の `windows-dist.zip` である。
+  - 次の 3 つの checksum が一致することを確かめる: CI の build が出した値、Release の `.sha256`、
+    受け取った bytes から計算し直した値。
+  - そのうえで、新しい空のディレクトリ（`<dist>`）に展開したものを使う。
+  - 展開後は、`win.ps1` が自身の inventory を検証する。
+  - `-Mode Validate` の `source` が、その Release の commit と一致すること。
+- 実行するのは、宣言された host（G6I3）で、Explorer から起動した、昇格していない Windows PowerShell 5.1（`powershell.exe`）とする。
+  次の process は、`HostCaller` の package 文脈と権限の検査で、書き込む前に拒否される:
+  packaged app（`\WindowsApps\` 配下）から起動したもの、PowerShell 7、管理者、SYSTEM。
+- 実行ポリシーは、host の既存の設定のまま使う。`-ExecutionPolicy` の指定、ファイルの unblock、ポリシーの変更はしない。
+  拒否された場合は止めて、その事実を返す。
 - 2 つの入力は、resources の exact な公開 revision の checkout（`<checkout>`）にある絶対 path で渡す。
 
 ```powershell
-& "<runtime>\win.ps1" -Mode ClientSsh -ClientConfig "<checkout>\windows\ssh\versapro.config" -ClientKnownHosts "<checkout>\windows\ssh\versapro.known_hosts"
-& "<runtime>\win.ps1" -Mode ClientSshTest -ClientConfig "<checkout>\windows\ssh\versapro.config" -ClientKnownHosts "<checkout>\windows\ssh\versapro.known_hosts"  # 読むだけ
+powershell.exe -NoProfile -File "<dist>\win.ps1" -Mode Validate
+powershell.exe -NoProfile -File "<dist>\win.ps1" -Mode ClientSshTest -ClientConfig "<checkout>\windows\ssh\versapro.config" -ClientKnownHosts "<checkout>\windows\ssh\versapro.known_hosts"  # 読むだけ
+powershell.exe -NoProfile -File "<dist>\win.ps1" -Mode ClientSsh -ClientConfig "<checkout>\windows\ssh\versapro.config" -ClientKnownHosts "<checkout>\windows\ssh\versapro.known_hosts"
 ```
+
+- 移行の前の `ClientSshTest` は、`Client SSH slot differs from the declaration; pending.` で止まるのが正しい。
+  - ここまでで確かめられるのは、配布物、引数、実行の文脈、入力、所有物の drift、alias の衝突だけである。
+  - 枠の所有、backup、他に所有された Include 行は、`ClientSsh` が書き込む前に検査する。
+- `HostRemove` は、client の枠だけを外す操作ではない。所有しているすべての host の effect を元に戻す。
+  client の巻き戻しには使わない。この guide は、client だけの巻き戻しを提供しない。
 
 - `ClientSsh` は 2 つの file を所有 slot `~/.ssh/windows-client/{config,known_hosts}` に置く。そのうえで main config の
   所有 Include 1 行を `Include windows-rent/config windows-own/config` から
@@ -38,8 +56,10 @@ Codex App は `~/.ssh/config` とその Include だけから alias を見つけ�
   - alias が他の file と衝突する。
   - 所有物が変わっている。
 - 最後の `ssh -F ~/.ssh/config -G` による確認は、収束した後の事後条件である。
-  これが失敗した場合、書いた所有状態は残る。再実行するか `HostRemove` で扱う。
-  `HostRemove` は元の main config に戻す。
+  これが失敗した場合は止める。書いた所有状態はそのまま残る。
+  - 原因を取り除いた後で、同じ `<dist>` と `<checkout>` で同じ `ClientSsh` を再実行する。
+  - それで解決できない場合は止めて、そのままの状態を返す。
+  - `HostRemove` は使わない。`~/.ssh/config`、`windows-client` の枠、ledger も手で編集しない。
 - `ClientSsh` を使わない既存・新規の legacy mode は 2 path のままである。
 - `versapro-ssd` / `versapro-own-oci` は既存の `g6i3-own` / `windows-rent` / `nixos-vm` と名前が衝突しない。
 
