@@ -1,5 +1,51 @@
 {
   "nodes": {
+    "bcon": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1790547444,
+        "narHash": "sha256-JEwDgLneYxjmC2nmkTkj7CerstvE8dvuNBngwcjkesM=",
+        "owner": "sanohiro",
+        "repo": "bcon",
+        "rev": "575c293ddcf47ee55c907a894c11482621d05322",
+        "type": "github"
+      },
+      "original": {
+        "owner": "sanohiro",
+        "ref": "v1.5.1",
+        "repo": "bcon",
+        "type": "github"
+      }
+    },
+    "meltype-linux": {
+      "flake": false,
+      "locked": {
+        "narHash": "sha256-i+enjdUfNekwLupRxF+KsvL8bA2530T1hbd3RrTm1aI=",
+        "type": "file",
+        "url": "https://github.com/roccho-dev/Meltype/releases/download/v1.2.1.3/Meltype-1.2.1.3-linux.zip"
+      },
+      "original": {
+        "type": "file",
+        "url": "https://github.com/roccho-dev/Meltype/releases/download/v1.2.1.3/Meltype-1.2.1.3-linux.zip"
+      }
+    },
+    "meltype-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1792096672,
+        "narHash": "sha256-YZCMgRhNCu1/KcgU8hne8fUV0JsUbeEKrSRqM/xU6Sc=",
+        "owner": "roccho-dev",
+        "repo": "Meltype",
+        "rev": "1657ef5929640bfd7145bdc8f5a04e4e5bac5b02",
+        "type": "github"
+      },
+      "original": {
+        "owner": "roccho-dev",
+        "ref": "v1.2.1.3",
+        "repo": "Meltype",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1791353474,
@@ -34,6 +80,9 @@
     },
     "root": {
       "inputs": {
+        "bcon": "bcon",
+        "meltype-linux": "meltype-linux",
+        "meltype-src": "meltype-src",
         "nixpkgs": "nixpkgs",
         "windows": "windows"
       }
