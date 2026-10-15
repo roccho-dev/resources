@@ -1,8 +1,9 @@
 { pkgs
 , ownModule
-, extendedImage
-, extendedImageName
+, extendedProfile
 , codexVersion
+, piAgentDir
+, piBindingId
 }:
 {
   name = "versapro-own-oci";
@@ -59,10 +60,8 @@
         after = [ "versapro-own-oci-test-key.service" ];
       };
 
-      specialisation.extended.configuration.services.versaproOwnOci = {
-        imageFile = lib.mkForce extendedImage;
-        imageName = lib.mkForce extendedImageName;
-      };
+      # The extension changes only T; B, volumes, identity and auth stay.
+      specialisation.extended.configuration.services.versaproOwnOci.profile = lib.mkForce extendedProfile;
     };
 
   testScript = ''
@@ -70,6 +69,7 @@
 
     start_all()
     machine.wait_for_unit("docker-versapro-own-oci.service")
+    machine.wait_for_unit("versapro-own-oci-profile.service")
     machine.wait_for_open_port(2223)
 
     key_dir = "/run/versapro-own-oci-test"
@@ -110,6 +110,11 @@
     ssh('test "$(id -u)" = 1000; test "$HOME" = /home/dev; test "$NIX_REMOTE" = daemon')
     ssh('test "$(codex --version)" = "codex-cli ${codexVersion}"; ! command -v hello')
     ssh("nix store ping --store daemon >/dev/null; ! touch /nix/store/dev-write")
+    # T is the native own-dev generation; its pi is this OCI's target-bound launcher (no key, no Go call).
+    ssh('test "$(readlink /nix/var/nix/profiles/own-dev)" = own-dev-1-link; pi --version >/dev/null')
+    ssh("launcher=$(readlink -f /nix/var/nix/profiles/own-dev/bin/pi); grep -qF ${piAgentDir} \"$launcher\"; "
+        "resolver=$(grep -oE '/nix/store/[^ ]*/bin/pi-opencode-go-key' \"$launcher\" | head -n1); "
+        "grep -qF ${piBindingId} \"$resolver\"; ! grep -qF oci-dev \"$launcher\" \"$resolver\"")
 
     mount_probe = (
         "mounts=$(docker inspect --format '{{range .Mounts}}{{println .Name .Destination .RW}}{{end}}' versapro-own-oci); "
@@ -134,25 +139,32 @@
 
     machine.succeed("systemctl restart docker-versapro-own-oci.service")
     machine.wait_for_unit("docker-versapro-own-oci.service")
+    machine.wait_for_unit("versapro-own-oci-profile.service")
     machine.wait_for_open_port(2223)
     after_restart_id = machine.succeed("docker inspect -f '{{.Id}}' versapro-own-oci").strip()
     assert after_restart_id != before_id
     pin_host_key()
     ssh('test "$(cat ~/.own-oci-home)" = home; test "$(cat /work/repos/own-oci-test/marker)" = work')
     assert machine.succeed("docker exec versapro-own-oci cat /home/dev/.ssh/ssh_host_ed25519_key.pub").strip() == before_key
+    # Recreation keeps the selected T: no new generation, same tools.
+    assert ssh("readlink /nix/var/nix/profiles/own-dev").strip() == before_profile
+    ssh('test "$(codex --version)" = "codex-cli ${codexVersion}"')
 
-    machine.succeed("systemctl stop docker-versapro-own-oci.service")
+    # Switching to a different T recreates the OCI through its restart trigger and selects T natively.
     machine.succeed("/run/current-system/specialisation/extended/bin/switch-to-configuration test")
-    machine.succeed("systemctl start docker-versapro-own-oci.service")
+    machine.wait_until_succeeds(
+        "test \"$(docker inspect -f '{{.Id}}' versapro-own-oci)\" != " + after_restart_id, timeout=600
+    )
     machine.wait_for_unit("docker-versapro-own-oci.service")
+    machine.wait_for_unit("versapro-own-oci-profile.service")
     machine.wait_for_open_port(2223)
-    extended_id = machine.succeed("docker inspect -f '{{.Id}}' versapro-own-oci").strip()
-    assert extended_id != after_restart_id
     pin_host_key()
     ssh('test "$(cat ~/.own-oci-home)" = home; test "$(cat /work/repos/own-oci-test/marker)" = work')
-    ssh('test "$(codex --version)" = "codex-cli ${codexVersion}"; hello >/dev/null')
+    ssh('test "$(codex --version)" = "codex-cli ${codexVersion}"; hello >/dev/null; pi --version >/dev/null')
     assert machine.succeed("docker exec versapro-own-oci cat /home/dev/.ssh/ssh_host_ed25519_key.pub").strip() == before_key
     after_profile = ssh("readlink /nix/var/nix/profiles/own-dev").strip()
     assert after_profile != before_profile
+    # The earlier generation stays as native rollback.
+    ssh(f"test -L /nix/var/nix/profiles/{before_profile}")
   '';
 }
