@@ -1,0 +1,30 @@
+name: meltype 1.2.1.4 lock (temporary)
+
+# Temporary: update only the meltype-src and meltype-linux entries of nixos/flake.lock with nix on this
+# branch and commit them from the same job. The next commit on the branch deletes this file.
+on:
+  push:
+    branches: [chore/meltype-1.2.1.4]
+
+permissions:
+  contents: read
+
+jobs:
+  lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
+      - name: Lock the two Meltype inputs and commit
+        run: |
+          set -euo pipefail
+          nix flake lock ./nixos --update-input meltype-src --update-input meltype-linux
+          git add nixos/flake.lock
+          if git diff --cached --quiet; then echo 'flake.lock unchanged'; exit 0; fi
+          git diff --cached --stat
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m 'nixos: lock Meltype 1.2.1.4 inputs (nix flake lock on GitHub Actions)'
+          git push origin HEAD:refs/heads/chore/meltype-1.2.1.4
