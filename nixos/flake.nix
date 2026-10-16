@@ -60,6 +60,11 @@
           piAgentDir = piTarget.agentDir;
           piBindingId = piTarget.bindingId;
         });
+        # The physical console path: VM keyboard → evdev → bcon → meltype-tty → bash (Tab, Ctrl+Space, Ctrl+R).
+        meltype-console-vm = pkgs.testers.runNixOSTest (import ./tests/meltype-console.nix {
+          inherit pkgs;
+          meltypeConsole = import ./meltype-console.nix { inherit bcon meltype-src meltype-linux windows; };
+        });
       };
     };
 }
