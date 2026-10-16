@@ -99,8 +99,8 @@ jobs:
       - name: Verify fixed inputs
         run: |
           set -euo pipefail
-          nix flake lock ./nixos --update-input windows
-          cat nixos/flake.lock
-          git diff --exit-code -- nixos/flake.lock
+          nix flake lock .
+          cat flake.lock
+          git diff --exit-code -- flake.lock
       - name: Build host, production images, and standard VM proof
-        run: nix flake check ./nixos --no-write-lock-file --print-build-logs
+        run: nix flake check . --no-write-lock-file --print-build-logs

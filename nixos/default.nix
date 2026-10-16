@@ -1,18 +1,8 @@
-{
-  description = "Minimal BIOS SSD bootstrap and own OCI for VersaPro";
-
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/2efa67fd26b6df417c33e4603185c701f260dd83";
-  inputs.windows.url = "github:roccho-dev/windows/1ac80060979feec04ad9a2eeff0b91b766cec20f";
-  # Physical-console Japanese input (meltype-console.nix): bcon, and fork Meltype's Direct TTY from one release.
-  inputs.bcon = { url = "github:sanohiro/bcon/v1.5.1"; flake = false; };
-  inputs.meltype-src = { url = "github:roccho-dev/Meltype/v1.2.1.5"; flake = false; };
-  inputs.meltype-linux = { url = "file+https://github.com/roccho-dev/Meltype/releases/download/v1.2.1.5/Meltype-1.2.1.5-linux.zip"; flake = false; };
-
-  outputs = { self, nixpkgs, windows, bcon, meltype-src, meltype-linux, ... }:
+{ self, nixpkgs, producer, bcon, meltype-src, meltype-linux }:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
-      mkOwn = windows.lib.${system}.mkOwn;
+      mkOwn = producer.lib.${system}.mkOwn;
       # This OCI's fixed Pi target (names only): no key, ciphertext or Go use follows from declaring it.
       piTarget = {
         bindingId = "opencode-go.versapro-own-oci";
@@ -36,7 +26,7 @@
         modules = [
           ./versapro.nix
           ownModule
-          (import ./meltype-console.nix { inherit bcon meltype-src meltype-linux windows; })
+          (import ./meltype-console.nix { inherit bcon meltype-src meltype-linux; })
           {
             services.versaproOwnOci.enable = true;
             system.configurationRevision = self.rev or null;
@@ -56,10 +46,9 @@
         own-oci-vm = pkgs.testers.runNixOSTest (import ./tests/own-oci.nix {
           inherit pkgs ownModule;
           extendedProfile = extendedOwn.profile;
-          codexVersion = windows.releaseVersions.codex;
+          codexVersion = producer.releaseVersions.codex;
           piAgentDir = piTarget.agentDir;
           piBindingId = piTarget.bindingId;
         });
       };
-    };
-}
+    }
