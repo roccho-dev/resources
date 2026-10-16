@@ -2,7 +2,8 @@
 # Use: log in as `meltype` on a getty VT; the login starts `bcon --backend=seatd` with `meltype-tty --raw-text`
 # as bcon's shell. If bcon exits or fails, the login continues in the normal shell.
 # No system service, no autologin, no password or other secret (the User sets it on the host).
-{ bcon, meltype-src, meltype-linux }:
+# The terminal font is the Windows host's: windows hosts/common's selection, at the locked windows input.
+{ bcon, meltype-src, meltype-linux, windows }:
 { pkgs, ... }:
 let
   # sanohiro/bcon (MIT). Source and Cargo.lock come from the locked flake input. Run rootless, bcon
@@ -30,11 +31,21 @@ let
     inherit pkgs;
     packagePath = "${meltypeLinux}";
   };
+  # Fonts shared with the Windows host: windows' common-fonts (hosts/common; the files and fonts.json
+  # whose families its build checks). The terminal role's family and its Regular file come from fonts.json.
+  commonFonts = windows.packages.${pkgs.stdenv.hostPlatform.system}.common-fonts;
+  terminalFonts = builtins.filter (entry: entry.role == "terminal")
+    (builtins.fromJSON (builtins.readFile "${commonFonts}/fonts.json"));
+  terminalFamily = (builtins.head terminalFonts).family;
+  terminalRegular = builtins.filter (entry: entry.fullName == "${terminalFamily} Regular") terminalFonts;
+  terminalFont = assert builtins.length terminalRegular == 1;
+    "${commonFonts}/share/fonts/truetype/${(builtins.head terminalRegular).file}";
   # bcon (rootless) runs `$SHELL` as its child with no arguments and has no shell setting, so bcon is
   # started with SHELL pointing here. meltype-tty then wraps the normal shell (its default child is $SHELL).
+  # The trailing --font overrides package.nix's (argparse keeps the last one) for the candidate images.
   meltypeShell = pkgs.writeShellScript "meltype-shell" ''
     export SHELL=${pkgs.bashInteractive}/bin/bash
-    exec ${meltypeTty}/bin/meltype-tty --raw-text
+    exec ${meltypeTty}/bin/meltype-tty --raw-text --font ${terminalFont}
   '';
 in
 {
@@ -50,8 +61,14 @@ in
   environment.etc."bcon/config.toml".text = ''
     [terminal]
     ime = false
+
+    [font]
+    main = "${terminalFamily}"
+    cjk = "${terminalFamily}"
   '';
-  fonts.packages = [ pkgs.noto-fonts-cjk-sans ];
+  # Noto CJK stays only as fontconfig's fallback for kanji outside PlemolJP's set (IBM Plex Sans JP);
+  # it is in the closure anyway as split B's package.nix default font.
+  fonts.packages = [ commonFonts pkgs.noto-fonts-cjk-sans ];
   environment.systemPackages = [ bconPackage meltypeTty ];
   # Default for `meltype` on a physical console VT only: not over SSH, not for other users, not again
   # inside bcon (bcon sets TERM_PROGRAM=bcon; MELTYPE_CONSOLE marks this session). bcon is not exec'd,
