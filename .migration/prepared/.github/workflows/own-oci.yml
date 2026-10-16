@@ -1,0 +1,106 @@
+name: own OCI
+
+on:
+  pull_request:
+    paths:
+      - 'nixos/flake.nix'
+      - 'nixos/flake.lock'
+      - 'nixos/own-oci.nix'
+      - 'nixos/meltype-console.nix'
+      - 'nixos/tests/own-oci.nix'
+      - 'profile/**'
+      - 'windows/ssh/**'
+      - 'docs/codex-app-ssh.md'
+      - '.github/workflows/own-oci.yml'
+  push:
+    branches: [proposals]
+    paths:
+      - 'nixos/flake.nix'
+      - 'nixos/flake.lock'
+      - 'nixos/own-oci.nix'
+      - 'nixos/meltype-console.nix'
+      - 'nixos/tests/own-oci.nix'
+      - 'profile/**'
+      - 'windows/ssh/**'
+      - 'docs/codex-app-ssh.md'
+      - '.github/workflows/own-oci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  # The VersaPro client aliases as native OpenSSH resolves them: exact shape, one parseable pin per host key alias,
+  # and RED for missing/duplicate/mismatched pins, Include/Match, a missing jump, weakened host key checking or pins
+  # outside the windows ClientSsh slot (~/.ssh/windows-client/known_hosts).
+  client-ssh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Client SSH declaration
+        run: |
+          set -euo pipefail
+          check() { # config pins: succeeds only for the exact declared shape
+            local cfg=$1 pins=$2 kh="$HOME/.ssh/windows-client/known_hosts" alias key tmp
+            if grep -Eiq '^[[:space:]]*(include|match)([[:space:]]|$)' "$cfg"; then echo 'Include/Match is not allowed' >&2; return 1; fi
+            expect() { # alias option value ('' = unset)
+              local got
+              got=$(ssh -G -F "$cfg" "$1" | awk -v k="$2" '$1 == k { sub(/^[^ ]+ /, ""); print }')
+              [ "$got" = none ] && [ -z "$3" ] && got=''
+              [ "$got" = "$3" ] || { echo "$1 $2: '$got' != '$3'" >&2; return 1; }
+            }
+            for alias in versapro-ssd versapro-own-oci; do
+              expect "$alias" stricthostkeychecking true || return 1
+              expect "$alias" batchmode yes || return 1
+              expect "$alias" identitiesonly yes || return 1
+              expect "$alias" identityfile '~/.ssh/id_ed25519_windows_own' || return 1
+              expect "$alias" userknownhostsfile "$kh" || return 1
+            done
+            # ssh -G prints host key aliases lowercased; known_hosts matching is case-insensitive.
+            expect versapro-ssd user root && expect versapro-ssd hostname 192.168.0.103 && expect versapro-ssd port 22 &&
+              expect versapro-ssd hostkeyalias versapro-ssd-1804bq0831cwm370 && expect versapro-ssd proxyjump '' || return 1
+            expect versapro-own-oci user dev && expect versapro-own-oci hostname 127.0.0.1 && expect versapro-own-oci port 2223 &&
+              expect versapro-own-oci hostkeyalias versapro-own-oci && expect versapro-own-oci proxyjump versapro-ssd || return 1
+            [ "$(grep -cv '^[[:space:]]*$' "$pins")" = 2 ] || { echo 'pins: exactly the two declared lines' >&2; return 1; }
+            tmp=$(mktemp)
+            for key in versapro-ssd-1804BQ0831CWM370 versapro-own-oci; do
+              awk -v k="$key" '$1 == k' "$pins" > "$tmp"
+              [ "$(wc -l < "$tmp")" = 1 ] || { echo "pin $key missing or duplicated" >&2; return 1; }
+              ssh-keygen -lf "$tmp" | grep -Eq "^256 SHA256:[A-Za-z0-9+/]{43} $key \(ED25519\)\$" ||
+                { echo "pin $key is not one ed25519 public key" >&2; return 1; }
+            done
+          }
+          cfg=windows/ssh/versapro.config pins=windows/ssh/versapro.known_hosts
+          check "$cfg" "$pins"
+          echo 'declared client shape: PASS'
+          neg() { if check "$1" "$2" 2>/dev/null; then echo "accepted: $3" >&2; exit 1; fi; echo "RED as required: $3"; }
+          t=$(mktemp -d)
+          grep -v '^versapro-ssd-' "$pins" > "$t/missing"; neg "$cfg" "$t/missing" 'missing first-hop pin'
+          { cat "$pins"; grep '^versapro-own-oci ' "$pins"; } > "$t/dup"; neg "$cfg" "$t/dup" 'duplicate OCI pin'
+          sed 's/^versapro-own-oci /versapro-own-oci-x /' "$pins" > "$t/alias"; neg "$cfg" "$t/alias" 'pin under another alias'
+          sed 's/^\(versapro-own-oci ssh-ed25519 \).*/\1AAAA/' "$pins" > "$t/bad"; neg "$cfg" "$t/bad" 'unparseable pin'
+          { echo 'Include other/config'; cat "$cfg"; } > "$t/include"; neg "$t/include" "$pins" 'Include'
+          { cat "$cfg"; printf 'Match host versapro-own-oci\n  User root\n'; } > "$t/match"; neg "$t/match" "$pins" 'Match'
+          sed 's/ProxyJump versapro-ssd/ProxyJump none/' "$cfg" > "$t/nojump"; neg "$t/nojump" "$pins" 'missing jump'
+          sed '0,/StrictHostKeyChecking yes/s//StrictHostKeyChecking accept-new/' "$cfg" > "$t/weak"; neg "$t/weak" "$pins" 'weakened host key checking'
+          sed '0,/windows-client\/known_hosts/s//versapro\/known_hosts/' "$cfg" > "$t/slot"; neg "$t/slot" "$pins" 'pins outside the owned windows-client slot'
+  source-vm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
+      - name: Verify fixed inputs
+        run: |
+          set -euo pipefail
+          nix flake lock .
+          cat flake.lock
+          git diff --exit-code -- flake.lock
+      - name: Build host, production images, and standard VM proof
+        run: nix flake check . --no-write-lock-file --print-build-logs
