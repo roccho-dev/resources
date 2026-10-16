@@ -31,6 +31,8 @@ let
   };
 in
 {
+  # bcon draws through GBM; mesa's GBM backend lives under /run/opengl-driver, which this provides.
+  hardware.graphics.enable = true;
   services.seatd.enable = true;
   users.users.meltype = {
     isNormalUser = true;
