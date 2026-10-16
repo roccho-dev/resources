@@ -68,6 +68,10 @@ start = text.index('def prepare_fonts(')
 end = text.index('\n\nPACKAGE_KEYS', start)
 text = text[:start] + '# Compatibility import: the sole font implementation lives in profile/fonts.py.\nfrom fonts import prepare_fonts\n' + text[end:]
 file.write_text(text)
+# This directory-valued Nix path has no trailing slash and needs both moved modules.
+modify('flake.nix', 'PYTHONPATH=${./hosts/common}', 'PYTHONPATH=${./windows}:${./profile}')
+# The real source-bootstrap proof must fetch this repo's head, not a foreign repo's SHA.
+modify('.github/workflows/own-image.yml', 'github:roccho-dev/windows/$source', 'github:$GITHUB_REPOSITORY/$source', 3)
 
 # One flake entry, while retaining both pre-existing package-version locks.
 file = O / 'flake.nix'
