@@ -1,6 +1,7 @@
 # Japanese input on VersaPro's physical console: fork Meltype's Direct TTY (meltype-tty) inside bcon.
-# Use: log in as `meltype` on a getty VT -> `bcon --backend=seatd` -> inside bcon `meltype-tty --raw-text`.
-# No system service, no login-shell change, no password or other secret (the User sets it on the host).
+# Use: log in as `meltype` on a getty VT; the login starts `bcon --backend=seatd` with `meltype-tty --raw-text`
+# as bcon's shell. If bcon exits or fails, the login continues in the normal shell.
+# No system service, no autologin, no password or other secret (the User sets it on the host).
 { bcon, meltype-src, meltype-linux }:
 { pkgs, ... }:
 let
@@ -29,6 +30,12 @@ let
     inherit pkgs;
     packagePath = "${meltypeLinux}";
   };
+  # bcon (rootless) runs `$SHELL` as its child with no arguments and has no shell setting, so bcon is
+  # started with SHELL pointing here. meltype-tty then wraps the normal shell (its default child is $SHELL).
+  meltypeShell = pkgs.writeShellScript "meltype-shell" ''
+    export SHELL=${pkgs.bashInteractive}/bin/bash
+    exec ${meltypeTty}/bin/meltype-tty --raw-text
+  '';
 in
 {
   # bcon draws through GBM; mesa's GBM backend lives under /run/opengl-driver, which this provides.
@@ -46,4 +53,18 @@ in
   '';
   fonts.packages = [ pkgs.noto-fonts-cjk-sans ];
   environment.systemPackages = [ bconPackage meltypeTty ];
+  # Default for `meltype` on a physical console VT only: not over SSH, not for other users, not again
+  # inside bcon (bcon sets TERM_PROGRAM=bcon; MELTYPE_CONSOLE marks this session). bcon is not exec'd,
+  # so when it exits or fails the login continues in the normal shell.
+  environment.loginShellInit = ''
+    if [ "$(id -un)" = meltype ] && [ -z "''${SSH_CONNECTION-}" ] && [ -z "''${MELTYPE_CONSOLE-}" ] && [ "''${TERM_PROGRAM-}" != bcon ]; then
+      case "$(tty 2>/dev/null)" in
+        /dev/tty[0-9]*)
+          export MELTYPE_CONSOLE=1
+          SHELL=${meltypeShell} ${bconPackage}/bin/bcon --backend=seatd ||
+            echo "meltype-console: bcon exited with status $?; continuing in the normal shell." >&2
+          ;;
+      esac
+    fi
+  '';
 }
