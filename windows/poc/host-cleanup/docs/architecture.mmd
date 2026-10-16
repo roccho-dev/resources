@@ -1,0 +1,7 @@
+flowchart LR
+  Roots["明示した対象フォルダ"] --> Inventory["inventory: 制限付きの候補収集"]
+  Inventory --> JSONL["JSONL: 対象と観測値"]
+  JSONL --> Entry["host-cleanup.ps1"]
+  Entry --> Validate["形式・対象・現在の状態を検証"]
+  Validate --> Plan["DryRun: 判断結果を表示"]
+  Plan --> Review["利用者による確認"]

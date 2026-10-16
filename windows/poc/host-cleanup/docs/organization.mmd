@@ -1,0 +1,12 @@
+flowchart TB
+  U["User: small beautiful JSONL host-cleanup / PR by11:59JST"]
+  P["P: dirtree / boundary / serial integration and PR"]
+  D["Management Opus: guide same three / close ordinary corrections"]
+  R["Review Opus: independent checks of both components and integration"]
+  W1["Inventory Opus: inventory/ and its tests / own branch"]
+  W2["Selective Opus: host-cleanup.ps1 selective/ contracts/ examples/ / own branch"]
+  U --> P --> D
+  D --> R & W1 & W2
+  W1 & W2 --> R
+  R -->|counterexample| D
+  D -->|ready exact artifacts| P
