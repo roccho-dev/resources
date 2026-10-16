@@ -52,3 +52,65 @@ jobs:
           path: ${{ runner.temp }}/windows-path-inventory.jsonl
           if-no-files-found: error
           retention-days: 7
+
+  # Temporary migration transport only; remove after the candidate source tree exists.
+  # Imported workflows are under an inert prefix. No source code, secret or Host is executed.
+  source-transfer:
+    needs: source-paths
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'feat/windows-migration-inventory-20261016'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: true
+      - name: Transfer fixed Git objects without changing either live branch
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          set -euo pipefail
+          source=$(PYTHONPATH=tests python3 -c 'from migration_inventory import load_plan; print(load_plan("docs/windows-migration.jsonl")[0]["commit"])')
+          test "$source" = 64fe2fb19c756e3439f3549f9020164e69b91b4f
+          git fetch --no-tags --depth=1 https://github.com/roccho-dev/windows.git "$source"
+          test "$(git rev-parse FETCH_HEAD)" = "$source"
+          source_tree=$(git rev-parse "$source^{tree}")
+          destination=refs/heads/migration/windows-source-64fe2fb
+          set +e
+          remote=$(git ls-remote --exit-code --heads origin "$destination")
+          status=$?
+          set -e
+          case "$status" in
+            0)
+              git fetch --no-tags --depth=1 origin "$destination"
+              test "$(git rev-parse FETCH_HEAD:.migration/windows)" = "$source_tree"
+              candidate=$(git rev-parse FETCH_HEAD)
+              echo 'Existing identical source candidate: no write'
+              ;;
+            2)
+              git read-tree --prefix=.migration/windows/ "$source"
+              tree=$(git write-tree)
+              candidate=$(printf '%s\n' "chore(migration): preserve fixed Windows source $source under inert prefix" | git commit-tree "$tree" -p HEAD)
+              git push origin "$candidate:$destination"
+              ;;
+            *) echo 'Cannot establish candidate branch state; refusing write' >&2; exit "$status" ;;
+          esac
+          readback=$(git ls-remote --exit-code --heads origin "$destination")
+          test "${readback%%$'\t'*}" = "$candidate"
+          printf 'candidate=%s\nsource=%s\nsource_tree=%s\n' "$candidate" "$source" "$source_tree" | tee "$RUNNER_TEMP/source-transfer.txt"
+          git archive --format=tar "$source" > "$RUNNER_TEMP/windows-source.tar"
+          git archive --format=tar HEAD > "$RUNNER_TEMP/resources-source.tar"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: migration-source-snapshots
+          path: |
+            ${{ runner.temp }}/windows-source.tar
+            ${{ runner.temp }}/resources-source.tar
+            ${{ runner.temp }}/source-transfer.txt
+          if-no-files-found: error
+          retention-days: 7
