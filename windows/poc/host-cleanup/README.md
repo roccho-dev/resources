@@ -1,8 +1,27 @@
 # host-cleanup PoC
 
-JSONLで対象を明示する、Windows向けの小さなクリーンアップPoCです。既定はDryRunです。
-現段階では本番データの削除・サービス操作・定期実行を有効にしません。
-100GB以上を安全に削減できるという検証も、まだ成立していません。
+JSONLで対象を明示する、Windows / PowerShell 7向けの小さな候補収集・確認ツールです。
+現段階はDryRun専用で、判断はすべて `keep`、削除数は常に0です。
+本番削除・定期実行・100GB以上の安全な削減は未実現です。
+
+## 使い方
+
+このフォルダで実行します。付属のJSONLは架空のパスを使った例です。
+
+```powershell
+pwsh -NoProfile -File ./host-cleanup.ps1 -Config ./examples/planning-example.jsonl
+```
+
+対象フォルダを明示して候補を収集し、確認結果を表示します。
+`-InventoryOutput` は新規ファイルを指定します。既存ファイルは上書きしません。
+
+```powershell
+./host-cleanup.ps1 -InventoryRoot 'C:\example\input' -InventoryOutput 'C:\example\objects.jsonl' -MaxDepth 2
+```
+
+`-Apply` は拒否します。JSONLの形式は [共通schema](contracts/host_cleanup_object.v1.schema.json) を参照してください。
+`class` は `planning_only`、`status` は `proposed` / `pending` / `retain` / `unknown` に限定します。
+不正な行があればファイル全体を拒否し、終了コード2を返します。
 
 ## 配置と責任
 
@@ -19,9 +38,17 @@ host-cleanup/
 実装担当は別々の作業ブランチを使い、独立評価担当が両方を確認します。
 管理担当が通常の修正をつなぎ、統合・公開担当が同じ成果を1件のPRにまとめます。
 
-JSONLの文字列をコマンドとして実行せず、対象の状態を再確認します。
-`eligible`等のラベルやファイルの古さ・大きさだけを、削除の許可として扱いません。
-NixOSバックアップ、クラウドの実体取得を伴う経路、認証情報、履歴などの保護対象は含めません。
+JSONLの文字列をコマンドとして実行しません。候補収集はファイル本体を読まず、属性を取得します。
+選択処理で現在値と照合するのはサイズと更新時刻です。ファイルID・リンク数・割当量の実体照合や削除適格性の証明はありません。
+収集では保護名・reparse point・クラウド属性・複数リンク等を除外します。名前による除外は保護対象すべてを網羅する保証にはなりません。
 
-実際に使える引数・使用例・試験結果は、実装と独立確認後にこの入口から案内します。
-本書だけを実装・試験の完了証拠にはしません。
+## 試験
+
+Windows / PowerShell 7で、専用作業領域内の合成データだけを使います。生成したfixtureは残します。
+
+```powershell
+pwsh -NoProfile -File ./inventory/tests/Test-Inventory.ps1
+pwsh -NoProfile -File ./selective/tests/Test-HostCleanupPlan.ps1
+```
+
+検証結果と残課題は [検証記録](docs/verification.md)、処理の流れは [構成図](docs/architecture.mmd)、担当分担は [組織図](docs/organization.mmd) を参照してください。

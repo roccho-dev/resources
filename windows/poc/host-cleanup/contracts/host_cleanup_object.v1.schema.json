@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "host_cleanup_object.v1",
+  "title": "host_cleanup_object.v1 (one JSON object per JSONL line), PoC planning-only subset",
+  "description": "Data only. No field is executed. This PoC accepts only class planning_only; every planned decision is keep. Status is a label, never permission. The selective planner re-checks only current size and mtime; volume_serial, file_index, nlink and allocated are validated for format and bounds only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "path", "class", "status", "observed", "evidence", "reason", "owner_lane"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$", "description": "unique within the file" },
+    "path": { "type": "string", "pattern": "^[A-Za-z]:\\\\(?:[^\\\\/:*?\"<>|\\x00-\\x1f]+\\\\)*[^\\\\/:*?\"<>|\\x00-\\x1f]+$", "description": "Literal absolute file path; no wildcard, relative or '.'/'..' segment, UNC, ADS ':' or trailing separator. Unique case-insensitively." },
+    "class": { "type": "string", "const": "planning_only" },
+    "status": { "type": "string", "enum": ["proposed", "pending", "retain", "unknown"] },
+    "observed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["volume_serial", "file_index", "size", "allocated", "mtime_utc", "nlink"],
+      "properties": {
+        "volume_serial": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "file_index": { "type": "string", "pattern": "^(0|[1-9][0-9]{0,19})$", "description": "uint64 as decimal string; (volume_serial, file_index) unique within the file" },
+        "size": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "allocated": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "mtime_utc": { "type": "string", "format": "date-time" },
+        "nlink": { "type": "integer", "const": 1 }
+      }
+    },
+    "evidence": { "type": "object", "additionalProperties": false, "required": ["note"], "properties": { "note": { "type": "string", "maxLength": 200 } } },
+    "reason": { "type": "string", "maxLength": 200 },
+    "owner_lane": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,32}$" }
+  }
+}
