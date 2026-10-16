@@ -15,7 +15,7 @@ permissions:
 jobs:
   source-paths:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -46,6 +46,29 @@ jobs:
             --output "$RUNNER_TEMP/windows-path-inventory.jsonl"
           cat "$RUNNER_TEMP/windows-path-inventory.jsonl"
           tail -n 1 "$RUNNER_TEMP/windows-path-inventory.jsonl" >> "$GITHUB_STEP_SUMMARY"
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
+      - name: Compare pinned old and new fonts, core, and public Binding bytes
+        run: |
+          set -euo pipefail
+          test "$(git ls-files '*flake.nix')" = flake.nix
+          python3 - <<'PYCODE'
+          import json
+          lock = json.load(open("flake.lock"))
+          assert "windows" not in lock["nodes"][lock["root"]]["inputs"]
+          assert not any(n.get("locked", {}).get("repo") == "windows" and
+                         n.get("locked", {}).get("owner") == "roccho-dev"
+                         for n in lock["nodes"].values())
+          PYCODE
+          old="path:$PWD/_source"
+          before=$(nix build "$old#common-fonts" --no-write-lock-file --no-link --print-out-paths)
+          after=$(nix build .#common-fonts --no-write-lock-file --no-link --print-out-paths)
+          diff -r --no-dereference "$before" "$after"
+          test "$(nix eval --raw "$old#own-core.drvPath" --no-write-lock-file)" = \
+               "$(nix eval --raw .#own-core.drvPath --no-write-lock-file)"
+          bindings=$(nix build .#binding-inputs --no-write-lock-file --no-link --print-out-paths)
+          cmp _source/hosts/own/bindings/G6I3.json "$bindings/own.json"
+          cmp _source/oci/dev/bindings/G6I3.json "$bindings/dev.json"
+          echo 'PASS: pinned fonts full contents, own core derivation, public Binding bytes; root flake has no windows input.' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: windows-path-inventory-${{ github.event.pull_request.head.sha || github.sha }}
