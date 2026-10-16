@@ -36,7 +36,7 @@
         modules = [
           ./versapro.nix
           ownModule
-          (import ./meltype-console.nix { inherit bcon meltype-src meltype-linux; })
+          (import ./meltype-console.nix { inherit bcon meltype-src meltype-linux windows; })
           {
             services.versaproOwnOci.enable = true;
             system.configurationRevision = self.rev or null;
