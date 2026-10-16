@@ -3,25 +3,25 @@ name: own OCI
 on:
   pull_request:
     paths:
-      - 'nixos/flake.nix'
-      - 'nixos/flake.lock'
-      - 'nixos/own-oci.nix'
-      - 'nixos/meltype-console.nix'
-      - 'nixos/tests/own-oci.nix'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'nixos/**'
+      - 'oci/**'
+      - 'windows/**'
       - 'profile/**'
-      - 'windows/ssh/**'
+      - 'extensions/**'
       - 'docs/codex-app-ssh.md'
       - '.github/workflows/own-oci.yml'
   push:
     branches: [proposals]
     paths:
-      - 'nixos/flake.nix'
-      - 'nixos/flake.lock'
-      - 'nixos/own-oci.nix'
-      - 'nixos/meltype-console.nix'
-      - 'nixos/tests/own-oci.nix'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'nixos/**'
+      - 'oci/**'
+      - 'windows/**'
       - 'profile/**'
-      - 'windows/ssh/**'
+      - 'extensions/**'
       - 'docs/codex-app-ssh.md'
       - '.github/workflows/own-oci.yml'
 
