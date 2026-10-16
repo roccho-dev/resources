@@ -15,11 +15,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
           persist-credentials: true
       - name: Correct exact migration references and test the real release watcher
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^)" = f699457a840664cbde59c878bb62c2c6451c2efc
+          git diff --exit-code f699457a840664cbde59c878bb62c2c6451c2efc HEAD -- . ':!.github/workflows/migration-reference-fix.yml'
           python3 - <<'PY'
           from pathlib import Path
           def replace(path, old, new):
@@ -44,8 +45,7 @@ jobs:
                         before=$(nix eval --raw "git+file://$PWD?rev=$BASE_SOURCE#own-image.drvPath")
                         rent_before=$(nix eval --raw "git+file://$PWD?rev=$BASE_SOURCE#rent-image.drvPath")
                       else
-                        # The first migration base used nixos/flake.nix and a locked external Producer.
-                        # Read that actual fixed input, not an invented root or an unchecked success.
+                        # First migration: read the actual old nested flake's locked Producer.
                         base="git+file://$PWD?dir=nixos&rev=$BASE_SOURCE"
                         before=$(nix eval --raw --expr "(builtins.getFlake \\\"$base\\\").inputs.windows.packages.x86_64-linux.own-image.drvPath")
                         rent_before=$(nix eval --raw --expr "(builtins.getFlake \\\"$base\\\").inputs.windows.packages.x86_64-linux.rent-image.drvPath")
