@@ -70,7 +70,23 @@ if ($InventoryScript -and (Test-Path -LiteralPath $InventoryScript)) {
   $planExit = $LASTEXITCODE
   $txt = $out -join "`n"
   Check 'interop: W1 inventory rows validate and plan as keep/unchanged' ($planExit -eq 0 -and $txt -match '"rows":2' -and $rows.Count -eq 2 -and ([regex]::Matches($txt, '"decision":"keep","reason":"unchanged_size_mtime"')).Count -eq 2) "rows=$($rows.Count) out=$txt"
-} else { "SKIP interop (no -InventoryScript)" }
+
+  # End to end through the entry: -InventoryRoot -InventoryOutput (explicit new file in this worktree).
+  $e2eDir = Join-Path $fx 'e2e'; New-Item -ItemType Directory -Path $e2eDir | Out-Null
+  [IO.File]::WriteAllText((Join-Path $e2eDir 'm.bin'), 'e2e-m'); [IO.File]::WriteAllText((Join-Path $e2eDir 'n.bin'), 'e2e-n')
+  $before = @(Get-ChildItem -LiteralPath $e2eDir -File | ForEach-Object { "$($_.Name)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" })
+  $cat = Join-Path $fx 'e2e-catalog.jsonl'
+  $eo = & $pwsh -NoProfile -NonInteractive -File $entry -InventoryRoot $e2eDir -InventoryOutput $cat -MaxDepth 2 -InventoryScript $InventoryScript 2>$null
+  $eExit = $LASTEXITCODE; $et = $eo -join "`n"
+  $catRows = @(Get-Content -LiteralPath $cat | Where-Object { $_.Trim() })
+  $schemaOk = @($catRows | ForEach-Object { $o = $_ | ConvertFrom-Json; $o.class -eq 'planning_only' -and $o.observed.file_index -is [string] -and $o.observed.nlink -eq 1 }) -notcontains $false
+  Check 'e2e entry: catalog has 2 schema rows and plan keeps 2' ($eExit -eq 0 -and $catRows.Count -eq 2 -and $schemaOk -and $et -match '"rows":2' -and ([regex]::Matches($et, '"decision":"keep","reason":"unchanged_size_mtime"')).Count -eq 2) "exit=$eExit rows=$($catRows.Count) out=$et"
+  $catHash = (Get-FileHash -LiteralPath $cat -Algorithm SHA256).Hash
+  $ro = & $pwsh -NoProfile -NonInteractive -File $entry -InventoryRoot $e2eDir -InventoryOutput $cat -InventoryScript $InventoryScript 2>$null
+  Check 'e2e entry: existing output refused and unchanged' ($LASTEXITCODE -eq 2 -and ($ro -join '') -match 'inventory_output_exists' -and (Get-FileHash -LiteralPath $cat -Algorithm SHA256).Hash -eq $catHash) ($ro -join ' ')
+  $after = @(Get-ChildItem -LiteralPath $e2eDir -File | ForEach-Object { "$($_.Name)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" })
+  Check 'e2e entry: fixture unchanged' (($before -join ';') -eq ($after -join ';')) "before=$before after=$after"
+} else { "SKIP interop and e2e (no -InventoryScript)" }
 
 Check 'nothing deleted' ((Test-Path -LiteralPath $f1) -and ([IO.File]::ReadAllText($f1) -eq 'synthetic-a')) 'fixture changed'
 "TOTAL pass=$pass fail=$fail fixture=$fx"
