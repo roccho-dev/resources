@@ -646,9 +646,17 @@ jobs:
           echo "own image derivation head: $after"
           echo "rent image derivation head: $(nix eval --raw .#rent-image.drvPath)"
           if [[ "$BASE_SOURCE" =~ ^[0-9a-f]{40}$ && "$BASE_SOURCE" != 0000000000000000000000000000000000000000 ]]; then
-            before=$(nix eval --raw "git+file://$PWD?rev=$BASE_SOURCE#own-image.drvPath")
+            if git cat-file -e "$BASE_SOURCE:flake.nix" 2>/dev/null; then
+              before=$(nix eval --raw "git+file://$PWD?rev=$BASE_SOURCE#own-image.drvPath")
+              rent_before=$(nix eval --raw "git+file://$PWD?rev=$BASE_SOURCE#rent-image.drvPath")
+            else
+              # First migration: read the actual old nested flake's locked Producer.
+              base="git+file://$PWD?dir=nixos&rev=$BASE_SOURCE"
+              before=$(nix eval --raw --expr "(builtins.getFlake \"$base\").inputs.windows.packages.x86_64-linux.own-image.drvPath")
+              rent_before=$(nix eval --raw --expr "(builtins.getFlake \"$base\").inputs.windows.packages.x86_64-linux.rent-image.drvPath")
+            fi
             echo "own image derivation base: $before"
-            echo "rent image derivation base: $(nix eval --raw "git+file://$PWD?rev=$BASE_SOURCE#rent-image.drvPath")"
+            echo "rent image derivation base: $rent_before"
           else
             echo 'own image derivation base: unavailable for this event'
           fi

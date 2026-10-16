@@ -218,7 +218,7 @@ let
       }
     ];
   });
-  dist = pkgs.runCommand "windows-dist" { nativeBuildInputs = [ python ]; PYTHONPATH = toString ../profile; } ''
+  dist = pkgs.runCommand "windows-dist" { nativeBuildInputs = [ python ]; PYTHONPATH = "${../profile}"; } ''
     python ${./pack.py} platform ${pkgs.writeText "wsl-platform.json" (builtins.toJSON wslPlatform)} \
       ${pkgs.fetchurl { inherit (wslPlatform) url sha256; }}
     python ${./pack.py} bootstrap ${pkgs.writeText "winget-bootstrap.json" (builtins.toJSON wingetBootstrap)} \

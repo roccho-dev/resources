@@ -697,8 +697,10 @@
           binding = builtins.toJSON ciAltBinding;
         } ''
           set -eu
-          export PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=${./windows}:${./profile}
+          export PYTHONDONTWRITEBYTECODE=1
           python - <<'EOF'
+          import sys
+          sys.path[:0] = ["${./windows}", "${./profile}"]
           import json, os, pack
           p, b = json.loads(os.environ["projection"]), json.loads(os.environ["binding"])
           launch = pack.noctty_launch(p["launch"])

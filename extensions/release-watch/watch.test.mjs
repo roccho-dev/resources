@@ -79,11 +79,11 @@ class GitObjectFixture {
     this.date = '2026-10-09T00:00:00.000Z';
     this.rootEntries = [
       { path: 'README.md', mode: '100644', type: 'blob', sha: 'd'.repeat(40) },
-      { path: 'hosts', mode: '040000', type: 'tree', sha: this.hostsTree },
+      { path: 'profile', mode: '040000', type: 'tree', sha: this.profileTree },
+      { path: 'oci', mode: '040000', type: 'tree', sha: this.hostsTree },
     ];
     this.hostsEntries = [
       { path: 'own', mode: '040000', type: 'tree', sha: 'e'.repeat(40) },
-      { path: 'profile', mode: '040000', type: 'tree', sha: this.profileTree },
     ];
     this.profileEntries = [
       { path: 'nix.nix', mode: '100644', type: 'blob', sha: 'f'.repeat(40) },
@@ -99,8 +99,7 @@ class GitObjectFixture {
   }
   expectedRoot(blobSha) {
     const profile = testGitTreeSha(this.profileEntries.map((entry) => entry.path === 'releases.json' ? { ...entry, sha: blobSha } : entry));
-    const hosts = testGitTreeSha(this.hostsEntries.map((entry) => entry.path === 'profile' ? { ...entry, sha: profile } : entry));
-    return testGitTreeSha(this.rootEntries.map((entry) => entry.path === 'hosts' ? { ...entry, sha: hosts } : entry));
+    return testGitTreeSha(this.rootEntries.map((entry) => entry.path === 'profile' ? { ...entry, sha: profile } : entry));
   }
   api = async (method, path, body) => {
     this.calls.push({ method, path, body });
