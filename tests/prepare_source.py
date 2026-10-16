@@ -74,21 +74,22 @@ file = O / 'flake.nix'
 text = file.read_text()
 text = text.replace('description = "own and rent WSLC OCI images"', 'description = "Host tools, native systems and OCI images"')
 text = text.replace('  outputs = { self, nixpkgs }:', '''  inputs.host-nixpkgs.url = "github:NixOS/nixpkgs/2efa67fd26b6df417c33e4603185c701f260dd83";
-  inputs.host-bindings = { url = "github:roccho-org/envs/1f8a482cbdedc87c8b2a8a84bdbaa28d2497a88e"; flake = false; };
+  inputs.host-bindings = { url = "github:roccho-org/envs/9f344086fd0cc5a8e05103d58f5b4cbc60d73da6"; flake = false; };
   inputs.bcon = { url = "github:sanohiro/bcon/v1.5.1"; flake = false; };
   inputs.meltype-src = { url = "github:roccho-dev/Meltype/v1.2.1.5"; flake = false; };
   inputs.meltype-linux = { url = "file+https://github.com/roccho-dev/Meltype/releases/download/v1.2.1.5/Meltype-1.2.1.5-linux.zip"; flake = false; };
 
   outputs = { self, nixpkgs, host-nixpkgs, host-bindings, bcon, meltype-src, meltype-linux }:''')
 text = text.replace('      ownOwner = (builtins.fromJSON (builtins.readFile ./oci/own/bindings/G6I3.json)).owner;', '''      # Explicit nonsecret envs input; the Windows library has no target-specific default.
-      ownBinding = builtins.fromJSON (builtins.readFile "${host-bindings}/host-bindings/own/G6I3.json");
+      bindingRoot = "${host-bindings}/contracts/host-bindings";
+      ownBinding = builtins.fromJSON (builtins.readFile "${bindingRoot}/own/G6I3.json");
       ownOwner = ownBinding.owner;''')
 text = text.replace('        inherit pkgs;\n        source = self.rev or "uncommitted";', '        inherit pkgs ownBinding;\n        source = self.rev or "uncommitted";')
 text = text.replace('    in {\n      inherit releaseVersions;', '    in let producer = {\n      inherit releaseVersions;')
 text = text.replace('      packages.${system} = {', '''      packages.${system} = {
         binding-inputs = pkgs.linkFarm "host-binding-inputs" [
-          { name = "own.json"; path = "${host-bindings}/host-bindings/own/G6I3.json"; }
-          { name = "dev.json"; path = "${host-bindings}/host-bindings/dev/G6I3.json"; }
+          { name = "own.json"; path = "${bindingRoot}/own/G6I3.json"; }
+          { name = "dev.json"; path = "${bindingRoot}/dev/G6I3.json"; }
         ];''', 1)
 assert text.endswith('    };\n}\n'), text[-100:]
 text = text[:-len('    };\n}\n')] + '''    };
@@ -143,7 +144,7 @@ assert needle in text
 text = text.replace(needle, '''          if git cat-file -e "$BASE:flake.nix" 2>/dev/null; then
             old_input=$(git show "$BASE:flake.lock" | jq -er '.nodes["host-bindings"].locked.rev') || fail 'base input unreadable'
             git fetch --no-tags --depth=1 https://github.com/roccho-org/envs.git "$old_input"
-            old=$(git show "$old_input:host-bindings/own/G6I3.json" | jq -er .image) || fail 'base binding unreadable'
+            old=$(git show "$old_input:contracts/host-bindings/own/G6I3.json" | jq -er .image) || fail 'base binding unreadable'
           else
             # First relocation only: compare with actual immutable pre-migration evidence.
             baseline=64fe2fb19c756e3439f3549f9020164e69b91b4f
