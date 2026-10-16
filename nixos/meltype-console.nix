@@ -2,8 +2,9 @@
 # Use: log in as `meltype` on a getty VT; the login starts `bcon --backend=seatd` with `meltype-tty --raw-text`
 # as bcon's shell. If bcon exits or fails, the login continues in the normal shell.
 # No system service, no autologin, no password or other secret (the User sets it on the host).
-# The terminal font is the Windows host's: windows hosts/common's selection, at the locked windows input.
-{ bcon, meltype-src, meltype-linux, windows }:
+# The terminal font is the shared selection in profile/fonts.nix, built with this host's nixpkgs.
+# The flake still passes `windows`; only the transitional parity check below reads it (removed with D9).
+{ bcon, meltype-src, meltype-linux, ... }@inputs:
 { pkgs, ... }:
 let
   # sanohiro/bcon (MIT). Source and Cargo.lock come from the locked flake input. Run rootless, bcon
@@ -31,9 +32,9 @@ let
     inherit pkgs;
     packagePath = "${meltypeLinux}";
   };
-  # Fonts shared with the Windows host: windows' common-fonts (hosts/common; the files and fonts.json
-  # whose families its build checks). The terminal role's family and its Regular file come from fonts.json.
-  commonFonts = windows.packages.${pkgs.stdenv.hostPlatform.system}.common-fonts;
+  # Fonts shared with the Windows host: profile/fonts.nix (the files and fonts.json whose families its
+  # build checks). The terminal role's family and its Regular file come from fonts.json.
+  commonFonts = (import ../profile/fonts.nix { inherit pkgs; }).commonFonts;
   terminalFonts = builtins.filter (entry: entry.role == "terminal")
     (builtins.fromJSON (builtins.readFile "${commonFonts}/fonts.json"));
   terminalFamily = (builtins.head terminalFonts).family;
@@ -49,6 +50,7 @@ let
   '';
 in
 {
+  imports = [ (import ../profile/fonts-parity.nix { inherit (inputs) windows; }) ];
   # bcon draws through GBM; mesa's GBM backend lives under /run/opengl-driver, which this provides.
   hardware.graphics.enable = true;
   services.seatd.enable = true;
