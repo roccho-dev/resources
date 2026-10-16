@@ -1,6 +1,6 @@
 # Japanese input on VersaPro's physical console: fork Meltype's Direct TTY (meltype-tty) inside bcon.
-# Use: log in as `meltype` on a getty VT; the login starts `bcon --backend=seatd` with `meltype-tty --raw-text`
-# as bcon's shell. If bcon exits or fails, the login continues in the normal shell.
+# Use: log in as `meltype` on a getty VT; the login becomes bcon (seatd backend) with `meltype-tty --raw-text`
+# as bcon's shell. No shell stays under bcon: when bcon exits or fails, the session ends and getty returns.
 # No system service, no autologin, no password or other secret (the User sets it on the host).
 # The terminal font is the shared selection in profile/fonts.nix, built with this host's nixpkgs.
 # The flake still passes `windows`; only the transitional parity check below reads it (removed with D9).
@@ -48,6 +48,26 @@ let
     export SHELL=${pkgs.bashInteractive}/bin/bash
     exec ${meltypeTty}/bin/meltype-tty --raw-text --font ${terminalFont}
   '';
+  # meltype's login shell. bcon itself cannot be it: login sets SHELL to the login shell, and bcon would
+  # start itself as its child. So this sets SHELL (and the backend, BCON_BACKEND) and execs bcon: the
+  # process chain is getty → login → bcon → meltype-tty → bash, with no shell layer left in between.
+  # set-environment gives bcon and meltype-tty the NixOS environment a login shell would have had.
+  meltypeLogin = (pkgs.writeShellScriptBin "meltype-login" ''
+    # login(1) starts the login shell with no arguments; on a console VT that session becomes bcon.
+    if [ "$#" -eq 0 ]; then
+      case "$(${pkgs.coreutils}/bin/tty 2>/dev/null)" in
+        /dev/tty[0-9]*)
+          . /etc/set-environment
+          export SHELL=${meltypeShell} BCON_BACKEND=seatd
+          exec ${bconPackage}/bin/bcon
+          ;;
+      esac
+    fi
+    # Anything else (`su meltype -c …`, sshd's `-c` for ssh/scp, no console VT) gets the normal bash.
+    export SHELL=${pkgs.bashInteractive}/bin/bash
+    if [ "$#" -eq 0 ]; then exec "$SHELL" --login; fi
+    exec "$SHELL" "$@"
+  '').overrideAttrs (_: { passthru.shellPath = "/bin/meltype-login"; });
 in
 {
   imports = [ (import ../profile/fonts-parity.nix { inherit (inputs) windows; }) ];
@@ -58,7 +78,10 @@ in
     isNormalUser = true;
     description = "Meltype console";
     extraGroups = [ "seat" "video" "input" ];
+    # A shell package: NixOS installs it and points passwd at /run/current-system/sw/bin/meltype-login.
+    shell = meltypeLogin;
   };
+  environment.shells = [ meltypeLogin ];
   # Direct TTY: bcon's own IME stays off; meltype-tty does the conversion.
   environment.etc."bcon/config.toml".text = ''
     [terminal]
@@ -72,18 +95,15 @@ in
   # it is in the closure anyway as split B's package.nix default font.
   fonts.packages = [ commonFonts pkgs.noto-fonts-cjk-sans ];
   environment.systemPackages = [ bconPackage meltypeTty ];
-  # Default for `meltype` on a physical console VT only: not over SSH, not for other users, not again
-  # inside bcon (bcon sets TERM_PROGRAM=bcon; MELTYPE_CONSOLE marks this session). bcon is not exec'd,
-  # so when it exits or fails the login continues in the normal shell.
-  environment.loginShellInit = ''
-    if [ "$(id -un)" = meltype ] && [ -z "''${SSH_CONNECTION-}" ] && [ -z "''${MELTYPE_CONSOLE-}" ] && [ "''${TERM_PROGRAM-}" != bcon ]; then
-      case "$(tty 2>/dev/null)" in
-        /dev/tty[0-9]*)
-          export MELTYPE_CONSOLE=1
-          SHELL=${meltypeShell} ${bconPackage}/bin/bcon --backend=seatd ||
-            echo "meltype-console: bcon exited with status $?; continuing in the normal shell." >&2
-          ;;
-      esac
-    fi
-  '';
+  # The login's non-console branch, built with the system (a build has no VT): arguments reach bash
+  # unchanged, with none it is a login bash, and SHELL is bash so nothing started there re-enters bcon.
+  system.checks = [
+    (pkgs.runCommand "meltype-login-branches" { } ''
+      login=${meltypeLogin}/bin/meltype-login
+      [ "$($login -c 'printf "%s|" "$0" "$1"' zero one </dev/null)" = "zero|one|" ]
+      [ "$(echo 'shopt -q login_shell && echo login' | $login)" = login ]
+      [ "$($login -c 'echo "$SHELL"' </dev/null)" = ${pkgs.bashInteractive}/bin/bash ]
+      touch $out
+    '')
+  ];
 }
