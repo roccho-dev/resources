@@ -105,6 +105,27 @@ class InventoryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "STALE"):
             self.inventory(head="c" * 40)
 
+    def test_preparation_records_drift_without_claiming_current_or_complete(self):
+        result = sut.inventory(*self.load(), [self.entry], "c" * 40, preparation=True)
+        self.assertEqual(result[0]["commit"], self.source["commit"])
+        self.assertEqual(result[0]["observed_head"], "c" * 40)
+        self.assertEqual(result[0]["scope"], "pinned-source-preparation")
+        self.assertTrue(result[0]["upstream_review_required"])
+        self.assertTrue(result[-1]["upstream_review_required"])
+        self.assertFalse(result[-1]["migration_complete"])
+        self.assertEqual(result[1]["status"], "UNMIGRATED")
+
+    def test_preparation_matching_upstream_still_not_migration_acceptance(self):
+        result = sut.inventory(*self.load(), [self.entry], self.source["commit"], preparation=True)
+        self.assertFalse(result[-1]["upstream_review_required"])
+        self.assertFalse(result[-1]["migration_complete"])
+        self.assertIn(self.gap, result)
+
+    def test_preparation_rejects_missing_or_invalid_observation(self):
+        for head in ("", "latest", "0" * 39, "a" * 40 + "\n"):
+            with self.subTest(head=head), self.assertRaises(ValueError):
+                sut.inventory(*self.load(), [self.entry], head, preparation=True)
+
     def test_tree_modes_and_names(self):
         raw = ("120000 blob " + "b" * 40 + "\tsrc/名前 with\nnewline\0").encode()
         self.assertEqual(sut.parse_tree(raw)[0]["mode"], "120000")
@@ -158,3 +179,5 @@ class InventoryTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# Explicit latest-dispatch-head correction retained in source publication oracle.

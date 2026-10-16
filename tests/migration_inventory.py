@@ -82,10 +82,16 @@ def read_tree(checkout, commit):
     return parse_tree(git("ls-tree", "-r", "-z", "--full-tree", commit))
 
 
-def inventory(source, routes, gaps, entries, observed_head):
-    require(SHA.fullmatch(observed_head) and observed_head == source["commit"], "STALE: observed branch differs from source pin")
+def inventory(source, routes, gaps, entries, observed_head, *, preparation=False):
+    require(SHA.fullmatch(observed_head), "invalid observed branch head")
+    upstream_changed = observed_head != source["commit"]
+    # Preparation proves the named snapshot, not that later work has been inherited.
+    # The original current-source gate stays strict unless this scope is explicit.
+    require(preparation or not upstream_changed, "STALE: observed branch differs from source pin")
     require(entries and len({e["path"] for e in entries}) == len(entries), "empty or duplicate entries")
-    result = [{**source, "observed_head": observed_head, "scope": "source-paths-only"}]
+    result = [{**source, "observed_head": observed_head,
+               "scope": "pinned-source-preparation" if preparation else "source-paths-only",
+               "upstream_review_required": upstream_changed}]
     for entry in sorted(entries, key=lambda e: e["path"]):
         path = entry["path"]
         candidates = [r for r in routes if path == r["match"] or
@@ -100,7 +106,8 @@ def inventory(source, routes, gaps, entries, observed_head):
     result.append({"kind": "summary", "path_coverage": "PASS", "paths": len(entries),
                    "workflows": sum(e["path"].startswith(".github/workflows/") and
                                     e["path"].endswith((".yml", ".yaml")) for e in entries),
-                   "unverified_categories": [g["scope"] for g in gaps], "migration_complete": False})
+                   "unverified_categories": [g["scope"] for g in gaps],
+                   "upstream_review_required": upstream_changed, "migration_complete": False})
     return result
 
 
@@ -111,6 +118,8 @@ def main():
     parser.add_argument("--checkout", type=Path)
     parser.add_argument("--observed-head")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--preparation", action="store_true",
+                        help="prove only the pinned snapshot; retain actual upstream drift for later review")
     args = parser.parse_args()
     try:
         source, routes, gaps = load_plan(args.plan)
@@ -119,7 +128,8 @@ def main():
                 print(f"{key}={source[key]}")
             return
         require(args.checkout and args.observed_head and args.output, "inventory needs checkout, observed-head and output")
-        rows = inventory(source, routes, gaps, read_tree(args.checkout, source["commit"]), args.observed_head)
+        rows = inventory(source, routes, gaps, read_tree(args.checkout, source["commit"]),
+                         args.observed_head, preparation=args.preparation)
         payload = "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows)
         # Validate everything before creating one new output; never overwrite prior evidence.
         with args.output.open("x", encoding="utf-8") as out:

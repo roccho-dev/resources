@@ -149,7 +149,7 @@ let
   inventory = lock: let
     archive = pkgs.fetchurl { inherit (lock) url sha256; };
     upstream = builtins.removeAttrs lock [ "seed" "appPath" ];
-  in pkgs.runCommand "package-inventory-${lock.name}" { nativeBuildInputs = [ python pkgs._7zz ]; } ''
+  in pkgs.runCommand "package-inventory-${lock.name}" { nativeBuildInputs = [ python pkgs._7zz ]; PYTHONPATH = "${../profile}"; } ''
     7zz l -slt ${archive} > listing.txt
     python ${./pack.py} listing listing.txt
     mkdir tree

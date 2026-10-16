@@ -32,7 +32,7 @@ jobs:
           ref: ${{ steps.pin.outputs.commit }}
           path: _source
           persist-credentials: false
-      - name: Observe branch and inventory actual fixed source without running its code
+      - name: Verify pinned preparation source and record newer upstream without admitting it
         env:
           BRANCH: ${{ steps.pin.outputs.branch }}
         run: |
@@ -42,7 +42,7 @@ jobs:
           read -r observed ref <<< "$remote"
           test "$ref" = "refs/heads/$BRANCH"
           python3 tests/migration_inventory.py inventory docs/windows-migration.jsonl \
-            --checkout _source --observed-head "$observed" \
+            --checkout _source --observed-head "$observed" --preparation \
             --output "$RUNNER_TEMP/windows-path-inventory.jsonl"
           cat "$RUNNER_TEMP/windows-path-inventory.jsonl"
           tail -n 1 "$RUNNER_TEMP/windows-path-inventory.jsonl" >> "$GITHUB_STEP_SUMMARY"
@@ -52,4 +52,3 @@ jobs:
           path: ${{ runner.temp }}/windows-path-inventory.jsonl
           if-no-files-found: error
           retention-days: 7
-
