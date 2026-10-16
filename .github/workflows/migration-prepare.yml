@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: migration-prepare-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   prepare:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'feat/windows-migration-inventory-20261016'
@@ -45,9 +49,16 @@ jobs:
       - name: Generate real lock and evaluate all relocated outputs
         run: |
           set -euo pipefail
-          nix flake lock "path:$RUNNER_TEMP/prepared"
-          nix flake check "path:$RUNNER_TEMP/prepared" --no-build --no-write-lock-file --show-trace
-          nix flake show "path:$RUNNER_TEMP/prepared" --json --no-write-lock-file > "$RUNNER_TEMP/outputs.json"
+          candidate="path:$RUNNER_TEMP/prepared"
+          nix flake lock "$candidate"
+          # Existing fixed-source imports need realization during evaluation. --no-build
+          # makes the store read-only and cannot be the first evaluation in a fresh runner.
+          for output in packages checks; do
+            nix eval "$candidate#$output.x86_64-linux" --json --no-write-lock-file \
+              --apply 'builtins.mapAttrs (_: value: value.drvPath)' > "$RUNNER_TEMP/$output.json"
+          done
+          nix flake check "$candidate" --no-build --no-write-lock-file --show-trace
+          nix flake show "$candidate" --json --no-write-lock-file > "$RUNNER_TEMP/outputs.json"
       - name: Preserve bindings and run the existing Python tests and exact font parity
         env:
           PYTHONDONTWRITEBYTECODE: '1'
@@ -105,5 +116,7 @@ jobs:
             ${{ runner.temp }}/prepared-source.tar
             ${{ runner.temp }}/prepared-result.txt
             ${{ runner.temp }}/outputs.json
+            ${{ runner.temp }}/packages.json
+            ${{ runner.temp }}/checks.json
           if-no-files-found: error
           retention-days: 7
