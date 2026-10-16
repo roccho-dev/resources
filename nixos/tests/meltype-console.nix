@@ -1,8 +1,7 @@
 # The physical console path in a VM, as on VersaPro: QEMU's keyboard → kernel input → evdev → libinput → bcon,
-# then meltype-tty and an interactive bash. Three logins on the getty VT, one at a time:
+# then meltype-tty and an interactive bash. Two logins on the getty VT, one at a time:
 #   probe   bcon → bash                (no meltype-tty: which layer loses a key)
-#   tracer  bcon → meltype-tty → bash  (os.read/os.write and the Direct Input state traced into a VM file)
-#   meltype the real meltype-console login (nixos/meltype-console.nix)
+#   meltype the real meltype-console login (nixos/meltype-console.nix): bcon → meltype-tty → bash
 # Users, passwords and keystrokes exist only in this VM; nothing from a host is recorded.
 { pkgs, meltypeConsole }:
 let
@@ -17,40 +16,6 @@ let
     exec ${bash} "$@"
   '').overrideAttrs (_: { passthru.shellPath = "/bin/${name}"; });
   probeLogin = bconLogin "probe-login" bash;
-  # Imported by meltype-tty's Python at startup (PYTHONPATH): records its byte boundaries and, at each read
-  # from bcon, the Direct Input state before that input is processed.
-  traceSite = pkgs.writeTextDir "usercustomize.py" ''
-    import gc, json, os, sys, time
-    path = os.environ.pop("MELTYPE_TRACE", None)
-    os.environ.pop("PYTHONPATH", None)
-    if path:
-        log = open(path, "a", buffering=1)
-        real_read, real_write = os.read, os.write
-        def state():
-            cls = getattr(sys.modules.get("__main__"), "InputBridge", None)
-            for o in gc.get_objects() if cls else ():
-                if isinstance(o, cls):
-                    return {"direct": o.direct, "composing": o.view is not None, "capturing": o.capturing,
-                            "paused": o.paused, "escape": bytes(o.escape).hex(), "shadow": bytes(o.shadow).decode("latin-1"),
-                            "unechoed": bytes(o.unechoed).decode("latin-1"), "erasing": o.erasing}
-            return None
-        def record(op, fd, data):
-            entry = {"t": round(time.monotonic(), 4), "op": op, "fd": fd}
-            if op == "write" and fd == 1: entry["len"] = len(data)
-            else: entry["hex"] = bytes(data).hex()
-            if op == "read" and fd == 0: entry["state"] = state()
-            log.write(json.dumps(entry) + "\n")
-        def read(fd, n):
-            data = real_read(fd, n); record("read", fd, data); return data
-        def write(fd, data):
-            n = real_write(fd, data); record("write", fd, bytes(data)[:n]); return n
-        os.read, os.write = read, write
-  '';
-  traceShell = pkgs.writeShellScript "trace-shell" ''
-    export SHELL=${bash} PYTHONPATH=${traceSite} MELTYPE_TRACE=/tmp/di2-trace.jsonl
-    exec /run/current-system/sw/bin/meltype-tty --raw-text
-  '';
-  traceLogin = bconLogin "trace-login" traceShell;
 in
 {
   name = "versapro-meltype-console";
@@ -62,8 +27,7 @@ in
     environment.variables.LIBGL_ALWAYS_SOFTWARE = "1";
     users.users.meltype.password = "vm";
     users.users.probe = { isNormalUser = true; password = "vm"; extraGroups = [ "seat" "video" "input" ]; shell = probeLogin; };
-    users.users.tracer = { isNormalUser = true; password = "vm"; extraGroups = [ "seat" "video" "input" ]; shell = traceLogin; };
-    environment.shells = [ probeLogin traceLogin ];
+    environment.shells = [ probeLogin ];
   };
 
   testScript = ''
@@ -146,21 +110,13 @@ in
     summary["probe"] = {"raw": raw_keys("probe"), "tab": tab("probe"), "ctrl_r": ctrl_r("probe")}
     logout("probe")
 
-    login("tracer")
-    summary["tracer"] = {"raw": raw_keys("tracer"), "tab": tab("tracer"),
-        "conversion": conversion("tracer"), "ctrl_r": ctrl_r("tracer")}
-    logout("tracer")
-    for line in read("/tmp/di2-trace.jsonl").splitlines():
-        entry = json.loads(line)
-        if entry.get("fd") != 1: print("DI2-TRACE " + json.dumps(entry))
-
     login("meltype")
     summary["meltype"] = {"raw": raw_keys("meltype"), "tab": tab("meltype"),
         "conversion": conversion("meltype"), "ctrl_r": ctrl_r("meltype")}
     logout("meltype")
 
     print("DI2-SUMMARY " + json.dumps(summary, ensure_ascii=False))
-    for user in ["probe", "tracer", "meltype"]:
+    for user in ["probe", "meltype"]:
         got = summary[user]
         assert got["raw"] == "61 09 00 12", (user, "raw bytes", got)
         assert got["tab"] == "/nix/store/", (user, "Tab completion", got)
