@@ -6,8 +6,8 @@
   inputs.host-nixpkgs.url = "github:NixOS/nixpkgs/2efa67fd26b6df417c33e4603185c701f260dd83";
   inputs.host-bindings = { url = "github:roccho-org/envs/9f344086fd0cc5a8e05103d58f5b4cbc60d73da6"; flake = false; };
   inputs.bcon = { url = "github:sanohiro/bcon/v1.5.1"; flake = false; };
-  inputs.meltype-src = { url = "github:roccho-dev/Meltype/v1.2.1.7"; flake = false; };
-  inputs.meltype-linux = { url = "file+https://github.com/roccho-dev/Meltype/releases/download/v1.2.1.7/Meltype-1.2.1.7-linux.zip"; flake = false; };
+  inputs.meltype-src = { url = "github:roccho-dev/Meltype/v1.2.1.8"; flake = false; };
+  inputs.meltype-linux = { url = "file+https://github.com/roccho-dev/Meltype/releases/download/v1.2.1.8/Meltype-1.2.1.8-linux.zip"; flake = false; };
 
   outputs = { self, nixpkgs, host-nixpkgs, host-bindings, bcon, meltype-src, meltype-linux }:
     let

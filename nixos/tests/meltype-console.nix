@@ -97,8 +97,7 @@ in
         machine.send_key("ctrl-spc")
         time.sleep(2)
         machine.screenshot(f"di2-{name}-conv")
-        machine.send_chars(" ")
-        time.sleep(2)
+        # Since Meltype v1.2.1.8 Ctrl+Space already converts; Enter commits the first candidate (Meltype#24).
         machine.send_key("ret")
         time.sleep(2)
         machine.send_chars(f" > {out}\n")
