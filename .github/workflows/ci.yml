@@ -5,6 +5,15 @@ on:
   push:
     branches: [proposals]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish this tested source as immutable artifacts (no consumer or schedule cutover)
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   scope:
@@ -73,7 +82,7 @@ jobs:
       packages: write
     uses: ./.github/workflows/own-image.yml
     with:
-      publish: ${{ false && github.event_name == 'push' && github.ref == 'refs/heads/proposals' && needs.scope.outputs.own_tool_only != 'true' }}
+      publish: ${{ github.repository == 'roccho-dev/resources' && ((github.event_name == 'push' && github.ref == 'refs/heads/proposals') || (github.event_name == 'workflow_dispatch' && inputs.publish)) && needs.scope.outputs.own_tool_only != 'true' }}
       tool_only: ${{ needs.scope.outputs.own_tool_only == 'true' }}
     secrets: inherit
 
@@ -85,7 +94,7 @@ jobs:
       packages: write
     uses: ./.github/workflows/rent-image.yml
     with:
-      publish: ${{ false && github.event_name == 'push' && github.ref == 'refs/heads/proposals' }}
+      publish: ${{ github.repository == 'roccho-dev/resources' && ((github.event_name == 'push' && github.ref == 'refs/heads/proposals') || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
     secrets: inherit
 
   dev:
@@ -364,8 +373,8 @@ jobs:
   # One Release per source: the proved Windows distribution and rent-image.json, the rent image this same run
   # tested and pushed (by registry digest), so a consumer binds both to the source and runs the image by digest.
   publish:
-    needs: [scope, build, windows, rent]
-    if: needs.scope.outputs.launcher_only != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/proposals'
+    needs: [scope, build, windows, rent, own, dev]
+    if: needs.scope.outputs.launcher_only != 'true' && github.repository == 'roccho-dev/resources' && ((github.event_name == 'push' && github.ref == 'refs/heads/proposals') || (github.event_name == 'workflow_dispatch' && inputs.publish))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -381,6 +390,7 @@ jobs:
           SOURCE: ${{ needs.build.outputs.source }}
           EXPECTED_SHA256: ${{ needs.build.outputs.checksum }}
           RENT_IMAGE: ${{ needs.rent.outputs.image }}
+          OWN_TOOL_ONLY: ${{ needs.scope.outputs.own_tool_only }}
         run: |
           set -euo pipefail
           test "$SOURCE" = "$GITHUB_SHA"
@@ -388,6 +398,28 @@ jobs:
           [[ $RENT_IMAGE =~ ^ghcr\.io/roccho-dev/windows-rent@sha256:[0-9a-f]{64}$ ]] || { echo 'RED: no pushed rent image digest from this run' >&2; exit 1; }
           jq -n --arg source "$SOURCE" --arg image "$RENT_IMAGE" \
             '{kind: "windows.rentImage.v1", source: $source, image: $image}' > rent-image.json
-          gh release create "windows-$SOURCE" windows-dist.zip windows-dist.zip.sha256 rent-image.json \
+          # Read the newly published immutable images as an unauthenticated consumer.
+          # No mutable tag, host, credential or existing consumer selection is changed.
+          export DOCKER_CONFIG="$RUNNER_TEMP/provider-pull"
+          mkdir -p "$DOCKER_CONFIG"
+          docker pull "$RENT_IMAGE"
+          assets=(windows-dist.zip windows-dist.zip.sha256 rent-image.json)
+          if [ "$OWN_TOOL_ONLY" != true ]; then
+            own="ghcr.io/roccho-dev/windows-own:sha-$SOURCE"
+            docker pull "$own"
+            own_digest=$(docker image inspect "$own" --format '{{range .RepoDigests}}{{println .}}{{end}}')
+            [[ $own_digest =~ ^ghcr\.io/roccho-dev/windows-own@sha256:[0-9a-f]{64}$ ]] || { echo 'RED: no single public own digest' >&2; exit 1; }
+            jq -n --arg source "$SOURCE" --arg image "$own_digest" \
+              '{kind: "windows.ownImage.v1", source: $source, image: $image}' > own-image.json
+            assets+=(own-image.json)
+          fi
+          gh release create "windows-$SOURCE" "${assets[@]}" \
             --target "$SOURCE" --title "Windows $SOURCE" --latest=false \
-            --notes "Exact artifacts from this run's passing build, Windows proof and rent image job (stub-twin smoke plus limited checks of the pushed image); source $SOURCE. Real-host UX, WSLC and Cloudflare are not claimed."
+            --notes "Exact tested artifacts for source $SOURCE; image descriptors use public registry digests. A tool-only update retains its previously selected own base image. Existing Host/consumer/schedule/state selections are unchanged. Real-host UX, WSLC and Cloudflare acceptance are not claimed."
+          # Native release readback: compare the downloaded bytes, not just HTTP success.
+          gh release download "windows-$SOURCE" --dir "$RUNNER_TEMP/provider-release"
+          for asset in "${assets[@]}"; do cmp "$asset" "$RUNNER_TEMP/provider-release/$asset"; done
+          (cd "$RUNNER_TEMP/provider-release" && sha256sum --check --strict windows-dist.zip.sha256)
+          unzip -p "$RUNNER_TEMP/provider-release/windows-dist.zip" manifest.json |
+            jq -e --arg source "$SOURCE" '.schemaVersion == 3 and .source == $source' >/dev/null
+          printf 'PASS provider: source %s; immutable Release and registry images retrieved; no consumer selection changed.\n' "$SOURCE" >> "$GITHUB_STEP_SUMMARY"

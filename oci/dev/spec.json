@@ -4,7 +4,7 @@
   "labelKey": "roccho-dev.windows/role",
   "nixMount": "/nix",
   "workMount": "/work/repos",
-  "repoPath": "/work/repos/windows",
-  "cloneUrl": "https://github.com/roccho-dev/windows",
+  "repoPath": "/work/repos/resources",
+  "cloneUrl": "https://github.com/roccho-dev/resources",
   "githubPrincipal": "roccho-dev"
 }

@@ -6,8 +6,8 @@
   inputs.host-nixpkgs.url = "github:NixOS/nixpkgs/2efa67fd26b6df417c33e4603185c701f260dd83";
   inputs.host-bindings = { url = "github:roccho-org/envs/9f344086fd0cc5a8e05103d58f5b4cbc60d73da6"; flake = false; };
   inputs.bcon = { url = "github:sanohiro/bcon/v1.5.1"; flake = false; };
-  inputs.meltype-src = { url = "github:roccho-dev/Meltype/v1.2.1.5"; flake = false; };
-  inputs.meltype-linux = { url = "file+https://github.com/roccho-dev/Meltype/releases/download/v1.2.1.5/Meltype-1.2.1.5-linux.zip"; flake = false; };
+  inputs.meltype-src = { url = "github:roccho-dev/Meltype/v1.2.1.7"; flake = false; };
+  inputs.meltype-linux = { url = "file+https://github.com/roccho-dev/Meltype/releases/download/v1.2.1.7/Meltype-1.2.1.7-linux.zip"; flake = false; };
 
   outputs = { self, nixpkgs, host-nixpkgs, host-bindings, bcon, meltype-src, meltype-linux }:
     let
@@ -509,7 +509,7 @@
       # CI only, never published: stands in for cloudflared under the exact argv rent-start uses, so local SSH, state
       # and #8 continuity can run without Cloudflare. A synthetic token proves nothing about Cloudflare itself.
       rentTunnelStub = pkgs.writeShellScriptBin "cloudflared" ''
-        [ "$*" = 'tunnel --no-autoupdate run --token-file ${rentToken}' ] || { echo "tunnel stub: unexpected argv" >&2; exit 2; }
+        [ "$*" = 'tunnel --no-autoupdate run --token-file ${rentToken}' ] || { echo 'tunnel stub: unexpected argv' >&2; exit 2; }
         [ -r ${rentToken} ] || { echo 'tunnel stub: token file unreadable' >&2; exit 3; }
         echo 'tunnel stub: running (no Cloudflare connection)'
         # Stay this process, so CI can read the argv rent-start gave it.
@@ -658,7 +658,7 @@
             grep -qF '${ownTarget.identity}' ${ownPi.resolver}/bin/pi-opencode-go-key
             grep -qF '${ownTarget.agentDir}' ${ownPi.launcher}/bin/pi
             if grep -qF oci-dev ${ownPi.resolver}/bin/pi-opencode-go-key ${ownPi.launcher}/bin/pi; then exit 1; fi
-            # The bound own T exposes the target launcher as `pi`; its version path still reaches the same upstream.
+            # The bound T exposes the target launcher as `pi`; its version path still reaches the same upstream.
             test "$(readlink -e ${bound.profile}/bin/pi)" = "$(readlink -e ${ownPi.launcher}/bin/pi)"
             ${bound.profile}/bin/pi --version >/dev/null
             test "$(${bound.profile}/bin/codex --version)" = "codex-cli ${releaseVersions.codex}"

@@ -127,7 +127,7 @@ let
       ($r.instances[0].attributes.id == "windows") and
       ($r.instances[0].attributes.name == "windows"))
   '';
-  # The only principal source: the declared bound repository's existing Git credential helper slot. Both Git calls
+  # The only principal source: the declared bound repository's existing Git credential helper slot. All Git calls
   # drop any inherited repository or config injection, read no system/global config and never prompt or askpass
   # (the bound repository already names the username, so a fallback could otherwise supply the token). It sets
   # provider_token for the caller and prints nothing; an unbound origin, missing slot, missing token or another
@@ -141,6 +141,7 @@ let
         GIT_TERMINAL_PROMPT=0 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
         git -C "$src" -c core.askPass= -c credential.interactive=never)
       provider_token=
+      [ "$("''${g[@]}" rev-parse --show-prefix)" = "" ] || return 1
       [ "$("''${g[@]}" config --get remote.origin.url)" = "$url" ] || return 1
       cred=$(printf 'url=%s\n\n' "$url" | "''${g[@]}" credential fill) || return 1
       case $'\n'$cred$'\n' in
@@ -175,15 +176,15 @@ let
     # Inherited principals are never used; the token comes only from the declared bound repository.
     unset GITHUB_TOKEN GH_TOKEN GITHUB_ENTERPRISE_TOKEN TF_ENCRYPTION SSH_PRIVATE_KEY
     unset secret encryption_config provider_token
-    src=/work/repos/windows.git/.worktrees/host-own-ghinfra-runtime
-    repo_url=https://github.com/roccho-dev/windows
+    src=$PWD
+    repo_url=https://github.com/roccho-dev/resources
     uid=$(id -u)
-    [ "$PWD" = "$src" ] && [ -f extensions/github/main.tf ] ||
+    [ -f extensions/github/main.tf ] ||
       fail 'declared own source checkout not established'
     . ${credential}
     # Native GitHub token stays shell-private, reaching only the backend and OpenTofu children.
     bound_token "$src" roccho-dev "$repo_url" ||
-      fail 'bound windows repository credential missing or not the declared roccho-dev principal'
+      fail 'bound resources repository credential missing or not the declared roccho-dev principal'
     export -n provider_token
     dir=/work/repos/.auth/roccho-dev/opentofu
     key=$dir/github-windows.passphrase
@@ -228,7 +229,7 @@ ENCRYPT
     # Upstream HTTPS basic auth needs GIT_USERNAME even for a token; a prefix assignment keeps the token out of argv.
     GIT_USERNAME=x-access-token GITHUB_TOKEN="$provider_token" ${backend}/bin/terraform-backend-git --address "127.0.0.1:$port" >"$tmp/backend.log" 2>&1 &
     pid=$!
-    url="http://127.0.0.1:$port/?type=git&repository=https%3A%2F%2Fgithub.com%2Froccho-dev%2Fwindows.git&ref=tofu-state&state=state%2Fgithub-windows.json"
+    url="http://127.0.0.1:$port/?type=git&repository=https%3A%2F%2Fgithub.com%2Froccho-dev%2Fresources.git&ref=tofu-state&state=state%2Fgithub-windows.json"
     ready=0
     for round in $(seq 1 50); do
       kill -0 "$pid" 2>/dev/null || fail 'standard backend exited'
@@ -285,15 +286,16 @@ ENCRYPT
     grep -qF 'source-only check, no backend or provider' source-check.log
     grep -qF 'unset GITHUB_TOKEN GH_TOKEN GITHUB_ENTERPRISE_TOKEN TF_ENCRYPTION SSH_PRIVATE_KEY' ${app}/bin/github-root
     grep -qF 'GIT_USERNAME=x-access-token GITHUB_TOKEN="$provider_token" ${backend}/bin/terraform-backend-git' ${app}/bin/github-root
-    grep -qF 'repository=https%3A%2F%2Fgithub.com%2Froccho-dev%2Fwindows.git' ${app}/bin/github-root
+    grep -qF 'repository=https%3A%2F%2Fgithub.com%2Froccho-dev%2Fresources.git' ${app}/bin/github-root
     grep -qF 'bound_token "$src" roccho-dev "$repo_url"' ${app}/bin/github-root
     grep -qF 'TF_ENCRYPTION="$encryption_config" GITHUB_TOKEN="$provider_token" tofu' ${app}/bin/github-root
     if grep -qF 'export TF_ENCRYPTION=' ${app}/bin/github-root; then
       echo 'github-root: broad secret export' >&2
       exit 1
     fi
+    # The managed repository and custody identifiers still name windows; the execution/state provider does not.
     # Retired routes: no SSH principal, no fixed UID0 or old cwd, no token export or env-argv handoff.
-    for retired in '$SSH_PRIVATE_KEY' 'git%40github.com' '/work/repos/windows/' '= 0:700' '= 0:600' \
+    for retired in '/work/repos/windows.git/' 'repo_url=https://github.com/roccho-dev/windows' '$SSH_PRIVATE_KEY' 'git%40github.com' '/work/repos/windows/' '= 0:700' '= 0:600' \
       'id -u)" = 0' 'export GITHUB_TOKEN' 'export provider_token' 'env -u'; do
       if grep -qF -- "$retired" ${app}/bin/github-root; then
         echo "github-root: retired route present: $retired" >&2
@@ -305,7 +307,7 @@ ENCRYPT
     . ${credential}
     export HOME=$PWD/home GIT_CONFIG_NOSYSTEM=1
     mkdir -p home
-    u=https://github.com/roccho-dev/windows
+    u=https://github.com/roccho-dev/resources
     git init -q fx
     git -C fx config remote.origin.url "$u"
     git -C fx config credential.helper ""
@@ -338,6 +340,11 @@ ROGUE
     }
     answer 'username=roccho-dev\npassword=fixture-token\n' 0 bound
     [ "$provider_token" = fixture-token ] || { echo 'github-root: bound token not selected' >&2; exit 1; }
+    mkdir fx/sub
+    if bound_token fx/sub roccho-dev "$u" >out.log 2>err.log; then
+      echo 'github-root: subdirectory accepted as the source root' >&2; exit 1
+    fi
+    [ -z "$provider_token" ] && [ ! -s out.log ] || exit 1
     answer 'username=other-principal\npassword=fixture-token\n' 1 wrong-slot
     answer "" 1 missing-slot
     answer 'username=roccho-dev\n' 1 missing-token

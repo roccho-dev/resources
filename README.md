@@ -2,6 +2,8 @@
 
 場所や端末が変わっても、積み重ねた判断を失わず、自分の意図に沿った環境で仕事を続けるために。
 
+[提供入口・版固定・更新と復旧](docs/windows-migration-preparation.md) ／ [提供開始の現行判定・実証](https://github.com/roccho-dev/resources/pull/31)
+
 ```text
 resources/
 ├─ flake.nix           # 全体の整合性を保つため

@@ -11,8 +11,15 @@ on:
       - extensions/release-watch/watch.test.mjs
       - .github/workflows/release-watch.yml
       - flake.nix
+  push:
+    branches: [proposals]
   # Existing cron activates only at the coordinated M6 publisher handoff.
   workflow_dispatch:
+    inputs:
+      propose:
+        description: Maintain the existing draft update proposals (no merge, host or schedule change)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -65,7 +72,7 @@ jobs:
           cat release-proof.json >> "$GITHUB_STEP_SUMMARY"
 
   propose:
-    if: false && github.event_name != 'pull_request' && github.ref == 'refs/heads/proposals'
+    if: github.event_name == 'workflow_dispatch' && inputs.propose && github.ref == 'refs/heads/proposals'
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 30

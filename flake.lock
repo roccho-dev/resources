@@ -53,28 +53,28 @@
     "meltype-linux": {
       "flake": false,
       "locked": {
-        "narHash": "sha256-iEhk9IBhs21sVG3F5lA+P8/T+JOnEwuoQ2EZhyZsjMY=",
+        "narHash": "sha256-CzhSeuox7VhArSYDS7KVfUdNk6sya/aCvpOS7iXIH1c=",
         "type": "file",
-        "url": "https://github.com/roccho-dev/Meltype/releases/download/v1.2.1.5/Meltype-1.2.1.5-linux.zip"
+        "url": "https://github.com/roccho-dev/Meltype/releases/download/v1.2.1.7/Meltype-1.2.1.7-linux.zip"
       },
       "original": {
         "type": "file",
-        "url": "https://github.com/roccho-dev/Meltype/releases/download/v1.2.1.5/Meltype-1.2.1.5-linux.zip"
+        "url": "https://github.com/roccho-dev/Meltype/releases/download/v1.2.1.7/Meltype-1.2.1.7-linux.zip"
       }
     },
     "meltype-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1792140793,
-        "narHash": "sha256-V4LgDRkjr9f6iKVCPMTKvmAmFtieaZTG8hwx2X9D59o=",
+        "lastModified": 1792232549,
+        "narHash": "sha256-cFtGxIbyc+b+SwwwpMQmJ0eYAlCVGwYp/DpFAwV8ag8=",
         "owner": "roccho-dev",
         "repo": "Meltype",
-        "rev": "595e0b2709eb45beb410dc87fac8e981784ef5af",
+        "rev": "f8c22fd975b8c80baeaefee88b4f49b786c82eaf",
         "type": "github"
       },
       "original": {
         "owner": "roccho-dev",
-        "ref": "v1.2.1.5",
+        "ref": "v1.2.1.7",
         "repo": "Meltype",
         "type": "github"
       }

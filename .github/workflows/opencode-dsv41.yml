@@ -6,6 +6,8 @@ on:
       - profile/nix.nix
       - profile/opencode.nix
       - .github/workflows/opencode-dsv41.yml
+  push:
+    branches: [proposals]
   workflow_dispatch:
 
 permissions:
