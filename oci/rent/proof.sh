@@ -155,7 +155,7 @@ build() {
     snapshot=$(git -c user.name=rent-proof -c user.email=rent-proof@example.invalid stash create)
     test -n "$snapshot"
     git -c user.name=rent-proof -c user.email=rent-proof@example.invalid stash store -m "rent proof source" "$snapshot"
-    input="git+file://$PWD?ref=refs/stash&rev=$snapshot"
+    input="git+file://$PWD?ref=refs/stash&rev=$snapshot&shallow=1"
     nix build $1 --no-write-lock-file "$input#windows-dist" "$input#checks.x86_64-linux.windows-dist" --out-link ../dist' _ "$opts"
   # The exact archive and its packer-written checksum leave the container byte for byte; the runner verifies and
   # reads them with its own tools, so no flake registry, network or test-only package is involved.
