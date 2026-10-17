@@ -3,6 +3,8 @@ name: Windows migration source inventory
 on:
   pull_request:
     paths:
+      - flake.nix
+      - flake.lock
       - docs/windows-migration.jsonl
       - tests/migration_inventory.py
       - tests/test_migration_inventory.py
@@ -49,7 +51,20 @@ jobs:
           cat "$RUNNER_TEMP/windows-path-inventory.jsonl"
           tail -n 1 "$RUNNER_TEMP/windows-path-inventory.jsonl" >> "$GITHUB_STEP_SUMMARY"
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
-      - name: Compare pinned old and new fonts, core, and public Binding bytes
+      - name: Verify the native resolved lock equals the committed lock
+        run: |
+          set -euo pipefail
+          nix flake metadata --no-write-lock-file --json > "$RUNNER_TEMP/resources-metadata.json"
+          python3 - "$RUNNER_TEMP/resources-metadata.json" <<'PYCODE'
+          import json, sys
+          resolved = json.load(open(sys.argv[1]))["locks"]
+          committed = json.load(open("flake.lock"))
+          node = resolved["nodes"][resolved["nodes"][resolved["root"]]["inputs"]["host-bindings"]]
+          print("NIX_HOST_BINDINGS=" + json.dumps(node, sort_keys=True), flush=True)
+          assert node["locked"]["owner"] == "roccho-org" and node["locked"]["repo"] == "envs"
+          assert resolved == committed, "flake.lock differs from native resolution; commit the resolved lock before acceptance"
+          PYCODE
+      - name: Compare pinned fonts, core and retained Binding fields; prove adopted envs bytes
         run: |
           set -euo pipefail
           test "$(git ls-files '*flake.nix')" = flake.nix
@@ -68,9 +83,41 @@ jobs:
           test "$(nix eval --raw "$old#own-core.drvPath" --no-write-lock-file)" = \
                "$(nix eval --raw .#own-core.drvPath --no-write-lock-file)"
           bindings=$(nix build .#binding-inputs --no-write-lock-file --no-link --print-out-paths)
-          cmp _source/hosts/own/bindings/G6I3.json "$bindings/own.json"
-          cmp _source/oci/dev/bindings/G6I3.json "$bindings/dev.json"
-          echo 'PASS: pinned fonts full contents, own core derivation, public Binding bytes; root flake has no windows input.' >> "$GITHUB_STEP_SUMMARY"
+          envs=$(nix eval --impure --raw --expr '(builtins.getFlake (toString ./.)).inputs.host-bindings.outPath')
+          cmp "$envs/contracts/host-bindings/own/G6I3.json" "$bindings/own.json"
+          cmp "$envs/contracts/host-bindings/dev/G6I3.json" "$bindings/dev.json"
+          python3 - "$bindings" <<'PYCODE'
+          import json, re, sys
+          from pathlib import Path
+
+          def compare(old, new, role):
+              allowed = {"own": {"image", "imageFrom"}, "dev": {"baseSha", "toolsRev"}}[role]
+              assert isinstance(new, dict) and set(old) == set(new) and allowed <= set(new), "Binding fields differ"
+              for key in set(old) - allowed:
+                  assert type(old[key]) is type(new[key]) and old[key] == new[key], f"unapproved {role}.{key} change"
+              assert all(isinstance(new[k], str) and new[k] for k in allowed), "selection must be nonempty text"
+              if role == "own":
+                  assert re.fullmatch(r"ghcr\.io/roccho-dev/windows-own@sha256:[0-9a-f]{64}", new["image"])
+              else:
+                  assert all(re.fullmatch(r"[0-9a-f]{40}", new[k]) for k in allowed)
+
+          for role, path in (("own", "_source/hosts/own/bindings/G6I3.json"), ("dev", "_source/oci/dev/bindings/G6I3.json")):
+              old = json.loads(Path(path).read_text())
+              new = json.loads((Path(sys.argv[1]) / f"{role}.json").read_text())
+              compare(old, new, role)
+              # The same predicate must refuse every missing or type-changed field and an extra field.
+              invalid = [{**new, "extra": "unapproved"}]
+              for key in new:
+                  invalid.extend(({k: v for k, v in new.items() if k != key}, {**new, key: None}))
+              for candidate in invalid:
+                  try:
+                      compare(old, candidate, role)
+                  except AssertionError:
+                      continue
+                  raise AssertionError(f"invalid {role} Binding was accepted")
+              print(f"PASS {role}: exact adopted envs bytes; retained fields equal pinned source; {len(invalid)} refusals")
+          PYCODE
+          echo 'PASS: pinned fonts full contents and own core derivation; adopted envs Binding bytes with only version selections changed; root flake has no windows input.' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: windows-path-inventory-${{ github.event.pull_request.head.sha || github.sha }}
