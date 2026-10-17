@@ -7,9 +7,13 @@
 set -euo pipefail
 base_archive=${1:?usage: proof.sh RENT_IMAGE RENT_IMAGE_NEXT}
 next_archive=${2:?usage: proof.sh RENT_IMAGE RENT_IMAGE_NEXT}
-# A real repository, its real packer and check: this repository at the merged #17 commit.
-repo=https://github.com/roccho-dev/windows
-repo_rev=4712d1eb8959de4e24775dc3c33ca7d614637177
+# Develop the same committed resources source used by this run to build the images.
+# A moving branch or historical Windows fixture cannot stand in for that source.
+repo=https://github.com/roccho-dev/resources
+repo_rev=$(git rev-parse --verify HEAD)
+test -z "$(git rev-parse --show-prefix)" || { echo 'run proof from the repository root' >&2; exit 1; }
+git diff --quiet HEAD -- || { echo 'proof requires clean tracked source' >&2; exit 1; }
+git cat-file -e "$repo_rev:windows/nix.nix"
 p="rent-dev-proof-$$"
 c=$p
 repos=$p-repos state=$p-state nixv=$p-nix empty=$p-empty
