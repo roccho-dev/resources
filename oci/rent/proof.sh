@@ -182,15 +182,17 @@ dev 'test "$(readlink -f "$(command -v nix)")" = "$(readlink -f /nix/var/nix/pro
   git fetch -q --depth 1 origin '"$repo_rev"'
   git checkout -q --detach FETCH_HEAD
   test "$(git rev-parse HEAD)" = '"$repo_rev"'
-  # A real selection change: the AutoHotkey version the Windows packer ships; the committed tree does not have it.
-  sed -i "s/\"2\.0\.28\"/\"2.0.28-rent-fresh\"/" windows/nix.nix
-  test "$(git diff --numstat)" = "$(printf "1\t1\twindows/nix.nix")"
-  if git grep -q rent-fresh HEAD; then exit 1; fi
+  # A real uncommitted selection change: version and its matching owned directory.
+  # Keep the pinned asset URL/hash unchanged; markers obey the production version grammar.
+  sed -i -e "s/\"2\.0\.28\"/\"2.0.28.rentfresh\"/" \
+    -e "s|Programs/autohotkey-2\.0\.28\"|Programs/autohotkey-2.0.28.rentfresh\"|" windows/nix.nix
+  test "$(git diff --numstat)" = "$(printf "2\t2\twindows/nix.nix")"
+  if git grep -q rentfresh HEAD -- windows/nix.nix; then exit 1; fi
   printf "untracked work\n" > untracked-proof
   mkdir -p ~/.codex ~/.claude
   echo codex-session > ~/.codex/proof && echo claude-session > ~/.claude/proof
   echo disposable > ~/home-proof'
-build '' 2.0.28-rent-fresh
+build '' 2.0.28.rentfresh
 dev 'cd repo; git diff --binary | sha256sum > ../work.diff.sha256; readlink ../dist > ../dist.path; cat ../dist.path'
 echo 'PASS fresh -> develop (real clone; the real packer ships the uncommitted edit; the repo check passes; via the daemon)'
 
@@ -214,9 +216,12 @@ dev 'test ! -e ~/home-proof
   test "$(cat untracked-proof)" = "untracked work"
   git diff --binary | sha256sum | cmp - ../work.diff.sha256
   test "$(readlink ../dist)" = "$(cat ../dist.path)" && test -e ../dist/windows-dist.zip
-  sed -i "s/\"154\.0\.8037\.58\"/\"154.0.8037.58-rent-continued\"/" windows/nix.nix
+  sed -i -e "s/\"154\.0\.8037\.58\"/\"154.0.8037.58.rentcontinued\"/" \
+    -e "s|Programs/chromium-154\.0\.8037\.58\"|Programs/chromium-154.0.8037.58.rentcontinued\"|" windows/nix.nix
+  test "$(git diff --numstat)" = "$(printf "4\t4\twindows/nix.nix")"
+  if git grep -q rentcontinued HEAD -- windows/nix.nix; then exit 1; fi
   git diff --binary | sha256sum > ../work2.diff.sha256'
-build --offline 2.0.28-rent-fresh 154.0.8037.58-rent-continued
+build --offline 2.0.28.rentfresh 154.0.8037.58.rentcontinued
 for r in "$base_roots" "$next_roots"; do test "$(root "readlink /nix/var/nix/gcroots/rent/${r##*/}")" = "$r"; done
 echo 'PASS replace -> continue (upgraded image, retained auth/session/work/store/profile, disposable HOME, offline rebuild with both edits)'
 
