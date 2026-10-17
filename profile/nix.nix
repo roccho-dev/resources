@@ -1,8 +1,8 @@
-# The one small development profile for own and rent (Issue #8). Codex and Claude Code are official releases pinned
-# by hash; every other package comes from the locked nixpkgs. Adding a package is a change here, CI, and a new image;
-# nothing is installed into a host by hand. `extra` supplies role tools and the CI upgrade proof. `owner` only names the
-# profile's stable Git credential helper (own: its Binding; rent keeps the default); each repository's principal is
-# declared by its own binding (profile/gh.nix), never derived from owner or the URL namespace.
+# One Linux development profile for own and rent. Agent packages retain their existing fixed sources;
+# nothing is installed into a host by hand. `extra` supplies role tools and the CI upgrade proof.
+# own keeps its Tool generation separate from the OCI Base; this file does not add a service or Windows installer.
+# `owner` only names the stable Git credential helper. Each repository's principal is declared by its own
+# binding (profile/gh.nix), never derived from owner or the URL namespace.
 # `piTarget` (own only) names one exact envs target for the existing Pi credential launcher; null keeps the plain entry.
 { pkgs, extra ? [], owner ? "roccho-dev", mode ? "legacy", piTarget ? null }:
 let
@@ -33,8 +33,8 @@ let
 ${releaseVersionCases}      *) echo "release-version: unknown CLI ''${1:-}" >&2; exit 2 ;;
     esac
   '';
-  # Only the immutable upstream is consumed; own never evaluates the dev credential resolver/launcher.
   opencode = import ./opencode.nix { inherit pkgs; };
+  # Only the immutable upstream is consumed; plain own never evaluates the dev credential resolver/launcher.
   pi = import ../oci/dev/pi.nix { inherit pkgs; };
   ownPiEntry = pkgs.runCommand "own-pi-entry-${pi.version}" {
     nativeBuildInputs = [ pkgs.makeWrapper ];
@@ -46,6 +46,10 @@ ${releaseVersionCases}      *) echo "release-version: unknown CLI ''${1:-}" >&2;
   # A target-bound own uses the same Pi source and resolver with its own binding, identity and agent directory.
   ownPi = if piTarget == null then ownPiEntry
     else (import ../oci/dev/pi.nix ({ inherit pkgs; } // piTarget)).launcher;
+  # One declaration drives both Linux profile composition and its startup checks.
+  # Pi keeps its existing own-only entry here; dev composes its existing launcher separately.
+  cli = { inherit codex claude opencode; }
+    // pkgs.lib.optionalAttrs (mode == "own") { pi = ownPi; };
   # The same bounded jev-age-init (absent-only, safe parent, public recipient only) over this target's identity, so the
   # target creates its own key in place; only its init is used (remotes are the dev values, never reached by init).
   ownAgeInit = ((import ../oci/dev/nix.nix { inherit pkgs; }).jevTools {
@@ -81,10 +85,18 @@ assert claudeContract.packageShape == "single-glibc-executable";
 pkgs.buildEnv {
   name = if mode == "own" then "own-tool-profile" else "dev-profile";
   # Every supported own generation anchors the identical H_B at the existing absolute helper locator.
-  paths = (if mode == "own" then [ github.helper ownPi ] ++ pkgs.lib.optional (piTarget != null) ownAgeInit
+  paths = (if mode == "own" then [ github.helper ] ++ pkgs.lib.optional (piTarget != null) ownAgeInit
       else corePaths ++ [ github.wrapper github.helper ])
-    ++ [ codex claude opencode releaseVersion ] ++ extra;
+    ++ builtins.attrValues cli ++ [ releaseVersion ] ++ extra;
   pathsToLink = [ "/bin" ];
-  passthru = { inherit releaseDefinitions releaseVersions github ownPiEntry ownPi; piUpstream = pi.upstream; }
+  # Check the actual composed entries in the sandbox, not a second installation or a model call.
+  postBuild = ''
+    export HOME="$TMPDIR/cli-home"
+    mkdir -p "$HOME"
+    for name in ${pkgs.lib.escapeShellArgs (builtins.attrNames cli)}; do
+      ${pkgs.coreutils}/bin/timeout 30 "$out/bin/$name" --version
+    done
+  '';
+  passthru = { inherit cli releaseDefinitions releaseVersions github ownPiEntry ownPi; piUpstream = pi.upstream; }
     // pkgs.lib.optionalAttrs (piTarget != null) { inherit ownAgeInit; };
 }
