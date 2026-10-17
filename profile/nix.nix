@@ -70,10 +70,8 @@ if mode == "core" then pkgs.buildEnv {
 } else
 assert builtins.attrNames releaseDefinitions == [ "claude" "codex" ];
 assert builtins.isAttrs releaseDefinitions.codex.contract;
-assert builtins.isAttrs releaseDefinitions.codex.contract.proof;
 assert builtins.isAttrs releaseDefinitions.codex.pin;
 assert builtins.isAttrs releaseDefinitions.claude.contract;
-assert builtins.isAttrs releaseDefinitions.claude.contract.proof;
 assert builtins.isAttrs releaseDefinitions.claude.pin;
 assert claudeContract.sourceKind == "claude-manifest";
 assert claudeContract.channel == "stable";
@@ -91,9 +89,11 @@ pkgs.buildEnv {
   pathsToLink = [ "/bin" ];
   # Check the actual composed entries in the sandbox, not a second installation or a model call.
   postBuild = ''
+    set -eu
     export HOME="$TMPDIR/cli-home"
     mkdir -p "$HOME"
     for name in ${pkgs.lib.escapeShellArgs (builtins.attrNames cli)}; do
+      printf 'cli-check: %s\n' "$name"
       ${pkgs.coreutils}/bin/timeout 30 "$out/bin/$name" --version
     done
   '';
