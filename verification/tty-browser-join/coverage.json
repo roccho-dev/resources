@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "related": "https://github.com/roccho-dev/adrs/issues/630#issuecomment-6139949993",
+  "relatedStatus": "REFERENCE_NOT_ADOPTED",
+  "legacySources": {
+    "Meltype2": "d673872560f7e6b3b20fed1452f6949c55c722f1",
+    "resources3": "8f3ef91df8e33b6188f970d302d8dd4baeb6fee8"
+  },
+  "cases": {
+    "ordinary": {"kind": "insert", "suffix": "日本語", "scope": "vm"},
+    "typed": {"kind": "insert", "suffix": "乙候補", "scope": "vm"},
+    "typed-id": {"kind": "selection", "scope": "vm"},
+    "cancel": {"kind": "unchanged", "scope": "vm"},
+    "stale": {"kind": "insert", "suffix": "新候補", "scope": "vm"},
+    "duplicate-confirm": {"kind": "insert", "suffix": "乙候補\n", "scope": "vm"},
+    "invalid-json": {"kind": "insert", "suffix": "u", "scope": "vm"},
+    "duplicate-id": {"kind": "insert", "suffix": "u", "scope": "vm"},
+    "action": {"kind": "insert", "suffix": "u", "scope": "vm"},
+    "control-text": {"kind": "insert", "suffix": "u", "scope": "vm"},
+    "wrong-raw": {"kind": "insert", "suffix": "u", "scope": "vm"},
+    "wrong-target": {"kind": "target-rejection", "scope": "vm"},
+    "resize": {"kind": "resize", "scope": "vm"},
+    "disconnect": {"kind": "disconnect", "scope": "vm"},
+    "reconnect": {"kind": "reconnect", "scope": "vm"},
+    "cleanup": {"kind": "cleanup", "scope": "vm"},
+    "unknown-effect": {"kind": "reference", "scope": "independent"},
+    "migration": {"kind": "reference", "scope": "independent"},
+    "supplier-A": {"kind": "reference", "scope": "independent"},
+    "supplier-B": {"kind": "reference", "scope": "independent"},
+    "supplier-terminal": {"kind": "reference", "scope": "independent"},
+    "real-provider": {"kind": "reference", "scope": "real-provider"},
+    "physical": {"kind": "reference", "scope": "physical"},
+    "same-environment": {"kind": "reference", "scope": "independent"},
+    "review": {"kind": "review", "scope": "independent"}
+  },
+  "criteria": {
+    "C1": ["migration"],
+    "C2": ["supplier-A", "supplier-B", "supplier-terminal", "same-environment"],
+    "C3": ["ordinary", "typed", "typed-id"],
+    "C4": ["cancel", "stale", "duplicate-confirm", "invalid-json", "duplicate-id", "action", "control-text", "wrong-raw", "wrong-target", "resize"],
+    "C5": ["cleanup", "disconnect", "reconnect", "unknown-effect"],
+    "C6": ["real-provider", "physical", "same-environment"],
+    "C7": ["review"]
+  },
+  "legacy": {
+    "E01": {"C": ["C1", "C2"], "HostRemainder": "Host module and Remote VM reproducibility"},
+    "E02": {"C": ["C3", "C4"], "HostRemainder": "all required panes, tabs and real GPU equivalence"},
+    "E03": {"C": ["C3", "C4"], "HostRemainder": "complete pointer/key matrix and unobserved caret capabilities"},
+    "E04": {"C": ["C3", "C5"], "HostRemainder": "Remote A/B concurrent identity"},
+    "E05": {"C": ["C4"], "HostRemainder": "writer exclusion and raw-CDP authorization bypass rejection"},
+    "E06": {"C": ["C4", "C5"], "HostRemainder": "independent action ownership/ACK-loss evidence from A"},
+    "E07": {"C": ["C5"], "HostRemainder": "SSH and Chrome restart/profile recovery"},
+    "E08": {"C": [], "HostRemainder": "Remote localhost and Atlas preview"},
+    "E09": {"C": [], "HostRemainder": "fixed CPU/RSS/bandwidth/p95 budgets for 1/2/4 consumers"},
+    "E10": {"C": ["C4", "C6"], "HostRemainder": "physical isolation, real secrets and execution permissions"},
+    "E11": {"C": ["C6"], "HostRemainder": "target GPU/boot/input/apply/rollback equivalence"},
+    "E12": {"C": ["C1", "C2", "C6", "C7"], "HostRemainder": "trusted collection and enforced real apply gate"}
+  }
+}
