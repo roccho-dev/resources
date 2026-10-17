@@ -46,7 +46,7 @@ let
   # The trailing --font overrides package.nix's (argparse keeps the last one) for the candidate images.
   meltypeShell = pkgs.writeShellScript "meltype-shell" ''
     export SHELL=${pkgs.bashInteractive}/bin/bash
-    exec ${meltypeTty}/bin/meltype-tty --raw-text --font ${terminalFont}
+    exec ${meltypeTty}/bin/meltype-tty --raw-text --preview --font ${terminalFont}
   '';
   # meltype's login shell. bcon itself cannot be it: login sets SHELL to the login shell, and bcon would
   # start itself as its child. So this sets SHELL (and the backend, BCON_BACKEND) and execs bcon: the
