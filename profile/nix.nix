@@ -70,6 +70,7 @@ if mode == "core" then pkgs.buildEnv {
 } else
 assert builtins.attrNames releaseDefinitions == [ "claude" "codex" ];
 assert builtins.isAttrs releaseDefinitions.codex.contract;
+assert builtins.isAttrs releaseDefinitions.codex.contract.proof;
 assert builtins.isAttrs releaseDefinitions.codex.pin;
 assert builtins.isAttrs releaseDefinitions.claude.contract;
 assert builtins.isAttrs releaseDefinitions.claude.pin;
