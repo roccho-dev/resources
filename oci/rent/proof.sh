@@ -147,10 +147,16 @@ EOF
 }
 # Build the real distribution and the repository's own check from the uncommitted tree. The evidence is the real
 # packer's output: its checksum verifies, and packages.dsc.json and manifest.json inside the archive carry each
-# edited package version. $1: extra nix options; the rest: versions that must appear.
+# edited package version. A native Git stash snapshot gives the packer an exact source commit without changing
+# the developer's HEAD, index or uncommitted work. $1: extra nix options; the rest: versions that must appear.
 build() {
   local opts=$1 v f; shift
-  dev 'cd repo; nix build $1 --no-write-lock-file .#windows-dist .#checks.x86_64-linux.windows-dist --out-link ../dist' _ "$opts"
+  dev 'cd repo
+    snapshot=$(git -c user.name=rent-proof -c user.email=rent-proof@example.invalid stash create)
+    test -n "$snapshot"
+    git -c user.name=rent-proof -c user.email=rent-proof@example.invalid stash store -m "rent proof source" "$snapshot"
+    input="git+file://$PWD?ref=refs/stash&rev=$snapshot"
+    nix build $1 --no-write-lock-file "$input#windows-dist" "$input#checks.x86_64-linux.windows-dist" --out-link ../dist' _ "$opts"
   # The exact archive and its packer-written checksum leave the container byte for byte; the runner verifies and
   # reads them with its own tools, so no flake registry, network or test-only package is involved.
   for f in "${dist_files[@]}"; do plain "$evidence/dist/$f" || fail "unexpected entry in the evidence dist directory"; done
