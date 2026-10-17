@@ -19,7 +19,7 @@ c=$p
 repos=$p-repos state=$p-state nixv=$p-nix empty=$p-empty
 evidence=$(mktemp -d)
 # Every file this proof writes under $evidence; cleanup removes exactly these, then the empty directories.
-dist_files=(windows-dist.zip windows-dist.zip.sha256 packages.dsc.json manifest.json)
+dist_files=(windows-dist.zip windows-dist.zip.sha256 manifest.json)
 # Removes one of those regular files; a link or other type is kept and fails.
 plain() { if [ -L "$1" ] || { [ -e "$1" ] && [ ! -f "$1" ]; }; then echo "kept unexpected entry $1" >&2; return 1; fi; rm -f -- "$1"; }
 cleanup() {
@@ -146,11 +146,11 @@ EOF
   dev 'if touch /nix/store/dev-write 2>/dev/null || ln -sfn /tmp /nix/var/nix/profiles/rent-dev 2>/dev/null; then exit 1; fi'
 }
 # Build the real distribution and the repository's own check from the uncommitted tree. The evidence is the real
-# packer's output: its checksum verifies, and packages.dsc.json and manifest.json inside the archive carry each
+# packer's output: its checksum verifies, and manifest.json inside the archive carries each
 # edited package version. A native Git stash snapshot gives the packer an exact source commit without changing
-# the developer's HEAD, index or uncommitted work. $1: extra nix options; the rest: versions that must appear.
+# the developer's HEAD, index or uncommitted work. $1: extra nix options; the rest: name=version pairs that must appear.
 build() {
-  local opts=$1 v f; shift
+  local opts=$1 package f; shift
   dev 'cd repo
     snapshot=$(git -c user.name=rent-proof -c user.email=rent-proof@example.invalid stash create)
     test -n "$snapshot"
@@ -166,9 +166,11 @@ build() {
     docker exec "$c" /bin/cat "/work/repos/proof/dist/$f" > "$evidence/dist/$f"
   done
   (cd "$evidence/dist" && sha256sum -c --strict --quiet windows-dist.zip.sha256) || fail 'archive checksum'
-  for f in packages.dsc.json manifest.json; do
-    unzip -p "$evidence/dist/windows-dist.zip" "$f" > "$evidence/dist/$f" || fail "archive lacks $f"
-    for v in "$@"; do grep -qF "\"version\": \"$v\"" "$evidence/dist/$f" || fail "$f lacks version $v"; done
+  unzip -p "$evidence/dist/windows-dist.zip" manifest.json > "$evidence/dist/manifest.json" || fail 'archive lacks manifest.json'
+  for package in "$@"; do
+    jq -e --arg name "${package%%=*}" --arg version "${package#*=}" \
+      '.packages | any(.name == $name and .version == $version)' "$evidence/dist/manifest.json" > /dev/null ||
+      fail "manifest lacks package $package"
   done
 }
 
@@ -198,7 +200,7 @@ dev 'test "$(readlink -f "$(command -v nix)")" = "$(readlink -f /nix/var/nix/pro
   mkdir -p ~/.codex ~/.claude
   echo codex-session > ~/.codex/proof && echo claude-session > ~/.claude/proof
   echo disposable > ~/home-proof'
-build '' 2.0.28.rentfresh
+build '' AutoHotkey=2.0.28.rentfresh
 dev 'cd repo; git diff --binary | sha256sum > ../work.diff.sha256; readlink ../dist > ../dist.path; cat ../dist.path'
 echo 'PASS fresh -> develop (real clone; the real packer ships the uncommitted edit; the repo check passes; via the daemon)'
 
@@ -227,7 +229,7 @@ dev 'test ! -e ~/home-proof
   test "$(git diff --numstat)" = "$(printf "4\t4\twindows/nix.nix")"
   if git grep -q rentcontinued HEAD -- windows/nix.nix; then exit 1; fi
   git diff --binary | sha256sum > ../work2.diff.sha256'
-build --offline 2.0.28.rentfresh 154.0.8037.58.rentcontinued
+build --offline AutoHotkey=2.0.28.rentfresh Chromium=154.0.8037.58.rentcontinued
 for r in "$base_roots" "$next_roots"; do test "$(root "readlink /nix/var/nix/gcroots/rent/${r##*/}")" = "$r"; done
 echo 'PASS replace -> continue (upgraded image, retained auth/session/work/store/profile, disposable HOME, offline rebuild with both edits)'
 
