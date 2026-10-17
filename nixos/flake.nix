@@ -5,8 +5,8 @@
   inputs.windows.url = "github:roccho-dev/windows/1ac80060979feec04ad9a2eeff0b91b766cec20f";
   # Physical-console Japanese input (meltype-console.nix): bcon, and fork Meltype's Direct TTY from one release.
   inputs.bcon = { url = "github:sanohiro/bcon/v1.5.1"; flake = false; };
-  inputs.meltype-src = { url = "github:roccho-dev/Meltype/v1.2.1.7"; flake = false; };
-  inputs.meltype-linux = { url = "file+https://github.com/roccho-dev/Meltype/releases/download/v1.2.1.7/Meltype-1.2.1.7-linux.zip"; flake = false; };
+  inputs.meltype-src = { url = "github:roccho-dev/Meltype/v1.2.1.8"; flake = false; };
+  inputs.meltype-linux = { url = "file+https://github.com/roccho-dev/Meltype/releases/download/v1.2.1.8/Meltype-1.2.1.8-linux.zip"; flake = false; };
 
   outputs = { self, nixpkgs, windows, bcon, meltype-src, meltype-linux, ... }:
     let
