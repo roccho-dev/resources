@@ -3,28 +3,28 @@ name: own OCI
 on:
   pull_request:
     paths:
-      - 'nixos/flake.nix'
-      - 'nixos/flake.lock'
-      - 'nixos/own-oci.nix'
-      - 'nixos/meltype-console.nix'
-      - 'nixos/tests/own-oci.nix'
-      - 'nixos/tests/meltype-console.nix'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'nixos/**'
+      - 'oci/**'
+      - 'windows/**'
       - 'profile/**'
-      - 'windows/ssh/**'
+      - 'extensions/**'
       - 'docs/codex-app-ssh.md'
+      - 'docs/versapro-ssd-install.md'
       - '.github/workflows/own-oci.yml'
   push:
     branches: [proposals]
     paths:
-      - 'nixos/flake.nix'
-      - 'nixos/flake.lock'
-      - 'nixos/own-oci.nix'
-      - 'nixos/meltype-console.nix'
-      - 'nixos/tests/own-oci.nix'
-      - 'nixos/tests/meltype-console.nix'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'nixos/**'
+      - 'oci/**'
+      - 'windows/**'
       - 'profile/**'
-      - 'windows/ssh/**'
+      - 'extensions/**'
       - 'docs/codex-app-ssh.md'
+      - 'docs/versapro-ssd-install.md'
       - '.github/workflows/own-oci.yml'
 
 permissions:
@@ -101,8 +101,21 @@ jobs:
       - name: Verify fixed inputs
         run: |
           set -euo pipefail
-          nix flake lock ./nixos --update-input windows
-          cat nixos/flake.lock
-          git diff --exit-code -- nixos/flake.lock
+          nix flake lock .
+          cat flake.lock
+          git diff --exit-code -- flake.lock
+          # The documented next-consumer entry must resolve to the same production system checked below.
+          locator=$(python3 - <<'PYCODE'
+          import pathlib, re, subprocess
+          text = pathlib.Path('docs/versapro-ssd-install.md').read_text()
+          entries = re.findall(r'`(github:roccho-dev/resources/<actual-public-head>#[^`]+)`', text)
+          assert len(entries) == 1, 'expected exactly one documented root build entry'
+          source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          print(entries[0].replace('<actual-public-head>', source))
+          PYCODE
+          )
+          test "$(nix eval --raw "${locator}.drvPath" --no-write-lock-file)" = \
+               "$(nix eval --raw .#checks.x86_64-linux.versapro-own-oci-host.drvPath --no-write-lock-file)"
+          printf 'PASS documented root entry: %s\n' "$locator" >> "$GITHUB_STEP_SUMMARY"
       - name: Build host, production images, and standard VM proof
-        run: nix flake check ./nixos --no-write-lock-file --print-build-logs
+        run: nix flake check . --no-write-lock-file --print-build-logs

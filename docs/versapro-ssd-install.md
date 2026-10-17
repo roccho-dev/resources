@@ -5,11 +5,12 @@
 ## 最小構成
 
 ```text
-resources/nixos/
-├── flake.nix                    # x86_64-linuxのversapro output、標準source revision
-├── flake.lock                   # 実Nix生成。既知nixpkgs 2efa67…を固定
-├── versapro.nix                 # BIOS/GRUB、SSD root、NM、公開管理鍵SSH
-└── versapro-installer.nix        # 既存USB宣言。変更/import/再buildしない
+resources/
+├── flake.nix                    # rootのversapro output、標準source revision
+├── flake.lock                   # 実Nix生成。host-nixpkgs 2efa67…を固定
+└── nixos/
+    ├── versapro.nix             # BIOS/GRUB、SSD root、NM、公開管理鍵SSH
+    └── versapro-installer.nix    # 既存USB宣言。変更/import/再buildしない
 
 resources/docs/versapro-ssd-install.md   # 現scope・消去前gate・有限復旧工程
 
@@ -41,15 +42,17 @@ source/lockだけでhardware適合・有効認証・USB-free bootを保証しな
 
 ## 消去前のsource/build gate
 
-4つの新text filesだけを専用resources PRへ公開する。既存USB/README/Windows/Browser Host/OCIは変更しない。公開head/treeと標準Nix lock/eval/build入力を結び、構成の推測や構文成功だけをerase根拠にしない。
+初回SSD scopeは4つの新text filesを専用resources PRで扱った。現行の提供版ではroot flakeへ統合済みであり、下記のroot入口とその公開head/tree・lockを一組で選択する。入口の更新だけで既存USB/Windows/Browser Host/OCIや実SSDへ作用しない。公開head/treeと標準Nix lock/eval/build入力を結び、構成の推測や構文成功だけをerase根拠にしない。
 
-標準build locatorは `github:roccho-dev/resources/<actual-public-head>?dir=nixos#nixosConfigurations.versapro.config.system.build.toplevel`。既存strict USB SSHから非秘密のlock/eval/buildだけを行う。tmpfs free、RAM、AC、必要substitute/download/build量を確認し、現live storeに収まる余裕がなければbuildを進めずPへ境界を返す。第一toplevelを実生成し、実derivation/output/closure量とGRUB/root/initrd/NM/sshd仕様を独立Rが確認する。新helper・別builder・秘密input・全agent packageは不要。
+標準build locatorは `github:roccho-dev/resources/<actual-public-head>#nixosConfigurations.versapro.config.system.build.toplevel`。既存strict USB SSHから非秘密のlock/eval/buildだけを行う。tmpfs free、RAM、AC、必要substitute/download/build量を確認し、現live storeに収まる余裕がなければbuildを進めずPへ境界を返す。第一toplevelを実生成し、実derivation/output/closure量とGRUB/root/initrd/NM/sshd仕様を独立Rが確認する。新helper・別builder・秘密input・全agent packageは不要。
+
+旧版の固定commitが提供していた `?dir=nixos` と、root統合後の版を混ぜない。既存の採択版・実機状態はこの文書の修正では変わらない。新版の取得入口・検証結果は [提供契約](./windows-migration-preparation.md) と [PR31](https://github.com/roccho-dev/resources/pull/31) で確認する。標準CIの `versapro-own-oci-host` は同じ `versapro` のtoplevelを検査する。入口とその検査対象の一致をCIで確認するが、実SSDの適合・消去前独立受入・USB-free bootの代用にはしない。
 
 ### 有限受入表
 
 | Gate | 実確認する入力/条件 | 担当 |
 |---|---|---|
-| S source | actual PR base/head/tree、4files、lock、root label/whole-SSD GRUB、5実initrd modules、SSH公開鍵/private境界 | W作成、R独立 |
+| S source | actual PR base/head/tree、選択版のsource差分・root lock、root label/whole-SSD GRUB、5実initrd modules、SSH公開鍵/private境界 | W作成、R独立 |
 | B build | exact公開input→first drv/output、closure/store fit、AC/RAM、compiled boot/NM/SSH。完了前erase 0 | W標準build、R独立 |
 | D erase直前 | by-idが実SSDへresolve、model/serial/bytes一致、USB除外、NTFS未mount、現在phase/権限/accepted O | P作用、R独立 |
 | I install | MBR/1MiB/単一ext4、標準install exitとSSD root/boot配置、USB/source保全 | P作用、R独立 |

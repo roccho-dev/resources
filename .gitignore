@@ -1,1 +1,5 @@
 # Repository bootstrap; the proposed layout is reviewed in a separate README PR.
+
+result*
+_bindings
+ci-bindings

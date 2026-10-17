@@ -1,0 +1,79 @@
+name: Windows migration source inventory
+
+on:
+  pull_request:
+    paths:
+      - docs/windows-migration.jsonl
+      - tests/migration_inventory.py
+      - tests/test_migration_inventory.py
+      - .github/workflows/windows-migration.yml
+  push:
+    branches: [proposals]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-paths:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Finite tests including real disposable Git and refusal cases
+        run: python3 -m unittest discover -s tests -p test_migration_inventory.py -v
+      - name: Read the single validated source pin
+        id: pin
+        run: python3 tests/migration_inventory.py metadata docs/windows-migration.jsonl >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ steps.pin.outputs.repository }}
+          ref: ${{ steps.pin.outputs.commit }}
+          path: _source
+          persist-credentials: false
+      - name: Verify pinned preparation source and record newer upstream without admitting it
+        env:
+          BRANCH: ${{ steps.pin.outputs.branch }}
+        run: |
+          set -euo pipefail
+          remote=$(git -C _source ls-remote --exit-code --heads origin "refs/heads/$BRANCH")
+          test "$(printf '%s\n' "$remote" | wc -l)" -eq 1
+          read -r observed ref <<< "$remote"
+          test "$ref" = "refs/heads/$BRANCH"
+          python3 tests/migration_inventory.py inventory docs/windows-migration.jsonl \
+            --checkout _source --observed-head "$observed" --preparation \
+            --output "$RUNNER_TEMP/windows-path-inventory.jsonl"
+          cat "$RUNNER_TEMP/windows-path-inventory.jsonl"
+          tail -n 1 "$RUNNER_TEMP/windows-path-inventory.jsonl" >> "$GITHUB_STEP_SUMMARY"
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
+      - name: Compare pinned old and new fonts, core, and public Binding bytes
+        run: |
+          set -euo pipefail
+          test "$(git ls-files '*flake.nix')" = flake.nix
+          python3 - <<'PYCODE'
+          import json
+          lock = json.load(open("flake.lock"))
+          assert "windows" not in lock["nodes"][lock["root"]]["inputs"]
+          assert not any(n.get("locked", {}).get("repo") == "windows" and
+                         n.get("locked", {}).get("owner") == "roccho-dev"
+                         for n in lock["nodes"].values())
+          PYCODE
+          old="path:$PWD/_source"
+          before=$(nix build "$old#common-fonts" --no-write-lock-file --no-link --print-out-paths)
+          after=$(nix build .#common-fonts --no-write-lock-file --no-link --print-out-paths)
+          diff -r --no-dereference "$before" "$after"
+          test "$(nix eval --raw "$old#own-core.drvPath" --no-write-lock-file)" = \
+               "$(nix eval --raw .#own-core.drvPath --no-write-lock-file)"
+          bindings=$(nix build .#binding-inputs --no-write-lock-file --no-link --print-out-paths)
+          cmp _source/hosts/own/bindings/G6I3.json "$bindings/own.json"
+          cmp _source/oci/dev/bindings/G6I3.json "$bindings/dev.json"
+          echo 'PASS: pinned fonts full contents, own core derivation, public Binding bytes; root flake has no windows input.' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-path-inventory-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/windows-path-inventory.jsonl
+          if-no-files-found: error
+          retention-days: 7

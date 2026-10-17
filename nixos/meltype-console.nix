@@ -3,7 +3,6 @@
 # as bcon's shell. No shell stays under bcon: when bcon exits or fails, the session ends and getty returns.
 # No system service, no autologin, no password or other secret (the User sets it on the host).
 # The terminal font is the shared selection in profile/fonts.nix, built with this host's nixpkgs.
-# The flake still passes `windows`; only the transitional parity check below reads it (removed with D9).
 { bcon, meltype-src, meltype-linux, ... }@inputs:
 { pkgs, ... }:
 let
@@ -70,7 +69,6 @@ let
   '').overrideAttrs (_: { passthru.shellPath = "/bin/meltype-login"; });
 in
 {
-  imports = [ (import ../profile/fonts-parity.nix { inherit (inputs) windows; }) ];
   # bcon draws through GBM; mesa's GBM backend lives under /run/opengl-driver, which this provides.
   hardware.graphics.enable = true;
   services.seatd.enable = true;
