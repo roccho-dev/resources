@@ -1,0 +1,114 @@
+name: Browser Host proof
+
+on: pull_request
+
+permissions:
+  contents: read
+
+concurrency:
+  group: browser-host-proof-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  vm-session-smoke:
+    name: NixOS VM Browser Host proof — not full acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Require actual KVM capability
+        run: test -c /dev/kvm
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
+        with:
+          extra_nix_config: |
+            system-features = nixos-test kvm big-parallel
+      - name: Check syntax before building VM closure
+        run: |
+          python3 -m py_compile verification/browser-host.py
+          nix-instantiate --parse verification/browser-host.nix > /dev/null
+      - name: Compare pinned Chromium geometry before and after wheel (independent diagnostic)
+        run: nix-shell --pure verification/cdp-geometry.nix --run 'python3 -u verification/cdp-geometry.py'
+      - name: Trace unchanged pinned C viewer geometry and strict number types
+        run: nix-shell --pure verification/cdp-geometry.nix --run 'python3 -u verification/cdp-native-trace.py'
+      - name: Boot shared Browser Host and verify remote clients and real VT input
+        id: vm
+        run: |
+          set -o pipefail
+          nix-build verification/browser-host.nix --no-out-link --show-trace 2>&1 | tee browser-host-vm.log
+      - name: Observe real C returns, geometry and Kitty ACK in separate diagnostic VMs
+        id: diagnostic_vm
+        if: ${{ !cancelled() }}
+        # This result NEVER replaces the original vm outcome or its evidence.
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          nix-build verification/browser-host.nix --arg diagnostic true --no-out-link --show-trace 2>&1 | tee "$RUNNER_TEMP/browser-host-observed.log"
+      - name: Retain observer-affected diagnostic separately
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: browser-host-call-observer-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/browser-host-observed.log
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Collect partial VM evidence without promoting to acceptance
+        if: always()
+        run: |
+          python3 verification/collect_vm.py \
+            --log browser-host-vm.log \
+            --source-sha "${{ github.event.pull_request.head.sha }}" \
+            --vm-outcome "${{ steps.vm.outcome }}" \
+            --output vm-evidence
+      - name: Upload real VM observations and unproven gaps
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: browser-host-vm-partial-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+          path: |
+            browser-host-vm.log
+            vm-evidence/*.jsonl
+          if-no-files-found: error
+          retention-days: 14
+      - name: State proof boundary
+        if: always()
+        run: |
+          printf '%s\n' 'Scope: VM/session smoke. See the job conclusion for its result.' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'Observer-affected diagnostic outcome: ${{ steps.diagnostic_vm.outcome }}; diagnostic failure is NOT a passing product test and is NOT full acceptance.' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'Full E01-E12 acceptance / IME / writer isolation / target hardware / apply gate: NOT_PROVEN.' >> "$GITHUB_STEP_SUMMARY"
+
+  acceptance-evidence:
+    name: Browser Host acceptance evidence — fail closed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Test receipt guard and partial collector with falsifying cases
+        run: python3 -m unittest discover -s verification -p 'test_*.py' -v
+      - name: Reject absent or incomplete full-acceptance evidence
+        # Collector not connected yet: NOT_PROVEN must be a real nonzero check.
+        # Never manufacture full receipts from the successful VM smoke summary.
+        run: |
+          python3 verification/acceptance.py \
+            --context "$RUNNER_TEMP/browser-host-evidence/context.json" \
+            --receipts "$RUNNER_TEMP/browser-host-evidence/receipts.jsonl" \
+            --output proof-report
+      - name: Retain verdicts including missing-evidence rejection
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: browser-host-acceptance-${{ github.event.pull_request.head.sha }}-${{ github.run_attempt }}
+          path: proof-report/*.jsonl
+          if-no-files-found: error
+          retention-days: 14
+      - name: State acceptance boundary
+        if: always()
+        run: |
+          printf '%s\n' 'This check validates receipt shape/context and rejects missing evidence.' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'NOT_PROVEN: trusted collector, full-case coverage, target hardware and apply enforcement.' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'Synthetic guard tests are not product proofs. No merge/apply authority is granted.' >> "$GITHUB_STEP_SUMMARY"
