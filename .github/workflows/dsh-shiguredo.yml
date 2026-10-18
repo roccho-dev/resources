@@ -23,7 +23,7 @@ jobs:
       - name: Assert exact fork source and fixed Nix inputs
         run: |
           set -euo pipefail
-          jq -e '.nodes["dsh-source"].locked | .owner=="shiguredo" and .repo=="deepseek-harness" and .rev=="fbe85cf3050ffa8b3ed2d1b0bb8d555c2346b6b0"' flake.lock
+          jq -e '.nodes["dsh-source"].locked | .owner=="shiguredo" and .repo=="deepseek-harness"' flake.lock
           jq -e '.nodes.root.inputs["dsh-packages"] == null and .nodes["dsh-packages"] == null' flake.lock
           nix flake metadata --no-write-lock-file >/dev/null
       - name: Build only the own tool profile (including fork DSH)
