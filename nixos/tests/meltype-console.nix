@@ -28,6 +28,12 @@ in
     users.users.meltype.password = "vm";
     users.users.probe = { isNormalUser = true; password = "vm"; extraGroups = [ "seat" "video" "input" ]; shell = probeLogin; };
     environment.shells = [ probeLogin ];
+    # VM-only completion evidence, not input logging or a production shell change.
+    environment.interactiveShellInit = ''
+      case "$USER" in
+        probe|meltype) PROMPT_COMMAND='printf "\n" >> "/tmp/di2-$USER-prompts"' ;;
+      esac
+    '';
   };
 
   testScript = ''
@@ -38,6 +44,15 @@ in
     machine.wait_for_unit("multi-user.target")
     machine.wait_for_unit("seatd.service")
 
+    def prompt_count(user):
+        return int(machine.succeed(f"wc -l < /tmp/di2-{user}-prompts").strip())
+
+    def completed(user, before):
+        # Poll evidence only. Never send another Enter or replay a tested command to obtain a PASS.
+        machine.wait_until_succeeds(
+            f"test $(wc -l < /tmp/di2-{user}-prompts) -eq {before + 1}", timeout=30)
+        assert prompt_count(user) == before + 1, (user, "unexpected extra prompt")
+
     def login(user):
         machine.wait_until_tty_matches("1", "login: ")
         machine.send_chars(user + "\n")
@@ -45,6 +60,7 @@ in
         machine.send_chars("vm\n")
         machine.wait_until_succeeds(f"pgrep -u {user} -x .bcon-wrapped", timeout=90)
         machine.wait_until_succeeds(f"pgrep -u {user} -x bash", timeout=90)
+        machine.wait_until_succeeds(f"test -s /tmp/di2-{user}-prompts", timeout=30)
         time.sleep(5)  # the prompt is drawn
 
     def logout(user):
@@ -55,43 +71,50 @@ in
         time.sleep(3)
 
     def read(path):
-        return machine.succeed(f"cat {path} 2>/dev/null || true")
+        return machine.succeed(f"cat {path}")
 
     def raw_keys(name):
         # The bytes the session's program receives for a, Tab, Ctrl+Space and Ctrl+R.
         out = f"/tmp/di2-{name}-raw"
-        machine.send_chars(f"stty raw -echo; timeout 8 cat > {out}; stty sane\n")
-        time.sleep(2)
+        before = prompt_count(name)
+        machine.send_chars(f"stty raw -echo; touch {out}.ready; timeout 8 cat > {out}; stty sane\n")
+        machine.wait_until_succeeds(f"test -e {out}.ready", timeout=30)
         machine.send_chars("a")
         machine.send_key("tab")
         machine.send_key("ctrl-spc")
         machine.send_key("ctrl-r")
-        time.sleep(9)
-        return " ".join(machine.succeed(f"od -An -tx1 {out} 2>/dev/null || true").split())
+        completed(name, before)
+        return " ".join(machine.succeed(f"od -An -tx1 {out}").split())
 
     def tab(name):
         out = f"/tmp/di2-{name}-tab"
+        before = prompt_count(name)
         machine.send_chars("printf %s /nix/sto")
         machine.send_key("tab")
         time.sleep(2)
         machine.send_chars(f" > {out}\n")
-        time.sleep(2)
+        completed(name, before)
         machine.screenshot(f"di2-{name}-tab")
-        return read(out)
+        result = read(out)
+        assert result == "/nix/store/", (name, "Tab completion", result)
+        return result
 
     def ctrl_r(name):
         out = f"/tmp/di2-{name}-r"
+        before = prompt_count(name)
         machine.send_chars(f"echo r-marker >> {out}\n")
-        time.sleep(2)
+        completed(name, before)
+        before = prompt_count(name)
         machine.send_key("ctrl-r")
         machine.send_chars("r-marker")
         time.sleep(1)
         machine.send_key("ret")
-        time.sleep(2)
+        completed(name, before)
         return read(out).count("r-marker")
 
     def conversion(name):
         out = f"/tmp/di2-{name}-conv"
+        before = prompt_count(name)
         machine.send_chars("echo nihongo")
         time.sleep(2)
         machine.send_key("ctrl-spc")
@@ -101,7 +124,7 @@ in
         machine.send_key("ret")
         time.sleep(2)
         machine.send_chars(f" > {out}\n")
-        time.sleep(2)
+        completed(name, before)
         return read(out).strip()
 
     summary = {}
