@@ -91,6 +91,62 @@ powershell.exe -NoProfile -File "<dist>\win.ps1" -Mode ClientSsh -ClientConfig "
   そのため、この接続の thread では OCI を外側の隔離境界として「Full access」を thread ごとに選ぶ。
   既定の approval / sandbox 設定は変えない。信頼済みの repository だけで使う。
 
+## Pi の ChatGPT OAuth
+
+ブラウザは Windows、Pi は NixOS 上の own OCI で動く。この配置では、OAuth の戻り先
+`127.0.0.1:1455` を標準 SSH で Pi の受信口へ転送する。ブラウザに認証画面が出ただけでは認証完了ではない。
+受信プロセスが終了した screen-only Worker の URL や、以前の callback URL は再利用しない。
+
+既存の Go 用入口とは保存先を分ける。
+
+| 入口 | provider | 認証の保存先 |
+|---|---|---|
+| 通常の `pi --envs-sha …` | `opencode-go` | `~/.pi/agent-versapro-own-oci` |
+| 同じ配布物の `pi-upstream` | `openai`（ChatGPT subscription） | `~/.pi/agent` |
+
+Go 用 launcher は自身の `auth.json` が canonical な Go command と一致することを検査する。
+そこへ ChatGPT の認証を追加したり、既存の認証ファイルをコピーしたりしない。ChatGPT 用に新しい wrapper、alias、profile は不要。
+
+1. Windows で、上の strict な alias を使って接続する。1455 が使用中なら所有プロセスを確認し、別の認証を止めて奪わない。
+
+   ```powershell
+   ssh -tt -F "$HOME/.ssh/config" -o ExitOnForwardFailure=yes -L 127.0.0.1:1455:127.0.0.1:1455 versapro-own-oci
+   ```
+
+2. OCI では、採用済み Tool の resources revision に属する upstream 出力を使う。
+   `<resources-revision>` は実際に配置した版へ置き換える。評価だけで新しい build や profile 選択は行わない。
+
+   ```sh
+   pi_output=$(nix eval --raw "github:roccho-dev/resources/<resources-revision>#packages.x86_64-linux.own-profile.piUpstream.outPath" --no-write-lock-file)
+   test -x "$pi_output/bin/pi-upstream"
+   cd "$HOME"
+   PI_CODING_AGENT_DIR="$HOME/.pi/agent" PI_PACKAGE_DIR="$pi_output/share/pi" \
+     "$pi_output/bin/pi-upstream" --no-tools --no-extensions --no-skills --no-prompt-templates --no-context-files --no-session
+   ```
+
+3. Pi の `/login openai` から、新しく生成された正規の認証 URL をブラウザで開く。
+   先に Windows の `http://127.0.0.1:1455/` が Pi の 404 を返すことを確かめると、転送と受信口の疎通を確認できる。
+   `ERR_CONNECTION_REFUSED` は受信口へ到達していない状態なので、本人に同意をやり直してもらう前に Pi と転送を直す。
+   アカウント選択と同意は本人が行う。Pi と SSH は callback を受け取り保存が完了するまで終了しない。
+
+4. ブラウザの `ChatGPT authentication completed`、Pi の login 成功、同じ保存先での native status を確認する。
+
+   ```sh
+   PI_CODING_AGENT_DIR="$HOME/.pi/agent" PI_PACKAGE_DIR="$pi_output/share/pi" \
+     "$pi_output/bin/pi-upstream" auth check --provider openai --json --no-refresh
+   stat -c '%a %u %n' "$HOME/.pi/agent" "$HOME/.pi/agent/auth.json"
+   ```
+
+   `status=ready` / `authType=oauth`、実行ユーザー所有の directory 0700 / file 0600 が確認条件。
+   `--credentials`、認証ファイルの本文、token、認証 URL・code・state はログや PR へ出さない。
+   この status は保存状態の確認であり、実推論の成功とは別である。利用可能性は、許可された最小の no-tools 応答を同じ入口で確認する。
+   完了後は Pi と転送を閉じ、以後も同じ native 入口と保存先を使う。認証期限・失効時には正規の再認証が必要になる。
+
+2026-10-18 に、配置済み Pi 1.0.4 のこの経路で callback、本人同意後の保存、native `ready/oauth` を実確認した。
+CI の package/profile 検査や Worker の画面実証は、この実認証の代わりにしない。
+upstream の [provider 手順](https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/providers.md) と
+[標準保存先の設定](https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/configuration.md) も参照する。
+
 ## 変更時（owner が行う）
 
 - LAN の locator が変わったとき: `versapro-ssd` の `HostName` を source で更新する。host key は変わらないので pin は更新しない。
