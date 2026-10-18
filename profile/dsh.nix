@@ -24,6 +24,11 @@ pkgs.stdenv.mkDerivation (finalAttrs: {
     inherit (finalAttrs) pname version src;
     inherit pnpm;
     fetcherVersion = 4;
+    # Bound each registry request while limiting parallel transfers on the target host.
+    pnpmInstallFlags = [
+      "--fetch-timeout=300000"
+      "--network-concurrency=8"
+    ];
     hash = "sha256-C9Aw9AS4r7zubaEuT6mLXQ+AhhMVlTxPZRKTpzRUkcU=";
   };
   buildPhase = ''
