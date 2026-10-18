@@ -13,7 +13,9 @@ on:
       - flake.nix
   push:
     branches: [proposals]
-  # Existing cron activates only at the coordinated M6 publisher handoff.
+  # Same weekly cadence as the old producer. Merge only after coordinated owner/cutover review.
+  schedule:
+    - cron: '0 21 * * 5'
   workflow_dispatch:
     inputs:
       propose:
@@ -72,7 +74,7 @@ jobs:
           cat release-proof.json >> "$GITHUB_STEP_SUMMARY"
 
   propose:
-    if: github.event_name == 'workflow_dispatch' && inputs.propose && github.ref == 'refs/heads/proposals'
+    if: github.repository == 'roccho-dev/resources' && github.ref == 'refs/heads/proposals' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.propose))
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 30
