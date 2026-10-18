@@ -129,7 +129,8 @@ Go 用 launcher は自身の `auth.json` が canonical な Go command と一致�
    `ERR_CONNECTION_REFUSED` は受信口へ到達していない状態なので、本人に同意をやり直してもらう前に Pi と転送を直す。
    アカウント選択と同意は本人が行う。Pi と SSH は callback を受け取り保存が完了するまで終了しない。
 
-4. ブラウザの `ChatGPT authentication completed`、Pi の login 成功、同じ保存先での native status を確認する。
+4. ブラウザの `ChatGPT authentication completed` と Pi の login 成功を確認したら、Ctrl-D で TUI だけを終了する。
+   SSH は閉じず、`pi_output` を設定した同じ OCI shell で native status を確認する。
 
    ```sh
    PI_CODING_AGENT_DIR="$HOME/.pi/agent" PI_PACKAGE_DIR="$pi_output/share/pi" \
@@ -141,6 +142,8 @@ Go 用 launcher は自身の `auth.json` が canonical な Go command と一致�
    `--credentials`、認証ファイルの本文、token、認証 URL・code・state はログや PR へ出さない。
    この status は保存状態の確認であり、実推論の成功とは別である。利用可能性は、許可された最小の no-tools 応答を同じ入口で確認する。
    モデル一覧・既定選択・終了コード 0 だけで成功にしない。本人のアカウントで利用できるモデルから実際の最終応答を得て、error event がないことを読む。
+   アカウント別 catalog と推論先の契約は [OpenAI の Models and inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference) を確認する。
+   Pi の静的なモデル一覧を、本人が利用できるモデルの証拠にしない。
    完了後は Pi と転送を閉じ、以後も同じ native 入口と保存先を使う。認証期限・失効時には正規の再認証が必要になる。
 
 2026-10-18 に、配置済み Pi 1.0.4 のこの経路で callback、本人同意後の保存、native `ready/oauth` を実確認した。
