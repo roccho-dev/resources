@@ -116,6 +116,18 @@
         "resolver=$(grep -oE '/nix/store/[^ ]*/bin/pi-opencode-go-key' \"$launcher\" | head -n1); "
         "grep -qF ${piBindingId} \"$resolver\"; ! grep -qF oci-dev \"$launcher\" \"$resolver\"")
 
+    # DSH is an own CLI. No model request, credential or install on the NixOS host.
+    ssh('dsh --version >/dev/null; test ! -e "$HOME/.dsh/settings.yaml"')
+    ssh('dsh --profile headless --dump-config >/dev/null; '
+        'test -f "$HOME/.dsh/settings.yaml"; '
+        'test "$(stat -c %a "$HOME/.dsh")" = 700; '
+        'test "$(stat -c %a "$HOME/.dsh/settings.yaml")" = 600; '
+        'grep -q "opencode:" "$HOME/.dsh/settings.yaml"; '
+        'grep -q "apiKeyEnv: OPENCODE_API_KEY" "$HOME/.dsh/settings.yaml"; '
+        'test ! -e "$HOME/.dsh/.credentials.yaml"')
+    ssh('ln -s /tmp "$HOME/.dsh-link"')
+    ssh_fails('DSH_HOME="$HOME/.dsh-link" dsh --profile headless --dump-config')
+
     mount_probe = (
         "mounts=$(docker inspect --format '{{range .Mounts}}{{println .Name .Destination .RW}}{{end}}' versapro-own-oci); "
         "test \"$(printf '%s\\n' \"$mounts\" | sed '/^$/d' | wc -l)\" = 3; "
@@ -133,6 +145,7 @@
     )
 
     ssh("echo home > ~/.own-oci-home; mkdir -p /work/repos/own-oci-test; echo work > /work/repos/own-oci-test/marker")
+    ssh('test -f "$HOME/.dsh/settings.yaml"; dsh --version >/dev/null')
     before_id = machine.succeed("docker inspect -f '{{.Id}}' versapro-own-oci").strip()
     before_key = machine.succeed("docker exec versapro-own-oci cat /home/dev/.ssh/ssh_host_ed25519_key.pub").strip()
     before_profile = ssh("readlink /nix/var/nix/profiles/own-dev").strip()
