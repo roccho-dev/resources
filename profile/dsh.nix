@@ -33,12 +33,28 @@ pkgs.stdenv.mkDerivation (finalAttrs: {
   '';
   installPhase = ''
     runHook preInstall
-    pnpm --filter @deepseek-ai/dsh deploy --prod --legacy "$out/lib/dsh"
-    test -s "$out/lib/dsh/lib/bin.js"
-    mkdir -p "$out/bin"
+    # Preserve the frozen dependency graph instead of resolving legacy deploy dependencies again.
+    mkdir -p "$out/lib/dsh" "$out/bin"
+    cp -r . "$out/lib/dsh/"
+    find "$out/lib/dsh/node_modules/.pnpm" -type l ! -exec test -e {} \; -delete
+
+    # Cordis resolves scoped packages from the installation root.
+    shopt -s nullglob
+    store_scopes=("$out/lib/dsh/node_modules/.pnpm/node_modules/"@*/)
+    for scope in "''${store_scopes[@]}"; do
+      scope_name=$(basename "$scope")
+      mkdir -p "$out/lib/dsh/node_modules/$scope_name"
+      for pkg in "$scope"*; do
+        ln -sfn "../.pnpm/node_modules/$scope_name/$(basename "$pkg")" \
+          "$out/lib/dsh/node_modules/$scope_name/$(basename "$pkg")"
+      done
+    done
+
+    test -s "$out/lib/dsh/apps/cli/lib/bin.js"
     makeWrapper ${node}/bin/node "$out/bin/dsh" \
+      --prefix PATH : ${pkgs.lib.makeBinPath [ pnpm ]} \
       --add-flags --expose-internals \
-      --add-flags "$out/lib/dsh/lib/bin.js"
+      --add-flags "$out/lib/dsh/apps/cli/lib/bin.js"
     runHook postInstall
   '';
   doInstallCheck = true;
