@@ -27,7 +27,7 @@ rec {
     }:
     let
       q = pkgs.lib.escapeShellArg;
-      # One launcher source for both consumers: the same currentness, recipient, build-before-decrypt and child
+      # One launcher source for the fixed consumers: the same currentness, recipient, build-before-decrypt and child
       # boundary. Each entry adds only its fixed argument parsing, its fixed program and its child's public variables.
       # Every tool before the child reads /dev/null, so the caller's stdin reaches the child untouched.
       mkLaunch =
@@ -39,7 +39,21 @@ rec {
           say,
           announce,
           childEnv,
+          binding ? "jev",
         }:
+        let
+          # Compile-time pairs only; no caller argument can select a key, ciphertext or decrypt mode.
+          auth = builtins.getAttr binding {
+            jev = {
+              key = "JEV_API_KEY";
+              cipher = "ciphertexts/dev-jev-api.oci-dev.sops.yaml";
+            };
+            typellm = {
+              key = "TYPELLM_API_KEY";
+              cipher = "ciphertexts/dev-typellm-api.oci-dev.sops.yaml";
+            };
+          };
+        in
         pkgs.writeShellApplication {
           inherit name;
           text = ''
@@ -50,7 +64,7 @@ rec {
                 identity=${q identity}
                 cu=${pkgs.coreutils}/bin
                 grep=${pkgs.gnugrep}/bin/grep
-                cipher_path=ciphertexts/dev-jev-api.oci-dev.sops.yaml
+                cipher_path=${q auth.cipher}
                 usage() {
                   echo "usage: ${name} ${usage}" >&2
                   exit 2
@@ -116,9 +130,10 @@ rec {
                 [ "$at" = "$now" ] || fail "that envs commit's OCI ciphertext is not the current one"
                 cipher=$work/cipher.yaml
                 git_ -C "$repo" cat-file blob "$at" > "$cipher"
-                fields=$("$grep" -E '^[^[:space:]#][^:]*:' "$cipher" | "$cu/cut" -d: -f1 | "$cu/sort" | "$cu/tr" '\n' ' ')
-                [ "$fields" = "JEV_API_KEY sops " ] || fail "the ciphertext fields differ"
-                "$grep" -q '^JEV_API_KEY: ENC\[AES256_GCM,' "$cipher" || fail "the ciphertext is not SOPS-encrypted"
+                # The fixed field pair is compared in byte order, independent of the caller's locale.
+                fields=$("$grep" -E '^[^[:space:]#][^:]*:' "$cipher" | "$cu/cut" -d: -f1 | LC_ALL=C "$cu/sort" | "$cu/tr" '\n' ' ')
+                [ "$fields" = "${auth.key} sops " ] || fail "the ciphertext fields differ"
+                "$grep" -q '^${auth.key}: ENC\[AES256_GCM,' "$cipher" || fail "the ciphertext is not SOPS-encrypted"
                 recipients=$("$grep" -E '^[[:space:]]*-?[[:space:]]*recipient:[[:space:]]*age1[0-9a-z]+[[:space:]]*$' "$cipher" \
                   | "$grep" -oE 'age1[0-9a-z]+' || true)
                 { [ -n "$recipients" ] && [ "$(echo "$recipients" | "$cu/wc" -l)" -eq 1 ]; } \
@@ -136,7 +151,7 @@ rec {
                 say "built $program"
 
                 say "decrypt envs $envs_sha ciphertext $at recipient $recipients"
-                key=$(SOPS_AGE_KEY_FILE=$identity ${pkgs.sops}/bin/sops --decrypt --input-type yaml --extract '["JEV_API_KEY"]' \
+                key=$(SOPS_AGE_KEY_FILE=$identity ${pkgs.sops}/bin/sops --decrypt --input-type yaml --extract '["${auth.key}"]' \
                   "$cipher" 2>/dev/null < /dev/null) || fail "decryption failed"
                 [ -n "$key" ] || fail "the decrypted key is empty"
                 { [ "''${#key}" -le 4096 ] && [[ $key != *$'\n'* ]]; } || fail "the decrypted key is not one short line"
@@ -151,12 +166,12 @@ rec {
                 say "${announce}"
                 # shellcheck disable=SC2016
                 exec "$cu/env" -i PATH="$cu" HOME=/homeless-shelter LANG=C.UTF-8 SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt ${childEnv} \
-                  ${pkgs.bash}/bin/bash -c 'IFS= read -r -u 3 JEV_API_KEY || true
+                  ${pkgs.bash}/bin/bash -c 'IFS= read -r -u 3 ${auth.key} || true
                     for f in /proc/$$/fd/*; do
                       n=''${f##*/}
                       if [[ $n =~ ^[0-9]+$ ]] && [ "$n" -gt 2 ] && [ -e "$f" ]; then exec {n}<&-; fi
                     done
-                    unset f n; export JEV_API_KEY; exec env -u PWD -u SHLVL -u OLDPWD -- "$0" "$@"' \
+                    unset f n; export ${auth.key}; exec env -u PWD -u SHLVL -u OLDPWD -- "$0" "$@"' \
                   "$program" "''${program_args[@]}" 3<<< "$key"
           '';
         };
@@ -374,6 +389,36 @@ rec {
           { [ -f "$program" ] && [ -x "$program" ]; } || fail "the ops jev package has no bin/jev"
         '';
       };
+      # Same target-owned boundary for the existing typed API CLI; no arbitrary package/program or argv.
+      typellm = mkLaunch {
+        name = "ops-typellm";
+        binding = "typellm";
+        usage = "--envs-sha <40-hex> --ops-sha <40-hex>";
+        say = "2";
+        announce = "ops $ops_sha typellm with PATH HOME LANG SSL_CERT_FILE TYPELLM_API_KEY";
+        childEnv = "";
+        parse = ''
+          ops_remote=${q opsRemote}
+          envs_sha="" ops_sha=""
+          [ "$#" -eq 4 ] || usage
+          while [ "$#" -gt 0 ]; do
+            case "$1" in
+              --envs-sha) [ -z "$envs_sha" ] || usage; envs_sha=$2 ;;
+              --ops-sha) [ -z "$ops_sha" ] || usage; ops_sha=$2 ;;
+              *) usage ;;
+            esac
+            shift 2
+          done
+          [[ $envs_sha =~ ^[0-9a-f]{40}$ && $ops_sha =~ ^[0-9a-f]{40}$ ]] || usage
+        '';
+        build = ''
+          out=$(nix_ build --no-link --print-out-paths "git+$ops_remote?rev=$ops_sha#packages.x86_64-linux.typellm") \
+            || fail "cannot build the ops typellm package"
+          [ "$(printf '%s\n' "$out" | "$cu/wc" -l)" -eq 1 ] || fail "the ops typellm package is not one output"
+          program=$out/bin/typellm
+          { [ -f "$program" ] && [ -x "$program" ]; } || fail "the ops typellm package has no bin/typellm"
+        '';
+      };
     };
   jev = jevTools {
     envsRemote = "https://github.com/roccho-dev/envs";
@@ -406,6 +451,7 @@ rec {
         jev.init
         jev.launch
         jev.ops
+        jev.typellm
         pi.launcher
       ];
     pathsToLink = [
