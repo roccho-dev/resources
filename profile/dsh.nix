@@ -1,55 +1,58 @@
-# One upstream DSH. The OpenCode route is nonsecret and initialized once under the persistent own HOME.
-# Never put the API key or mutable session state in the Nix store.
-{ pkgs, upstream }:
+# Only the pinned Shiguredo source is built. DSH owns provider selection, auth and sessions.
+# No DSH wrapper, extra credential store or model router in resources.
+{ pkgs, source }:
 let
-  initialSettings = pkgs.writeText "dsh-opencode-settings.yaml" ''
-    llm-pi-ai:
-      providers:
-        opencode:
-          apiKeyEnv: OPENCODE_API_KEY
-  '';
+  node = pkgs.nodejs_24;
+  pnpm = pkgs.pnpm_11;
 in
-pkgs.writeShellApplication {
-  name = "dsh";
-  runtimeInputs = [ pkgs.coreutils ];
-  text = ''
-    set +o xtrace
-    umask 077
-    case "''${1:-}" in
-      --version|-v|--help|-h)
-        exec ${upstream}/bin/dsh "$@"
-        ;;
-    esac
-
-    home="''${DSH_HOME:-$HOME/.dsh}"
-    case "$home" in
-      /nix/store/*) echo "dsh: runtime state cannot reside in the Nix store" >&2; exit 1 ;;
-      /*) ;;
-      *) echo "dsh: DSH_HOME must be absolute" >&2; exit 1 ;;
-    esac
-    if [ -L "$home" ] || { [ -e "$home" ] && [ ! -d "$home" ]; }; then
-      echo "dsh: invalid state directory" >&2; exit 1
-    fi
-    install -d -m 700 -- "$home"
-    if [ "$(stat -c %u -- "$home")" != "$(id -u)" ] || [ "$(stat -c %a -- "$home")" != 700 ]; then
-      echo "dsh: state directory ownership or mode differs" >&2; exit 1
-    fi
-
-    settings="$home/settings.yaml"
-    if [ ! -e "$settings" ] && [ ! -L "$settings" ]; then
-      tmp=$(mktemp "$home/.settings.XXXXXXXX")
-      cp ${initialSettings} "$tmp"
-      chmod 600 "$tmp"
-      # link is atomic and refuses to replace a concurrent user-authored setting
-      ln "$tmp" "$settings" 2>/dev/null || true
-      rm -f -- "$tmp"
-    fi
-    if [ -L "$settings" ] || [ ! -f "$settings" ] || \
-       [ "$(stat -c %u -- "$settings")" != "$(id -u)" ] || \
-       [ "$(stat -c %a -- "$settings")" != 600 ]; then
-      echo "dsh: settings file ownership or mode differs" >&2; exit 1
-    fi
-    export DSH_HOME="$home"
-    exec ${upstream}/bin/dsh "$@"
+pkgs.stdenv.mkDerivation (finalAttrs: {
+  pname = "dsh-shiguredo";
+  version = "0.2.1-rc.2-fbe85cf3";
+  src = source;
+  nativeBuildInputs = [
+    node
+    pnpm
+    pkgs.pnpmConfigHook
+    pkgs.makeWrapper
+    pkgs.python3
+    pkgs.pkg-config
+  ];
+  pnpmDeps = pkgs.fetchPnpmDeps {
+    inherit (finalAttrs) pname version src;
+    inherit pnpm;
+    fetcherVersion = 4;
+    hash = pkgs.lib.fakeHash; # Replace only after native CI reports the exact dependency hash.
+  };
+  buildPhase = ''
+    runHook preBuild
+    export HOME="$TMPDIR/dsh-build-home"
+    mkdir -p "$HOME"
+    pnpm run build:artifacts
+    runHook postBuild
   '';
-}
+  installPhase = ''
+    runHook preInstall
+    pnpm --filter @deepseek-ai/dsh deploy --prod --legacy "$out/lib/dsh"
+    test -s "$out/lib/dsh/lib/bin.js"
+    mkdir -p "$out/bin"
+    makeWrapper ${node}/bin/node "$out/bin/dsh" \\
+      --add-flags --expose-internals \\
+      --add-flags "$out/lib/dsh/lib/bin.js"
+    runHook postInstall
+  '';
+  doInstallCheck = true;
+  installCheckPhase = ''
+    runHook preInstallCheck
+    export HOME="$TMPDIR/dsh-install-check-home"
+    mkdir -p "$HOME"
+    "$out/bin/dsh" --version
+    runHook postInstallCheck
+  '';
+  meta = {
+    description = "Shiguredo fork of DeepSeek Harness CLI";
+    homepage = "https://github.com/shiguredo/deepseek-harness";
+    license = pkgs.lib.licenses.mit;
+    platforms = [ "x86_64-linux" ];
+    mainProgram = "dsh";
+  };
+})
