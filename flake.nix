@@ -52,6 +52,23 @@
       # Keep the existing consumer explicit; the composition check proves the public default is the same derivation.
       own = mkOwn {};
       dev = import ./oci/dev/nix.nix { inherit pkgs; };
+      # Static own consumer: only the target-owned TypeLLM launcher is added to T.
+      # The default own profile, Pi, Core and Base remain the existing compositions.
+      versaTypeLLM = (dev.jevTools {
+        envsRemote = "https://github.com/roccho-org/envs";
+        appsRemote = "https://github.com/roccho-dev/apps";
+        opsRemote = "https://github.com/roccho-org/ops";
+        identity = "/work/repos/.auth/roccho-dev/age/versapro-own-oci.key";
+        typellmTarget = "versapro-own-oci";
+      }).typellm;
+      versaOwnPiTarget = {
+        bindingId = "opencode-go.versapro-own-oci";
+        target = { repository = "roccho-dev/resources"; host = "versapro-own-oci"; kind = "pi_auth_command"; };
+        identity = "/work/repos/.auth/roccho-dev/age/versapro-own-oci.key";
+        agentDir = "/home/dev/.pi/agent-versapro-own-oci";
+      };
+      versaOwnBase = mkOwn { piTarget = versaOwnPiTarget; };
+      versaTypeLLMOwn = mkOwn { extra = [ versaTypeLLM ]; piTarget = versaOwnPiTarget; };
       common = import ./windows/nix.nix {
         inherit pkgs ownBinding;
         source = self.rev or "uncommitted";
@@ -527,6 +544,8 @@
         own-image = own.image;
         own-core = own.core;
         own-profile = own.profile;
+        own-typellm-versa = versaTypeLLM;
+        own-profile-versa-typellm = versaTypeLLMOwn.profile;
         own-profile-next = (mkOwn { extra = [ pkgs.hello ]; }).profile;
         # The existing legacy profile is an explicit migration input, never seeded by B.
         own-profile-legacy = import ./profile/nix.nix { inherit pkgs; owner = ownOwner; };
@@ -670,6 +689,41 @@
             test ! -e ${own.profile}/bin/jev-age-init
             test ! -e ${own.core}/bin/jev-age-init
             if "$init" --force >/dev/null 2>&1; then echo 'pi-target: init accepted an argument' >&2; exit 1; fi
+            touch $out
+          '';
+        typellm-own-target =
+          let
+            devFor = target: dev.jevTools {
+              envsRemote = "https://github.com/roccho-dev/envs";
+              appsRemote = "https://github.com/roccho-dev/apps";
+              opsRemote = "https://github.com/roccho-dev/ops";
+              identity = "/work/repos/.auth/roccho-dev/age/oci-dev.key";
+              typellmTarget = target;
+            };
+          in
+          assert (devFor "oci-dev").typellm.drvPath == dev.jev.typellm.drvPath;
+          assert (devFor "oci-dev").ops.drvPath == dev.jev.ops.drvPath;
+          assert !((builtins.tryEval ((devFor "other").typellm.drvPath)).success);
+          assert versaTypeLLMOwn.image.drvPath == own.image.drvPath;
+          assert versaTypeLLMOwn.core.drvPath == own.core.drvPath;
+          assert versaTypeLLMOwn.profile.cli.pi.drvPath == versaOwnBase.profile.cli.pi.drvPath;
+          assert versaTypeLLMOwn.profile.ownAgeInit.drvPath == versaOwnBase.profile.ownAgeInit.drvPath;
+          pkgs.runCommand "typellm-own-target-check" {} ''
+            set -eu
+            tool=${versaTypeLLM}/bin/ops-typellm
+            test "$(readlink -e ${versaTypeLLMOwn.profile}/bin/ops-typellm)" = "$(readlink -e "$tool")"
+            grep -qF "identity=/work/repos/.auth/roccho-dev/age/versapro-own-oci.key" "$tool"
+            grep -qF "cipher_path=ciphertexts/dev-typellm-api.versapro-own-oci.sops.yaml" "$tool"
+            grep -qF "envs_remote=https://github.com/roccho-org/envs" "$tool"
+            grep -qF "ops_remote=https://github.com/roccho-org/ops" "$tool"
+            if grep -qF dev-typellm-api.oci-dev.sops.yaml "$tool"; then exit 1; fi
+            test "$(readlink -e ${versaTypeLLMOwn.profile}/bin/pi)" = "$(readlink -e ${versaOwnBase.profile}/bin/pi)"
+            test "$(readlink -e ${versaTypeLLMOwn.profile}/bin/jev-age-init)" = "$(readlink -e ${versaOwnBase.profile}/bin/jev-age-init)"
+            for absent in ops-jev sops age age-keygen; do
+              test ! -e ${versaTypeLLMOwn.profile}/bin/"$absent"
+            done
+            test ! -e ${own.profile}/bin/ops-typellm
+            test ! -e ${own.core}/bin/ops-typellm
             touch $out
           '';
         release-watch = pkgs.runCommand "release-watch-check" {

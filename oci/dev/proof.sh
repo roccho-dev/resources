@@ -48,11 +48,12 @@ jev_clear() {
   for r in envs apps ops neg; do if [ -e "$fx/$r/.git" ]; then git_clear "$fx/$r" || return 1; fi; done
   plain "$fx/envs/side" && plain "$fx/envs/ciphertexts/dev-jev-api.oci-dev.sops.yaml" &&
     plain "$fx/envs/ciphertexts/dev-typellm-api.oci-dev.sops.yaml" &&
+    plain "$fx/envs/ciphertexts/dev-typellm-api.versapro-own-oci.sops.yaml" &&
     empty "$fx/envs/ciphertexts" && empty "$fx/envs" &&
     plain "$fx/apps/flake.nix" && plain "$fx/apps/flake.lock" && empty "$fx/apps" &&
     plain "$fx/ops/flake.nix" && plain "$fx/ops/flake.lock" && empty "$fx/ops" &&
     plain "$fx/neg/file" && empty "$fx/neg" &&
-    plain "$fx/age/oci-dev.key" && plain "$fx/age/kept" && empty "$fx/age" &&
+    plain "$fx/age/oci-dev.key" && plain "$fx/age/versa-own.key" && plain "$fx/age/kept" && empty "$fx/age" &&
     plain "$fx/launch.out" && plain "$fx/reference.json" && plain "$fx/ops.out" && plain "$fx/ops.err" &&
     plain "$fx/typellm.out" && plain "$fx/typellm.err" && plain "$fx/typellm.fds" &&
     plain "$fx/scratch-clear.sh" &&
@@ -783,6 +784,38 @@ NIX
   grep -q 'the ciphertext fields differ' "$typellm_err"
   if grep -q 'ops-typellm: decrypt' "$typellm_err"; then echo 'ops-typellm accepted the JEV field' >&2; return 1; fi
   plain "$typellm_fds"
+  # A second target has a distinct fixture identity/cipher, with the identical closed launcher source.
+  # Synthetic keys never reach a provider; the TypeLLM addition never executes the retained own initializer.
+  local dev_typellm="$typellm" own_tools own_init own_typellm own_recipient own_good dev_restored cross_typellm
+  own_tools="(import ./oci/dev/nix.nix { pkgs = $pkgs; }).jevTools {
+    envsRemote = \"file://$fx/envs\"; appsRemote = \"file://$fx/apps\"; opsRemote = \"file://$fx/ops\";
+    identity = \"$fx/age/versa-own.key\"; typellmTarget = \"versapro-own-oci\"; }"
+  own_init=$("${nx[@]}" build --impure --no-link --print-out-paths --expr "($own_tools).init")/bin/jev-age-init
+  own_typellm=$("${nx[@]}" build --impure --no-link --print-out-paths --expr "($own_tools).typellm")/bin/ops-typellm
+  own_recipient=$("$own_init")
+  test "$own_recipient" != "$recipient"
+  # A valid dev cipher is neither the own slot nor the own recipient.
+  encrypt_typellm "$recipient" > "$typellm_cipher"; dev_restored=$(commit typellm-dev-restored)
+  typellm=$own_typellm
+  typellm_as red "$request" --envs-sha "$dev_restored" --ops-sha "$ops_good"
+  encrypt_typellm "$own_recipient" > "$fx/envs/ciphertexts/dev-typellm-api.versapro-own-oci.sops.yaml"
+  own_good=$(commit typellm-own-current)
+  typellm_args=(--envs-sha "$own_good" --ops-sha "$ops_good")
+  typellm_as pass "$typellm_lf_request" "${typellm_args[@]}" --response-metadata
+  typellm_metadata_frame "$typellm_lf_request"
+  typellm_as red "$request" "${typellm_args[@]}" --target oci-dev
+  chmod 0644 "$fx/age/versa-own.key"; typellm_as red "$request" "${typellm_args[@]}"; chmod 0600 "$fx/age/versa-own.key"
+  cross_typellm=$("${nx[@]}" build --impure --no-link --print-out-paths --expr "((import ./oci/dev/nix.nix { pkgs = $pkgs; }).jevTools {
+    envsRemote = \"file://$fx/envs\"; appsRemote = \"file://$fx/apps\"; opsRemote = \"file://$fx/ops\";
+    identity = \"$fx/age/oci-dev.key\"; typellmTarget = \"versapro-own-oci\"; }).typellm")/bin/ops-typellm
+  typellm=$cross_typellm
+  typellm_as red "$request" "${typellm_args[@]}"
+  grep -q "the ciphertext is not for this target identity" "$typellm_err"
+  typellm=$dev_typellm
+  typellm_as pass "$request" "${typellm_args[@]}" --response-metadata
+  typellm_metadata_frame "$request"
+  plain "$typellm_fds"
+  echo "PASS own TypeLLM target: separate cipher/recipient, closed argv, LF metadata, default dev retained; fixture only"
   test -z "$(ls -A "$fx/tmp")"
   # scratch_clear as built into the launcher: it removes exactly the scratch the launcher writes, and keeps and refuses
   # anything else (here a loose object and a foreign pack name).
