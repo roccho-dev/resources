@@ -1,34 +1,48 @@
 # Browser/Input結合 — tty-split-20261013-v1 / C
 
-## 2026-10-18の結合候補（実行結果は別判定）
+## 2026-10-18の最終結合候補（Cの実行結果は別判定）
 
-現候補はA canonical `d5a669d976d4e0d6ddf9903ca534b7ae2539b8e2` と
-B `776d336a40a3293404935867085a69613ee74d70`、terminal `cfe7483db1658d299965c608a07f17f973fd79f7`。
-Bの通常Linux producer [39111444274](https://github.com/roccho-dev/Meltype/actions/runs/39111444274)
-は同版206単体/同package206、実Native27/typed14・CLI・Apps8eのcontrolled source/session・
-実bcon Shell/Editor/paste/resize/reference表示・供給保存までSUCCESS。runtime `12129849691` と
-receipt `12131120514` の実bytes、版/run・内ZIP・4製品hashをroot/subが独立照合した。
+現候補はA canonical `d5a669d976d4e0d6ddf9903ca534b7ae2539b8e2`、
+B canonical `1c4f3460546653bf097ed161f2e997d9f7f766b6`、
+terminal `cfe7483db1658d299965c608a07f17f973fd79f7`。
+Bは実main `48fd707d793cf0046ccb87b37ad429823576d8c1` までの並行変更を統合した版である。
+通常Linux producer [39114830964](https://github.com/roccho-dev/Meltype/actions/runs/39114830964)
+はsource/同package各216単体、実Native26/typed14、CLI、Apps8eのcontrolled source/session、
+実bcon Shell/Editor/paste/resize/reference・先頭行のpassive preview、供給保存までSUCCESS。
+runtime `12131737436`、receipt `12132361527`、VM `12132585684` の実bytes/digest、
+元commit/tree/run・内ZIP・4製品hashをroot/subがそれぞれ実照合した。
+B独立 [5562386777](https://github.com/roccho-dev/Meltype/pull/28#pullrequestreview-5562386777)
+をrootが全文読戻し、B自身の元条件を確認後、同一commitをmainへ非force統合した。
+PR28 merged_at 2026-10-18T09:36:19Z/main=1c4をAPI確認。canonical通常pushの結果は別に読戻す。
 source/package NARは同producerの保存実測値を既存receiverへ渡し、C/Windowsで代替計算しない。
 
-先行C `9a821468d1391ac976a2177e76f957e2d0632411` / run `39107428810` はA d5a/B c51で
-cancel-after-finish exit1、画像ACK断片の入力混入を記録してFAILした。fault artifact `12128649033`
-を保持する。旧f7の唯一因果は確定しない。Bは別途反証したESCESC境界と、空の入力周期で
-未完画像ACKの先頭ESCをNativeキーへ変えてしまう欠陥を修正した。完全な同ID返信まで
-曖昧なキーを有限の元期限内で保留し、bindingが変われば作用前に失効する。
-旧sourceの実PTY反例FAIL→新source PASS、実Native/CLI/VMの同版成功はCの成功そのものではない。
-旧C6712/A d5a/B a86、C2d909797/A d5a/B c51の成功も新setへ流用しない。
+先行C `bb928ba756f17787dd45fbfb0148218c5d912760` /
+[39112570459](https://github.com/roccho-dev/resources/actions/runs/39112570459) はA d5a/B776dで
+77Python/19Nix、通常16VM＋unknown-effect、保存/re-download/verifyまでSUCCESS。
+source `12130584759` とsmoke `12130983168`、元ID/世代/実DOM/TTY/Profile・全参照hashを
+root/subが読戻した。17 CONSISTENT/8 NOT_PROVEN・admission NOT_PERFORMEDを維持し、
+この先行成功を新しいB1c4 setの成功やC7へ流用しない。
 
-この変更は同producer tupleのpinsと説明だけ。A/terminal、実入力、期待値、観測条件、
-待ち時間、workflow/helper、描画・判定器は変えない。既存の二重ZIP/hash/NAR照合、
-root flake.lockのhost-nixpkgs参照、Bの明示 --compose、16VM＋unknown-effect・
-保存/re-download/verify・非作成者C7を維持して、新setの実試験へ接続する。
+旧C `9a821468d1391ac976a2177e76f957e2d0632411` / run `39107428810` はA d5a/B c51で
+cancel-after-finish exit1、画像ACK断片の入力混入を記録してFAILした。fault `12128649033`
+を保持する。Bの元期限内のACK所有・binding失効是正は有限反例と実Nativeで確認したが、
+旧f7の唯一因果・一般安定を確定しない。C6712/B a86、C2d909797/B c51も各有限履歴である。
 
-既存実利用launcherのcode/鍵fd・allowlist・固定Apps/proposer/semcmp/Git・endpoint/予算/期限は
-C9aからbyte不変。このbranchのpins/docs変更で実利用証拠の版を付け替えず、実利用のexact
-launcher/storepathと必要byte対応で別判定する。C全tree/実機配備の実行済みとはしない。
-Apps/B4の実Provider・私的原記録・一回の子入力効果の受入は別の必要証拠であり、
-controlled CIや別PoCの許可・予算へ昇格しない。新set成功、旧helper拒否解除、
-全条件成立や最終mergeをこのpins更新だけで主張しない。
+今回のC差分は実proposals `c936e2f6dc9760a8f4471f286eae551215ba1236` の非競合統合と
+同producer tupleのpins/説明である。別scopeで採用されたrelease-watch設定・own-completion記録を
+保全し、その運用GOをABCへ借用しない。A/terminal、実入力、期待値、観測条件、待ち時間、
+結合workflow/helper、描画・判定器は変えない。既存の二重ZIP/hash/NAR照合、
+root flake.lockのhost-nixpkgs参照、Bの明示 --compose、16VM＋unknown-effect、
+保存/re-download/verifyと独立C1〜C7判定を維持する。
+
+既存実利用launcherのcode/鍵fd・allowlist・固定Apps/proposer/semcmp/Git・endpoint境界は
+C9aからbyte不変。元許可内の私的原記録をJevへ渡した実2呼出しはB776dで完了した有限証拠であり、
+失敗前の未送信bootstrapとも区別する。B1c4の変更済み実Nativeでは元応答JSON値をそのまま使う
+network-none互換確認（追加実呼出し0）を実施した。元ID/意味/表現/evidence/順序、
+旧応答作用0・現応答143bytes一回の実子readを照合し、表示画像も元証拠とのbyte対応で確認した。
+これとCの同版binary/bridge/mode/encoding/targetの実DOM経路を独立に結び、fixtureだけで
+実Provider合格としない。期限・上限を延長して新しい実呼出しを行わない。
+このpins更新や先行成功だけでは新set成功・C7・最終mergeを主張しない。
 
 ## 目的
 
