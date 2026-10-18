@@ -1,0 +1,28 @@
+name: DSH fork lock/bootstrap (temporary)
+on:
+  pull_request:
+    paths:
+      - flake.nix
+      - flake.lock
+      - .github/workflows/dsh-fork-bootstrap.yml
+permissions:
+  contents: read
+jobs:
+  lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
+      - name: Resolve only the exact pinned Shiguredo revision and report its lock
+        run: |
+          set -euo pipefail
+          nix flake lock
+          echo BEGIN_SHIGUREDO_LOCK_B64
+          base64 -w0 flake.lock
+          echo
+          echo END_SHIGUREDO_LOCK_B64
+          nix eval --impure --json --expr 'let f = builtins.getFlake (toString ./.); p = import f.inputs.nixpkgs { system = "x86_64-linux"; }; in { pnpm11 = p ? pnpm_11; pnpmVersion = if p ? pnpm_11 then p.pnpm_11.version else "not-available"; fetchPnpmDeps = p ? fetchPnpmDeps; pnpmConfigHook = p ? pnpmConfigHook; node = p.nodejs_24.version; }'
