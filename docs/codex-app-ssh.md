@@ -144,12 +144,16 @@ Go 用 launcher は自身の `auth.json` が canonical な Go command と一致�
    モデル一覧・既定選択・終了コード 0 だけで成功にしない。本人のアカウントで利用できるモデルから実際の最終応答を得て、error event がないことを読む。
    アカウント別 catalog と推論先の契約は [OpenAI の Models and inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference) を確認する。
    Pi の静的なモデル一覧を、本人が利用できるモデルの証拠にしない。
+   保存済みの既定モデルが対象外なら、Pi 標準の `/model` で利用可能なモデルを選び直し、Ctrl-S（Set as default）で保存する。
    完了後は Pi と転送を閉じ、以後も同じ native 入口と保存先を使う。認証期限・失効時には正規の再認証が必要になる。
 
 2026-10-18 に、配置済み Pi 1.0.4 のこの経路で callback、本人同意後の保存、native `ready/oauth` を実確認した。
 [配置元の resources revision](https://github.com/roccho-dev/resources/commit/f859cc4b0a510d78e465fcf4c57be373678dad35) で
 上の `piUpstream.outPath` も評価し、既存の Pi 1.0.4 出力と一致することを確認した。
-実推論はこの時点では未確認。CI の package/profile 検査や Worker の画面実証は、この実認証の代わりにしない。
+同じ認証による公式のアカウント別 catalog で確認した `gpt-6.1-sol` を native Pi へ明示指定し、
+no-tools の最小応答 `PI_AUTH_OK`、assistant error 0 件を実確認した。
+同じモデルを Pi 標準 UI で既定として保存し、認証の `ready/oauth` と両 loopback の受信終了も読戻した。
+CI の package/profile 検査や Worker の画面実証は、この実認証・実応答の代わりにしない。
 upstream の [provider 手順](https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/providers.md) と
 [標準保存先の設定](https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/configuration.md) も参照する。
 
