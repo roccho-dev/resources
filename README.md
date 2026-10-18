@@ -18,3 +18,9 @@ resources/
 ```
 
 共有すべき判断は一貫させ、違いが必要な場所には違いを残す。環境を作り直すことが、考え直すことの繰り返しにならないようにする。
+
+### Standalone versa semlint owner consumer
+
+`packages.x86_64-linux.own-semlint-versa` exposes only `ops-semlint-owner`. Its compile-time binding uses the existing own identity and the existing JEV ciphertext from envs, checks currentness and recipient through the shared launcher, builds the exact Ops `semlint-owner` package before decryption, and passes stdin to that fixed entry under a clean child environment. The only arguments are exact accepted `--envs-sha` and `--ops-sha`; no key, target or program selector is accepted.
+
+This standalone output is not added to the default own profile, Pi, Core or Base. The compiled-binding check is not live-key validity, provider admission, G1/G2 or automatic return evidence. Real use requires a separate finite source/target/input admission; actual store, operator and provider costs remain unknown until measured.

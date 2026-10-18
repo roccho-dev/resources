@@ -61,6 +61,14 @@
         identity = "/work/repos/.auth/roccho-dev/age/versapro-own-oci.key";
         typellmTarget = "versapro-own-oci";
       }).typellm;
+      # Standalone JEV consumer over the existing own identity and fixed JEV ciphertext.
+      versaSemlint = (dev.jevTools {
+        envsRemote = "https://github.com/roccho-org/envs";
+        appsRemote = "https://github.com/roccho-dev/apps";
+        opsRemote = "https://github.com/roccho-org/ops";
+        identity = "/work/repos/.auth/roccho-dev/age/versapro-own-oci.key";
+        typellmTarget = "versapro-own-oci";
+      }).semlint;
       versaOwnPiTarget = {
         bindingId = "opencode-go.versapro-own-oci";
         target = { repository = "roccho-dev/resources"; host = "versapro-own-oci"; kind = "pi_auth_command"; };
@@ -545,6 +553,7 @@
         own-core = own.core;
         own-profile = own.profile;
         own-typellm-versa = versaTypeLLM;
+        own-semlint-versa = versaSemlint;
         own-profile-versa-typellm = versaTypeLLMOwn.profile;
         own-profile-next = (mkOwn { extra = [ pkgs.hello ]; }).profile;
         # The existing legacy profile is an explicit migration input, never seeded by B.
@@ -726,6 +735,22 @@
             test ! -e ${own.core}/bin/ops-typellm
             touch $out
           '';
+        semlint-own-target = pkgs.runCommand "semlint-own-target-check" {} ''
+          set -eu
+          tool=${versaSemlint}/bin/ops-semlint-owner
+          test -x "$tool"
+          grep -qF "identity=/work/repos/.auth/roccho-dev/age/versapro-own-oci.key" "$tool"
+          grep -qF "cipher_path=ciphertexts/dev-jev-api.oci-dev.sops.yaml" "$tool"
+          grep -qF "envs_remote=https://github.com/roccho-org/envs" "$tool"
+          grep -qF "ops_remote=https://github.com/roccho-org/ops" "$tool"
+          grep -qF '#packages.x86_64-linux.semlint-owner' "$tool"
+          grep -qF 'program=$out/bin/semlint-owner' "$tool"
+          grep -qF "JEV_API_KEY" "$tool"
+          if grep -qF "TYPELLM_API_KEY" "$tool"; then exit 1; fi
+          test ! -e ${own.profile}/bin/ops-semlint-owner
+          test ! -e ${own.core}/bin/ops-semlint-owner
+          touch $out
+        '';
         release-watch = pkgs.runCommand "release-watch-check" {
           nativeBuildInputs = [ pkgs.nodejs_22 pkgs.git ];
           expected = builtins.toJSON releaseVersions;

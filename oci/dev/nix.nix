@@ -435,6 +435,36 @@ rec {
           { [ -f "$program" ] && [ -x "$program" ]; } || fail "the ops jev package has no bin/jev"
         '';
       };
+      # Fixed real-evaluation owner stdin entry; no program, key or cipher selector.
+      semlint = mkLaunch {
+        name = "ops-semlint-owner";
+        binding = "jev";
+        usage = "--envs-sha <40-hex> --ops-sha <40-hex>";
+        say = "2";
+        announce = "ops $ops_sha semlint-owner with PATH HOME LANG SSL_CERT_FILE JEV_API_KEY";
+        childEnv = "";
+        parse = ''
+          ops_remote=${q opsRemote}
+          envs_sha="" ops_sha=""
+          [ "$#" -eq 4 ] || usage
+          while [ "$#" -gt 0 ]; do
+            case "$1" in
+              --envs-sha) [ -z "$envs_sha" ] || usage; envs_sha=$2 ;;
+              --ops-sha) [ -z "$ops_sha" ] || usage; ops_sha=$2 ;;
+              *) usage ;;
+            esac
+            shift 2
+          done
+          [[ $envs_sha =~ ^[0-9a-f]{40}$ && $ops_sha =~ ^[0-9a-f]{40}$ ]] || usage
+        '';
+        build = ''
+          out=$(nix_ build --no-link --print-out-paths "git+$ops_remote?rev=$ops_sha#packages.x86_64-linux.semlint-owner") \
+            || fail "cannot build the ops semlint-owner package"
+          [ "$(printf '%s\n' "$out" | "$cu/wc" -l)" -eq 1 ] || fail "the ops semlint-owner package is not one output"
+          program=$out/bin/semlint-owner
+          { [ -f "$program" ] && [ -x "$program" ]; } || fail "the ops semlint-owner package has no bin/semlint-owner"
+        '';
+      };
       # Same target-owned boundary for the existing typed API CLI; no arbitrary package/program or argv.
       typellm = mkLaunch {
         name = "ops-typellm";
