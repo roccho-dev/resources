@@ -140,12 +140,13 @@ Go 用 launcher は自身の `auth.json` が canonical な Go command と一致�
    `status=ready` / `authType=oauth`、実行ユーザー所有の directory 0700 / file 0600 が確認条件。
    `--credentials`、認証ファイルの本文、token、認証 URL・code・state はログや PR へ出さない。
    この status は保存状態の確認であり、実推論の成功とは別である。利用可能性は、許可された最小の no-tools 応答を同じ入口で確認する。
+   モデル一覧・既定選択・終了コード 0 だけで成功にしない。本人のアカウントで利用できるモデルから実際の最終応答を得て、error event がないことを読む。
    完了後は Pi と転送を閉じ、以後も同じ native 入口と保存先を使う。認証期限・失効時には正規の再認証が必要になる。
 
 2026-10-18 に、配置済み Pi 1.0.4 のこの経路で callback、本人同意後の保存、native `ready/oauth` を実確認した。
 [配置元の resources revision](https://github.com/roccho-dev/resources/commit/f859cc4b0a510d78e465fcf4c57be373678dad35) で
 上の `piUpstream.outPath` も評価し、既存の Pi 1.0.4 出力と一致することを確認した。
-CI の package/profile 検査や Worker の画面実証は、この実認証の代わりにしない。
+実推論はこの時点では未確認。CI の package/profile 検査や Worker の画面実証は、この実認証の代わりにしない。
 upstream の [provider 手順](https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/providers.md) と
 [標準保存先の設定](https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/configuration.md) も参照する。
 
