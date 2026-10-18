@@ -10,6 +10,8 @@ pkgs.stdenv.mkDerivation (finalAttrs: {
   version = "0.2.1-rc.2-fbe85cf3";
   src = source;
   DSH_CLIENT_COMMIT_HASH = source.rev;
+  # Native Node24 loader compatibility, unchanged from Nixpkgs 2c2a3163666052c31fd5dc505d61f5631bd2f809.
+  patches = [ ./dsh-expose-internals-profile-resolution.patch ];
   nativeBuildInputs = [
     node
     pnpm
