@@ -3,15 +3,20 @@
 ## 2026-10-18の結合候補（実行結果は別判定）
 
 現候補はAのcanonical `d5a669d976d4e0d6ddf9903ca534b7ae2539b8e2` と
-Bの `a86eb4c5911b456cc1d05d254216168ed60e127d`。B自身の通常Linux producer
-[39097581732](https://github.com/roccho-dev/Meltype/actions/runs/39097581732) が成功し、
-同版runtime artifact `12124694788` と供給receipt `12125303751` の実bytes・版・
+Bの `c51e8dafa0810940ca776c20811114396dd47aca`。B自身の通常Linux producer
+[39101845125](https://github.com/roccho-dev/Meltype/actions/runs/39101845125) が成功し、
+同版runtime artifact `12126837294` と供給receipt `12126687727` の実bytes・版・
 run・内ZIP・製品hash対応をroot/subが独立照合した。pinsのsource/package NARは
 同producerの実測保存値を消費する。CやWindows上での代替計算値ではない。
 
 既存receiverの二重ZIP/hash/NAR照合は維持する。最新baseで移動したlockは
 root `flake.lock` の `host-nixpkgs` を参照し、旧Cのhost入力と全locked値を保持する。
 Bが既存CLIで提供する `--compose` を明示して元のcdp子入力のpreedit契約を維持する。
+前のC `6712b996a496b89d2da3864677f027a88aabed5c` はA d5a/B a86で
+16VM＋unknown-effect・保存後検査まで成功した履歴であり、新Bへ流用しない。
+新Bは長い引用候補の識別部の折返しと実fontの描画領域を是正し、通常Linux CI・
+原画像・配布物について非作成者が[有限受領](https://github.com/roccho-dev/Meltype/pull/28#pullrequestreview-5561678946)した。
+このpins更新はその同じ実物をCで消費するためのもので、期待値・観測条件・待ち時間は変更しない。
 これらは新setの結合試験を開始する候補であり、Cの成功、B4の実Provider受入、
 旧helper拒否解除、A/Bの全条件成立や最終mergeを意味しない。後続の版変更は
 対応と影響を再判定する。以下の旧版実績は、それぞれの当時版の証拠として保持する。

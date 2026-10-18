@@ -8,18 +8,18 @@
   "B": {
     "owner": "roccho-dev",
     "repo": "Meltype",
-    "rev": "a86eb4c5911b456cc1d05d254216168ed60e127d",
+    "rev": "c51e8dafa0810940ca776c20811114396dd47aca",
     "artifact": {
-      "id": 12124694788,
-      "run": 39097581732,
-      "sha256": "5b7b90c976ee810ec22f480ba405702493bf7349d37f359a3a8247df02f3be20",
-      "member": "Meltype-linux-test-20261018-0437.zip",
-      "memberSha256": "e5493308b80615415d03d5a498f81e4f29627c331df0226ce467a4045f41ec74",
-      "packageNarHash": "sha256-I5hpK6HfkRSP1IwGlyrM6h4uGSNfT++aiXHl671+SJs=",
-      "nativeSha256": "96b02cae6b97cf8767f037e66f4e616221bc740f17fd960b1caf9499f84389af",
+      "id": 12126837294,
+      "sha256": "666dd73f00c547870c9d38f8ca5fee2d584e9309633e69fad054f336e0a55ad6",
+      "member": "Meltype-linux-test-20261018-0551.zip",
+      "memberSha256": "faccb2585664ae35fa39170a047b4a0bdbe11ddb02a6050bf445486faf24731f",
+      "packageNarHash": "sha256-8HGTawgqgn8NVshbhTxhGfaAnMAxHZE1gliCR3pW87g=",
+      "run": 39101845125,
+      "nativeSha256": "c32fc19be009ace3d9458a84692e95a78f959fd67ab904fcdc7b7ab508862a47",
       "mozcSha256": "28e060a0cadc1405045cb8ae1516e938de143cb8347307be459f6052e7c9fbd9"
     },
-    "narHash": "sha256-8O22zjggUiG6+IxOyWJ+4Yg6T3DSjujDm1QxTFgDpDM="
+    "narHash": "sha256-TB6EouNPCn9QFz/AwiOwLz0PVRuxlzhDNHw5UYLjZ8k="
   },
   "terminal": {
     "owner": "roccho-dev",
