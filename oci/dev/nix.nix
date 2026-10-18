@@ -24,7 +24,10 @@ rec {
       appsRemote,
       opsRemote,
       identity,
+      # Compile-time closed target selection; never a launcher argv/key/cipher selector.
+      typellmTarget ? "oci-dev",
     }:
+    assert builtins.elem typellmTarget [ "oci-dev" "versapro-own-oci" ];
     let
       q = pkgs.lib.escapeShellArg;
       # One launcher source for the fixed consumers: the same currentness, recipient, build-before-decrypt and child
@@ -50,7 +53,10 @@ rec {
             };
             typellm = {
               key = "TYPELLM_API_KEY";
-              cipher = "ciphertexts/dev-typellm-api.oci-dev.sops.yaml";
+              cipher = builtins.getAttr typellmTarget {
+                oci-dev = "ciphertexts/dev-typellm-api.oci-dev.sops.yaml";
+                versapro-own-oci = "ciphertexts/dev-typellm-api.versapro-own-oci.sops.yaml";
+              };
             };
           };
         in
