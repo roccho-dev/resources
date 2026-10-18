@@ -95,7 +95,7 @@ powershell.exe -NoProfile -File "<dist>\win.ps1" -Mode ClientSsh -ClientConfig "
 
 ブラウザは Windows、Pi は NixOS 上の own OCI で動く。この配置では、OAuth の戻り先
 `127.0.0.1:1455` を標準 SSH で Pi の受信口へ転送する。ブラウザに認証画面が出ただけでは認証完了ではない。
-受信プロセスが終了した screen-only Worker の URL や、以前の callback URL は再利用しない。
+screen-only Worker の認証画面は、この native 受信口を起動しない。以前の callback URL は再利用しない。
 
 既存の Go 用入口とは保存先を分ける。
 
@@ -143,6 +143,8 @@ Go 用 launcher は自身の `auth.json` が canonical な Go command と一致�
    完了後は Pi と転送を閉じ、以後も同じ native 入口と保存先を使う。認証期限・失効時には正規の再認証が必要になる。
 
 2026-10-18 に、配置済み Pi 1.0.4 のこの経路で callback、本人同意後の保存、native `ready/oauth` を実確認した。
+[配置元の resources revision](https://github.com/roccho-dev/resources/commit/f859cc4b0a510d78e465fcf4c57be373678dad35) で
+上の `piUpstream.outPath` も評価し、既存の Pi 1.0.4 出力と一致することを確認した。
 CI の package/profile 検査や Worker の画面実証は、この実認証の代わりにしない。
 upstream の [provider 手順](https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/providers.md) と
 [標準保存先の設定](https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/docs/configuration.md) も参照する。
