@@ -52,7 +52,7 @@ jev_clear() {
     plain "$fx/ops/flake.nix" && plain "$fx/ops/flake.lock" && empty "$fx/ops" &&
     plain "$fx/neg/file" && empty "$fx/neg" &&
     plain "$fx/age/oci-dev.key" && plain "$fx/age/kept" && empty "$fx/age" &&
-    plain "$fx/launch.out" && plain "$fx/ops.out" && plain "$fx/ops.err" && plain "$fx/scratch-clear.sh" &&
+    plain "$fx/launch.out" && plain "$fx/reference.json" && plain "$fx/ops.out" && plain "$fx/ops.err" && plain "$fx/scratch-clear.sh" &&
     empty "$fx/tmp" && empty "$fx"
 }
 # Everything the Pi source proof creates under $evidence/pi. It shares the generic fixture Git cleanup above.
@@ -438,6 +438,13 @@ JS
           echo "home $HOME $([ -e "$HOME" ] && echo present || echo absent)"
           echo "key $(printf %s "$JEV_API_KEY" | sha256sum | cut -d' ' -f1)"
           case "$(tr '\0' ' ' < /proc/$$/cmdline)" in *"$JEV_API_KEY"*) echo "argv key" ;; *) echo "argv clean" ;; esac
+          if [ "''${VOICE_UI_REFERENCE_REAL:-}" = 1 ]; then
+            echo "reference $(printf %s "$VOICE_UI_PROPOSAL_B" | sha256sum | cut -d' ' -f1)"
+            echo "query $VOICE_UI_REFERENCE_QUERY"
+            echo "maximum $VOICE_UI_REFERENCE_MAX_CALLS"
+            echo "until $VOICE_UI_REFERENCE_UNTIL"
+            case "$(tr '\0' ' ' < /proc/$$/cmdline)" in *"$VOICE_UI_PROPOSAL_B"*) echo 'reference argv leaked' ;; *) echo 'reference argv clean' ;; esac
+          fi
         } > /tmp/voice-ui-jev-proof-$PORT
       ''}";
     };
@@ -533,6 +540,34 @@ NIX
   grep -qF "on 0.0.0.0:$port with" "$out"
   launch_as pass "${args[@]}" --host 127.0.0.1
   grep -qx 'host 127.0.0.1' "$marker"
+
+  # Named reference inputs, not an arbitrary environment or program. Both the
+  # existing synthetic key and the synthetic binding reach only the admitted
+  # foreground child, through closed descriptors rather than argv/logs.
+  local reference_file="$fx/reference.json" reference_until reference_digest
+  printf '%s\n' '{"synthetic":"reference-only"}' > "$reference_file"
+  chmod 0600 "$reference_file"
+  reference_digest=$(printf %s '{"synthetic":"reference-only"}' | sha256sum | cut -d' ' -f1)
+  reference_until=$(($(date +%s%3N) + 900000))
+  local reference_args=(--reference-binding "$reference_file" --reference-query 'synthetic reference query'
+    --reference-max-calls 1 --reference-until "$reference_until")
+  launch_as pass "${args[@]}" "${reference_args[@]}"
+  test "$(head -n 1 "$marker")" = 'names HOME HOST JEV_API_KEY LANG PATH PORT SSL_CERT_FILE VOICE_UI_MELTYPE_PROPOSALS VOICE_UI_PROPOSAL_B VOICE_UI_REFERENCE_MAX_CALLS VOICE_UI_REFERENCE_QUERY VOICE_UI_REFERENCE_REAL VOICE_UI_REFERENCE_UNTIL '
+  grep -qx "reference $reference_digest" "$marker"
+  grep -qx 'reference argv clean' "$marker"
+  grep -qx 'query synthetic reference query' "$marker"
+  grep -qx 'maximum 1' "$marker"
+  grep -qx "until $reference_until" "$marker"
+  only_stdio "$marker.fds"
+  if grep -qF '{"synthetic":"reference-only"}' "$out"; then echo 'binding reached launcher output' >&2; return 1; fi
+  launch_as red "${args[@]}" "${reference_args[@]}" --host 0.0.0.0
+  launch_as red "${args[@]}" --reference-binding "$reference_file"
+  launch_as red "${args[@]}" --reference-binding "$reference_file" --reference-query 'synthetic reference query' \
+    --reference-max-calls 0 --reference-until "$reference_until"
+  launch_as red "${args[@]}" --reference-binding "$reference_file" --reference-query 'synthetic reference query' \
+    --reference-max-calls 1 --reference-until 1000000000000
+  chmod 0644 "$reference_file"; launch_as red "${args[@]}" "${reference_args[@]}"; chmod 0600 "$reference_file"
+  plain "$reference_file"
 
   # Arguments: exactly three flags, exact SHAs, an unprivileged port.
   launch_as red --envs-sha "$good" --apps-sha "$apps_good"

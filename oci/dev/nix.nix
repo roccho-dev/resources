@@ -71,6 +71,7 @@ rec {
 
             formal=false
             program_args=()
+            reference_binding=""
             build_program() {
               ${build}
             }
@@ -152,12 +153,16 @@ rec {
                 # shellcheck disable=SC2016
                 exec "$cu/env" -i PATH="$cu" HOME=/homeless-shelter LANG=C.UTF-8 SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt ${childEnv} \
                   ${pkgs.bash}/bin/bash -c 'IFS= read -r -u 3 JEV_API_KEY || true
+                    if [ "''${VOICE_UI_REFERENCE_REAL:-}" = 1 ]; then
+                      IFS= read -r -u 4 VOICE_UI_PROPOSAL_B || exit 1
+                      export VOICE_UI_PROPOSAL_B
+                    fi
                     for f in /proc/$$/fd/*; do
                       n=''${f##*/}
                       if [[ $n =~ ^[0-9]+$ ]] && [ "$n" -gt 2 ] && [ -e "$f" ]; then exec {n}<&-; fi
                     done
                     unset f n; export JEV_API_KEY; exec env -u PWD -u SHLVL -u OLDPWD -- "$0" "$@"' \
-                  "$program" "''${program_args[@]}" 3<<< "$key"
+                  "$program" "''${program_args[@]}" 3<<< "$key" 4<<< "$reference_binding"
           '';
         };
     in
@@ -192,20 +197,22 @@ rec {
       # Starts the exact apps dev server in the foreground with JEV_API_KEY as the only secret in its environment.
       launch = mkLaunch {
         name = "voice-ui-jev-dev";
-        usage = "--envs-sha <40-hex> --apps-sha <40-hex> --port <1024-65535> [--host 127.0.0.1|0.0.0.0] | --formal --envs-sha <40-hex> --deploy-sha <40-hex> --deploy-provenance-sha256 <64-hex> --deploy-proof-sha256 <64-hex> --artifacts <absolute-dir> --port <1024-65535> [--host 127.0.0.1|0.0.0.0] [--post-limit <1-12>]";
+        usage = "--envs-sha <40-hex> --apps-sha <40-hex> --port <1024-65535> [--host 127.0.0.1|0.0.0.0] [--reference-binding <private-json-file> --reference-query <text> --reference-max-calls <1-12> --reference-until <epoch-ms>] | --formal --envs-sha <40-hex> --deploy-sha <40-hex> --deploy-provenance-sha256 <64-hex> --deploy-proof-sha256 <64-hex> --artifacts <absolute-dir> --port <1024-65535> [--host 127.0.0.1|0.0.0.0] [--post-limit <1-12>]";
         say = "1";
         announce = "apps $apps_sha on $host:$port with PATH HOME LANG PORT HOST SSL_CERT_FILE JEV_API_KEY";
-        childEnv = ''PORT="$port" HOST="$host"'';
+        childEnv = ''PORT="$port" HOST="$host" "''${reference_env[@]}"'';
         parse = ''
           apps_remote=${q appsRemote}
           formal=false
           if [ "''${1:-}" = --formal ]; then formal=true; shift; fi
           envs_sha="" apps_sha="" port="" host=""
           deploy_sha="" deploy_provenance="" deploy_proof="" artifacts="" post_limit=""
+          reference_file="" reference_query="" reference_max="" reference_until=""
+          reference_env=()
           if [ "$formal" = true ]; then
             { [ "$#" -eq 12 ] || [ "$#" -eq 14 ] || [ "$#" -eq 16 ]; } || usage
           else
-            { [ "$#" -eq 6 ] || [ "$#" -eq 8 ]; } || usage
+            { [ "$#" -eq 6 ] || [ "$#" -eq 8 ] || [ "$#" -eq 14 ] || [ "$#" -eq 16 ]; } || usage
           fi
           while [ "$#" -gt 0 ]; do
             { [ "$formal" = false ] || [ -n "''${2:-}" ]; } || usage
@@ -216,6 +223,10 @@ rec {
               --deploy-provenance-sha256) { [ "$formal" = true ] && [ -z "$deploy_provenance" ]; } || usage; deploy_provenance=$2 ;;
               --deploy-proof-sha256) { [ "$formal" = true ] && [ -z "$deploy_proof" ]; } || usage; deploy_proof=$2 ;;
               --post-limit) { [ "$formal" = true ] && [ -z "$post_limit" ]; } || usage; post_limit=$2 ;;
+              --reference-binding) { [ "$formal" = false ] && [ -z "$reference_file" ] && [ -n "''${2:-}" ]; } || usage; reference_file=$2 ;;
+              --reference-query) { [ "$formal" = false ] && [ -z "$reference_query" ] && [ -n "''${2:-}" ]; } || usage; reference_query=$2 ;;
+              --reference-max-calls) { [ "$formal" = false ] && [ -z "$reference_max" ] && [ -n "''${2:-}" ]; } || usage; reference_max=$2 ;;
+              --reference-until) { [ "$formal" = false ] && [ -z "$reference_until" ] && [ -n "''${2:-}" ]; } || usage; reference_until=$2 ;;
             --artifacts) { [ "$formal" = true ] && [ -z "$artifacts" ]; } || usage; artifacts=$2 ;;
               --port) [ -z "$port" ] || usage; port=$2 ;;
               --host) { [ -z "$host" ] && [ -n "$2" ]; } || usage; host=$2 ;;
@@ -233,6 +244,35 @@ rec {
           { [ "$port" -ge 1024 ] && [ "$port" -le 65535 ]; } || usage
           [ -n "$host" ] || host=127.0.0.1
           case $host in 127.0.0.1 | 0.0.0.0) ;; *) usage ;; esac
+          if [ -n "$reference_file$reference_query$reference_max$reference_until" ]; then
+            { [ "$formal" = false ] && [ "$host" = 127.0.0.1 ] && [[ $reference_file = /* ]] \
+              && [ -n "$reference_query" ] && [[ $reference_query != *$'\n'* && $reference_query != *$'\r'* ]] \
+              && [[ $reference_max =~ ^([1-9]|1[0-2])$ && $reference_until =~ ^[1-9][0-9]{12}$ ]]; } \
+              || fail "reference session arguments differ"
+            now_ms=$("$cu/date" +%s%3N)
+            { [ "$reference_until" -gt "$now_ms" ] && [ "$reference_until" -le "$((now_ms + 1800000))" ]; } \
+              || fail "reference session deadline differs"
+            [ "$(printf %s "$reference_query" | "$cu/wc" -c)" -le 8192 ] || fail "reference query is too large"
+            { [ -f "$reference_file" ] && [ ! -L "$reference_file" ] \
+              && [ "$("$cu/stat" -c %a "$reference_file")" = 600 ] \
+              && [ "$("$cu/stat" -c %u "$reference_file")" = "$("$cu/id" -u)" ]; } \
+              || fail "reference binding must be an owned private regular file"
+            [ "$("$cu/wc" -c < "$reference_file")" -le 4096 ] || fail "reference binding is too large"
+            "$cu/env" -i ${pkgs.nodejs}/bin/node --input-type=module - "$reference_file" <<'JS' \
+              || fail "reference binding is not valid JSON text"
+              import fs from 'node:fs';
+              import { isUtf8 } from 'node:buffer';
+              const bytes = fs.readFileSync(process.argv[2]);
+              if (!isUtf8(bytes) || bytes.includes(0)) process.exit(1);
+              try { JSON.parse(bytes.toString('utf8')); } catch { process.exit(1); }
+          JS
+            reference_binding=$("$cu/cat" "$reference_file")
+            { [ -n "$reference_binding" ] && [[ $reference_binding != *$'\n'* && $reference_binding != *$'\r'* ]]; } \
+              || fail "reference binding must be one JSON line"
+            reference_env=(VOICE_UI_REFERENCE_REAL=1 VOICE_UI_MELTYPE_PROPOSALS=1 \
+              "VOICE_UI_REFERENCE_QUERY=$reference_query" "VOICE_UI_REFERENCE_MAX_CALLS=$reference_max" \
+              "VOICE_UI_REFERENCE_UNTIL=$reference_until")
+          fi
         '';
         build = ''
             if [ "$formal" = true ]; then
