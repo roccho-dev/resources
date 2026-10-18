@@ -305,7 +305,7 @@ flowchart TD
 - [windows #8](https://github.com/roccho-dev/windows/issues/8): own/rent Nix開発環境の合成受入。
 - [windows #14](https://github.com/roccho-dev/windows/issues/14): Cloudflare/client/認可と復帰。
 - [rent-cloudflare-flow.md](rent-cloudflare-flow.md): secret7分類・Provider/placement/host分担の背景。
-- [own Spec](../oci/own/spec.json)、[G6I3 Binding](../oci/own/bindings/G6I3.json)、[own entry](../oci/own/win.ps1)。
+- [own Spec](../oci/own/spec.json)、[Binding入力（envsの固定参照）](../flake.nix)、[own entry](../oci/own/win.ps1)。
 - [common Windows entry](../windows/win.ps1)、[own proof](../.github/workflows/own-image.yml)、[共通profile](../profile/nix.nix)、[gh routing/bind](../profile/gh.nix)。
 
 本書と既存source/契約に実際の不一致があれば、最新Userの目的・許可を基準にその一点を是正する。
@@ -316,14 +316,14 @@ flowchart TD
 
 [Issue #85](https://github.com/roccho-dev/windows/issues/85)で、OCI基盤とツールprofile更新の分離を議論する。
 基盤Bは `mkOwn(...).core` とサービスだけを入力にし、`mkOwn(...).profile` は独立したアプリTを返す。
-`own-profile` はCodex/paired host、Claude、既存Pi upstreamのnative entry、固定B由来helperを含む。
+`own-profile` はCodex/paired host、Claude、OpenCode、既存Pi upstreamのnative entry、固定B由来helperを含む。
 shared profileのdefaultはlegacyのまま。own imageの `/bin` はcoreを先に置き、appはselected世代へのstable linkを使う。
 fresh seedはBのstore/DB/marker/rootsだけを整え、アプリprofileを選択しない。BaseAdminReadyとAppsReady/BoundAuthReadyを区別する。
 既存generationはstart/reseed/restart/recreateで保持する。foreign/壊れたgenerationや異なるhelperは保全して拒否する。
 
 許可されたUID0 controllerは、supported appsと子processがいない協調quiet intervalを確立し、その間の新launchを止める。
 active/UNKNOWNなら選択せず既存generationを保持する。native set自身がquietを保証するとは扱わず、勝手なkillや新gateを置かない。
-初回はB-native Nixの `github:roccho-dev/windows/<accepted revision>#own-profile` でpublic fixed sourceからTをrealizeし、
+初回はB-native Nixの `github:roccho-dev/resources/<accepted revision>#own-profile` でpublic fixed sourceからTをrealizeし、
 actual出力へ `nix-env --profile /nix/var/nix/profiles/own-dev --set <T>` を行う。旧世代はnative rollback/GC rootとして保持する。
 選択前にactual T closureのvalidity、Bと同じresolved helper、同packageのCodex/host、対応ABI/consumerを検査する。
 own-devの世代形状・root ownership・legacy helper不一致、active/UNKNOWN又は取得失敗は切替前の拒否とし、旧世代を保つ。
