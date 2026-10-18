@@ -4,7 +4,7 @@
 # `owner` only names the stable Git credential helper. Each repository's principal is declared by its own
 # binding (profile/gh.nix), never derived from owner or the URL namespace.
 # `piTarget` (own only) names one exact envs target for the existing Pi credential launcher; null keeps the plain entry.
-{ pkgs, extra ? [], owner ? "roccho-dev", mode ? "legacy", piTarget ? null, dshUpstream ? null }:
+{ pkgs, extra ? [], owner ? "roccho-dev", mode ? "legacy", piTarget ? null, dshSource ? null }:
 let
   # Core(L_B, owner) never evaluates an app pin. The default retains rent/dev's existing profile.
   github = import ./gh.nix { inherit pkgs owner; };
@@ -34,7 +34,7 @@ ${releaseVersionCases}      *) echo "release-version: unknown CLI ''${1:-}" >&2;
     esac
   '';
   opencode = import ./opencode.nix { inherit pkgs; };
-  dsh = if dshUpstream == null then null else import ./dsh.nix { inherit pkgs; upstream = dshUpstream; };
+  dsh = if dshSource == null then null else import ./dsh.nix { inherit pkgs; source = dshSource; };
   # Only the immutable upstream is consumed; plain own never evaluates the dev credential resolver/launcher.
   pi = import ../oci/dev/pi.nix { inherit pkgs; };
   ownPiEntry = pkgs.runCommand "own-pi-entry-${pi.version}" {
@@ -62,7 +62,7 @@ ${releaseVersionCases}      *) echo "release-version: unknown CLI ''${1:-}" >&2;
   }).init;
 in
 assert piTarget == null || mode == "own";
-assert dshUpstream == null || mode == "own";
+assert dshSource == null || mode == "own";
 assert piTarget == null || piTarget ? identity;
 assert builtins.elem mode [ "legacy" "core" "own" ];
 if mode == "core" then pkgs.buildEnv {
