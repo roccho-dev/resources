@@ -2,24 +2,33 @@
 
 ## 2026-10-18の結合候補（実行結果は別判定）
 
-現候補はAのcanonical `d5a669d976d4e0d6ddf9903ca534b7ae2539b8e2` と
-Bの `c51e8dafa0810940ca776c20811114396dd47aca`。B自身の通常Linux producer
-[39101845125](https://github.com/roccho-dev/Meltype/actions/runs/39101845125) が成功し、
-同版runtime artifact `12126837294` と供給receipt `12126687727` の実bytes・版・
-run・内ZIP・製品hash対応をroot/subが独立照合した。pinsのsource/package NARは
-同producerの実測保存値を消費する。CやWindows上での代替計算値ではない。
+現候補はA canonical `d5a669d976d4e0d6ddf9903ca534b7ae2539b8e2` と
+B `776d336a40a3293404935867085a69613ee74d70`、terminal `cfe7483db1658d299965c608a07f17f973fd79f7`。
+Bの通常Linux producer [39111444274](https://github.com/roccho-dev/Meltype/actions/runs/39111444274)
+は同版206単体/同package206、実Native27/typed14・CLI・Apps8eのcontrolled source/session・
+実bcon Shell/Editor/paste/resize/reference表示・供給保存までSUCCESS。runtime `12129849691` と
+receipt `12131120514` の実bytes、版/run・内ZIP・4製品hashをroot/subが独立照合した。
+source/package NARは同producerの保存実測値を既存receiverへ渡し、C/Windowsで代替計算しない。
 
-既存receiverの二重ZIP/hash/NAR照合は維持する。最新baseで移動したlockは
-root `flake.lock` の `host-nixpkgs` を参照し、旧Cのhost入力と全locked値を保持する。
-Bが既存CLIで提供する `--compose` を明示して元のcdp子入力のpreedit契約を維持する。
-前のC `6712b996a496b89d2da3864677f027a88aabed5c` はA d5a/B a86で
-16VM＋unknown-effect・保存後検査まで成功した履歴であり、新Bへ流用しない。
-新Bは長い引用候補の識別部の折返しと実fontの描画領域を是正し、通常Linux CI・
-原画像・配布物について非作成者が[有限受領](https://github.com/roccho-dev/Meltype/pull/28#pullrequestreview-5561678946)した。
-このpins更新はその同じ実物をCで消費するためのもので、期待値・観測条件・待ち時間は変更しない。
-これらは新setの結合試験を開始する候補であり、Cの成功、B4の実Provider受入、
-旧helper拒否解除、A/Bの全条件成立や最終mergeを意味しない。後続の版変更は
-対応と影響を再判定する。以下の旧版実績は、それぞれの当時版の証拠として保持する。
+先行C `9a821468d1391ac976a2177e76f957e2d0632411` / run `39107428810` はA d5a/B c51で
+cancel-after-finish exit1、画像ACK断片の入力混入を記録してFAILした。fault artifact `12128649033`
+を保持する。旧f7の唯一因果は確定しない。Bは別途反証したESCESC境界と、空の入力周期で
+未完画像ACKの先頭ESCをNativeキーへ変えてしまう欠陥を修正した。完全な同ID返信まで
+曖昧なキーを有限の元期限内で保留し、bindingが変われば作用前に失効する。
+旧sourceの実PTY反例FAIL→新source PASS、実Native/CLI/VMの同版成功はCの成功そのものではない。
+旧C6712/A d5a/B a86、C2d909797/A d5a/B c51の成功も新setへ流用しない。
+
+この変更は同producer tupleのpinsと説明だけ。A/terminal、実入力、期待値、観測条件、
+待ち時間、workflow/helper、描画・判定器は変えない。既存の二重ZIP/hash/NAR照合、
+root flake.lockのhost-nixpkgs参照、Bの明示 --compose、16VM＋unknown-effect・
+保存/re-download/verify・非作成者C7を維持して、新setの実試験へ接続する。
+
+既存実利用launcherのcode/鍵fd・allowlist・固定Apps/proposer/semcmp/Git・endpoint/予算/期限は
+C9aからbyte不変。このbranchのpins/docs変更で実利用証拠の版を付け替えず、実利用のexact
+launcher/storepathと必要byte対応で別判定する。C全tree/実機配備の実行済みとはしない。
+Apps/B4の実Provider・私的原記録・一回の子入力効果の受入は別の必要証拠であり、
+controlled CIや別PoCの許可・予算へ昇格しない。新set成功、旧helper拒否解除、
+全条件成立や最終mergeをこのpins更新だけで主張しない。
 
 ## 目的
 
