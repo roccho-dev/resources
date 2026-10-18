@@ -9,6 +9,7 @@ pkgs.stdenv.mkDerivation (finalAttrs: {
   pname = "dsh-shiguredo";
   version = "0.2.1-rc.2-fbe85cf3";
   src = source;
+  DSH_CLIENT_COMMIT_HASH = source.rev;
   nativeBuildInputs = [
     node
     pnpm
@@ -35,8 +36,8 @@ pkgs.stdenv.mkDerivation (finalAttrs: {
     pnpm --filter @deepseek-ai/dsh deploy --prod --legacy "$out/lib/dsh"
     test -s "$out/lib/dsh/lib/bin.js"
     mkdir -p "$out/bin"
-    makeWrapper ${node}/bin/node "$out/bin/dsh" \\
-      --add-flags --expose-internals \\
+    makeWrapper ${node}/bin/node "$out/bin/dsh" \
+      --add-flags --expose-internals \
       --add-flags "$out/lib/dsh/lib/bin.js"
     runHook postInstall
   '';
