@@ -47,12 +47,15 @@ jev_clear() {
   fi
   for r in envs apps ops neg; do if [ -e "$fx/$r/.git" ]; then git_clear "$fx/$r" || return 1; fi; done
   plain "$fx/envs/side" && plain "$fx/envs/ciphertexts/dev-jev-api.oci-dev.sops.yaml" &&
+    plain "$fx/envs/ciphertexts/dev-typellm-api.oci-dev.sops.yaml" &&
     empty "$fx/envs/ciphertexts" && empty "$fx/envs" &&
     plain "$fx/apps/flake.nix" && plain "$fx/apps/flake.lock" && empty "$fx/apps" &&
     plain "$fx/ops/flake.nix" && plain "$fx/ops/flake.lock" && empty "$fx/ops" &&
     plain "$fx/neg/file" && empty "$fx/neg" &&
     plain "$fx/age/oci-dev.key" && plain "$fx/age/kept" && empty "$fx/age" &&
-    plain "$fx/launch.out" && plain "$fx/reference.json" && plain "$fx/ops.out" && plain "$fx/ops.err" && plain "$fx/scratch-clear.sh" &&
+    plain "$fx/launch.out" && plain "$fx/reference.json" && plain "$fx/ops.out" && plain "$fx/ops.err" &&
+    plain "$fx/typellm.out" && plain "$fx/typellm.err" && plain "$fx/typellm.fds" &&
+    plain "$fx/scratch-clear.sh" &&
     empty "$fx/tmp" && empty "$fx"
 }
 # Everything the Pi source proof creates under $evidence/pi. It shares the generic fixture Git cleanup above.
@@ -95,13 +98,14 @@ jev_proof() {
   local fx="$evidence/jev" pkgs='import (builtins.getFlake (toString ./.)).inputs.nixpkgs { system = "x86_64-linux"; }'
   mkdir "$fx"
 
-  # Production: exactly the three bounded tools on the profile, the four real constants, no raw crypto binary.
-  local profile prod_launch prod_init prod_ops
+  # Production: exactly the four bounded tools on the profile, the four real constants, no raw crypto binary.
+  local profile prod_launch prod_init prod_ops prod_typellm
   profile=$("${nx[@]}" build --no-link --print-out-paths --no-write-lock-file .#dev-profile)
   prod_launch=$(readlink -f "$profile/bin/voice-ui-jev-dev")
   prod_init=$(readlink -f "$profile/bin/jev-age-init")
   prod_ops=$(readlink -f "$profile/bin/ops-jev")
-  for raw in sops age age-keygen jev; do test ! -e "$profile/bin/$raw"; done
+  prod_typellm=$(readlink -f "$profile/bin/ops-typellm")
+  for raw in sops age age-keygen jev typellm; do test ! -e "$profile/bin/$raw"; done
   sed -E 's/^[[:space:]]*//' "$prod_launch" | grep -xF "envs_remote=https://github.com/roccho-dev/envs" >/dev/null
   sed -E 's/^[[:space:]]*//' "$prod_launch" | grep -xF "apps_remote=https://github.com/roccho-dev/apps" >/dev/null
   sed -E 's/^[[:space:]]*//' "$prod_launch" | grep -xF "identity=/work/repos/.auth/roccho-dev/age/oci-dev.key" >/dev/null
@@ -110,23 +114,30 @@ jev_proof() {
   sed -E 's/^[[:space:]]*//' "$prod_ops" | grep -xF "ops_remote=https://github.com/roccho-dev/ops" >/dev/null
   sed -E 's/^[[:space:]]*//' "$prod_ops" | grep -xF "identity=/work/repos/.auth/roccho-dev/age/oci-dev.key" >/dev/null
   if grep -qE '^[[:space:]]*(apps_remote|port|host)=' "$prod_ops"; then echo 'ops-jev carries apps constants' >&2; return 1; fi
-  if grep -qE '^[[:space:]]*set -(x|o xtrace)' "$prod_launch" "$prod_init" "$prod_ops"; then echo 'a jev tool enables xtrace' >&2; return 1; fi
+  sed -E 's/^[[:space:]]*//' "$prod_typellm" | grep -xF "envs_remote=https://github.com/roccho-dev/envs" >/dev/null
+  sed -E 's/^[[:space:]]*//' "$prod_typellm" | grep -xF "ops_remote=https://github.com/roccho-dev/ops" >/dev/null
+  sed -E 's/^[[:space:]]*//' "$prod_typellm" | grep -xF "identity=/work/repos/.auth/roccho-dev/age/oci-dev.key" >/dev/null
+  if grep -qE '^[[:space:]]*(apps_remote|port|host)=' "$prod_typellm"; then echo 'ops-typellm carries apps constants' >&2; return 1; fi
+  if grep -qE '^[[:space:]]*set -(x|o xtrace)' "$prod_launch" "$prod_init" "$prod_ops" "$prod_typellm"; then echo 'a jev tool enables xtrace' >&2; return 1; fi
 
   # Fixture instance: the same source with only the four constants changed.
-  local tools launch init ops
+  local tools launch init ops typellm
   tools="(import ./oci/dev/nix.nix { pkgs = $pkgs; }).jevTools {
     envsRemote = \"file://$fx/envs\"; appsRemote = \"file://$fx/apps\"; opsRemote = \"file://$fx/ops\";
     identity = \"$fx/age/oci-dev.key\"; }"
   launch=$("${nx[@]}" build --impure --no-link --print-out-paths --expr "($tools).launch")/bin/voice-ui-jev-dev
   init=$("${nx[@]}" build --impure --no-link --print-out-paths --expr "($tools).init")/bin/jev-age-init
   ops=$("${nx[@]}" build --impure --no-link --print-out-paths --expr "($tools).ops")/bin/ops-jev
+  typellm=$("${nx[@]}" build --impure --no-link --print-out-paths --expr "($tools).typellm")/bin/ops-typellm
   same() { grep -vE '^[[:space:]]*(envs_remote|apps_remote|ops_remote|identity)=' "$1" | sha256sum; }
   test "$(same "$launch")" = "$(same "$prod_launch")"
   test "$(same "$init")" = "$(same "$prod_init")"
   test "$(same "$ops")" = "$(same "$prod_ops")"
+  test "$(same "$typellm")" = "$(same "$prod_typellm")"
   test "$launch" != "$prod_launch"
   test "$init" != "$prod_init"
   test "$ops" != "$prod_ops"
+  test "$typellm" != "$prod_typellm"
 
   # Reuse the workflow's literal classifier, not a second path algorithm.
   local classify_source
@@ -172,7 +183,7 @@ JS
   # The bootstrap Git subprocess has its own locked public CA, not the caller profile.
   local ca
   ca=$("${nx[@]}" eval --impure --raw --expr "($pkgs).cacert")/etc/ssl/certs/ca-bundle.crt
-  "$node" --input-type=module - "$ca" "$prod_launch" "$prod_ops" <<'JS'
+  "$node" --input-type=module - "$ca" "$prod_launch" "$prod_ops" "$prod_typellm" <<'JS'
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -210,12 +221,14 @@ for (const tool of tools) {
 console.log('PASS compiled public Git CA: pinned bundle, empty helper, caller CA overridden only in Git subprocess, four refusal controls per tool; fixture only, no TLS/Auth/Jev claim');
 JS
   # One public certificate constant joins the closed child environment; no caller SSL settings.
-  "$node" --input-type=module - "$ca" "$prod_launch" "$prod_ops" <<'JS'
+  "$node" --input-type=module - "$ca" "$prod_launch" "$prod_ops" "$prod_typellm" <<'JS'
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 const [ca, ...tools] = process.argv.slice(2);
-for (const tool of tools) {
+for (const [toolIndex, tool] of tools.entries()) {
+  const keyName = toolIndex === 2 ? 'TYPELLM_API_KEY' : 'JEV_API_KEY';
+  const otherKeyName = keyName === 'TYPELLM_API_KEY' ? 'JEV_API_KEY' : 'TYPELLM_API_KEY';
   const text = fs.readFileSync(tool, 'utf8');
   const start = text.indexOf('exec "$cu/env" -i PATH="$cu" HOME=/homeless-shelter LANG=C.UTF-8 ');
   assert(start >= 0);
@@ -226,21 +239,21 @@ for (const tool of tools) {
   for (const bad of [boundary.replace('SSL_CERT_FILE=' + ca + ' ', ''), boundary.replace(ca, '/caller-ca')])
     assert.throws(() => { const m = bad.match(/^exec "\$cu\/env" -i PATH="\$cu" HOME=\/homeless-shelter LANG=C[.]UTF-8 SSL_CERT_FILE=([^\s]+) /); assert(m); assert.equal(m[1], ca); });
   const node = process.execPath, bash = text.split('\n')[0].slice(2);
-  const probe = 'console.log(JSON.stringify({names:Object.keys(process.env).sort(),ca:process.env.SSL_CERT_FILE,key:process.env.JEV_API_KEY,extra:process.env.NODE_EXTRA_CA_CERTS??null,dir:process.env.SSL_CERT_DIR??null}));';
+  const probe = 'console.log(JSON.stringify({names:Object.keys(process.env).sort(),ca:process.env.SSL_CERT_FILE,key:process.env['+JSON.stringify(keyName)+'],other:process.env['+JSON.stringify(otherKeyName)+']??null,extra:process.env.NODE_EXTRA_CA_CERTS??null,dir:process.env.SSL_CERT_DIR??null}));';
   const q = s => "'" + s.replaceAll("'", "'\\''") + "'";
   const prefix = 'cu=' + q('/nix/store/cp7wjv1pl4wapfk48svvizxd089v9h0a-coreutils-9.11/bin') +
     '\nprogram=' + q(node) + '\nprogram_args=(--input-type=module -e ' + q(probe) + ')\nkey=public-fixture-not-a-real-key\nport=23001\nhost=127.0.0.1\n';
   const result = spawnSync(bash, ['-c', prefix + boundary], {
-    env: { SSL_CERT_FILE: '/caller-ca', NODE_EXTRA_CA_CERTS: '/caller-extra', SSL_CERT_DIR: '/caller-dir', FOREIGN: 'public-fixture' },
+    env: { SSL_CERT_FILE: '/caller-ca', NODE_EXTRA_CA_CERTS: '/caller-extra', SSL_CERT_DIR: '/caller-dir', FOREIGN: 'public-fixture', JEV_API_KEY: 'parent-jev', TYPELLM_API_KEY: 'parent-typellm' },
     encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'],
   });
   assert.equal(result.status, 0); assert.equal(result.signal, null); assert.equal(result.stderr, '');
   const actual = JSON.parse(result.stdout);
-  const names = ['HOME', 'JEV_API_KEY', 'LANG', 'PATH', 'SSL_CERT_FILE'];
+  const names = ['HOME', keyName, 'LANG', 'PATH', 'SSL_CERT_FILE'];
   if (boundary.includes('PORT="$port"')) names.push('PORT', 'HOST');
   assert.deepEqual(actual.names, names.sort());
   assert.equal(actual.ca, ca); assert.equal(actual.key, 'public-fixture-not-a-real-key');
-  assert.equal(actual.extra, null); assert.equal(actual.dir, null);
+  assert.equal(actual.extra, null); assert.equal(actual.dir, null); assert.equal(actual.other, null);
 }
 console.log('PASS compiled child public CA: closed names, one fixed certificate file, caller SSL ignored, FD3 synthetic key unchanged; fixture only, no Auth/Jev/TLS claim');
 JS
@@ -466,7 +479,7 @@ NIX
 
   # Fixture ops remote: a stub jev that reads its whole request from stdin, records only names, digests and its open
   # descriptors, prints exactly one JSON line, and exits 3 when the request asks for it; and one that cannot build.
-  local ops_flake ops_good ops_bad
+  local ops_flake ops_good ops_bad typellm_fds="$fx/typellm.fds"
   ops_flake=$(cat <<'NIX'
 {
   inputs.nixpkgs.url = "path:NIXPKGS";
@@ -483,10 +496,24 @@ NIX
         "$names" "$home" "$(ulimit -c)" "$key" "$req" "$argv"
       case "$input" in *'"exit":3'*) exit 3 ;; esac
     '';
+    packages.x86_64-linux.typellm = nixpkgs.legacyPackages.x86_64-linux.writeShellScriptBin "typellm" ''
+      ls -1 /proc/$$/fd > "TYPELLM_FDS"
+      input=$(cat)
+      names=$(tr '\0' '\n' < /proc/$$/environ | cut -d= -f1 | sort | tr '\n' ' ')
+      home="$HOME $([ -e "$HOME" ] && echo present || echo absent)"
+      key=$(printf %s "$TYPELLM_API_KEY" | sha256sum | cut -d' ' -f1)
+      req=$(printf %s "$input" | sha256sum | cut -d' ' -f1)
+      case "$(tr '\0' ' ' < /proc/$$/cmdline)" in *"$TYPELLM_API_KEY"*) argv=key ;; *) argv=clean ;; esac
+      printf '{"names":"%s","home":"%s","core":"%s","key":"%s","request":"%s","argv":"%s"}\n' \
+        "$names" "$home" "$(ulimit -c)" "$key" "$req" "$argv"
+      printf 'fixture-typellm-child-stderr\n' >&2
+      case "$input" in *'"exit":3'*) exit 3 ;; *'"signal":true'*) kill -TERM $$ ;; esac
+    '';
   };
 }
 NIX
 )
+  ops_flake=${ops_flake//TYPELLM_FDS/$typellm_fds}
   fixture_init "$fx/ops" work
   printf '%s\n' "${ops_flake//NIXPKGS/$nixpkgs_src}" > "$fx/ops/flake.nix"
   g -C "$fx/ops" add flake.nix
@@ -615,7 +642,7 @@ NIX
     shift 2
     rm -f "$ops_fds"
     printf '%s' "$input" | env TMPDIR="$fx/tmp" GH_TOKEN=fixture-gh GH_CONFIG_DIR=/nonexistent SOPS_AGE_KEY_FILE=/nonexistent \
-      JEV_API_KEY=parent-leak SHELLOPTS=xtrace 'BASH_FUNC_leak%%=() { :; }' 'NOT-AN-IDENTIFIER=leak' \
+      JEV_API_KEY=parent-leak TYPELLM_API_KEY=parent-typellm-leak SHELLOPTS=xtrace 'BASH_FUNC_leak%%=() { :; }' 'NOT-AN-IDENTIFIER=leak' \
       "$ops" "$@" > "$ops_out" 2> "$ops_err" 7< /dev/null 9< /dev/null || code=$?
     if grep -qF "$key" "$ops_out" "$ops_err"; then echo 'the key reached ops-jev output' >&2; return 1; fi
     if grep -qF 'ops-jev:' "$ops_out"; then echo 'ops-jev wrote its own messages to stdout' >&2; return 1; fi
@@ -648,6 +675,64 @@ NIX
   ops_as red "$request" --envs-sha "$good" --ops-sha "$(printf unknown | sha256sum | cut -c1-40)"
   chmod 0644 "$fx/age/oci-dev.key"; ops_as red "$request" "${ops_args[@]}"; chmod 0600 "$fx/age/oci-dev.key"
   rm -f "$ops_fds"
+
+  # TypeLLM uses the same target boundary with its own fixed cipher, field and package.
+  # Both stale/current commits contain the TypeLLM cipher; a JEV-only ancestor is not a stale test.
+  local typellm_key typellm_cipher typellm_stale typellm_good typellm_wrong
+  local typellm_out="$fx/typellm.out" typellm_err="$fx/typellm.err"
+  typellm_key="fixture-typellm-$RANDOM$RANDOM$RANDOM"
+  typellm_cipher="$fx/envs/ciphertexts/dev-typellm-api.oci-dev.sops.yaml"
+  encrypt_typellm() {
+    printf '{"TYPELLM_API_KEY":"%s"}\n' "$typellm_key" \
+      | SOPS_AGE_RECIPIENTS="$1" "$sops" --encrypt --input-type json --output-type yaml /dev/stdin
+  }
+  encrypt_typellm "$recipient" > "$typellm_cipher"; typellm_stale=$(commit typellm-stale)
+  encrypt_typellm "$recipient" > "$typellm_cipher"; typellm_good=$(commit typellm-current)
+  typellm_as() {
+    local expect=$1 input=$2 code=0
+    shift 2
+    plain "$typellm_fds"
+    printf '%s' "$input" | env TMPDIR="$fx/tmp" GH_TOKEN=fixture-gh GH_CONFIG_DIR=/nonexistent SOPS_AGE_KEY_FILE=/nonexistent \
+      JEV_API_KEY=parent-jev-leak TYPELLM_API_KEY=parent-typellm-leak VOICE_UI_REFERENCE_REAL=1 VOICE_UI_PROPOSAL_B=parent-reference-leak SHELLOPTS=xtrace \
+      'BASH_FUNC_leak%%=() { :; }' 'NOT-AN-IDENTIFIER=leak' \
+      "$typellm" "$@" > "$typellm_out" 2> "$typellm_err" 7< /dev/null 9< /dev/null || code=$?
+    if grep -qF "$typellm_key" "$typellm_out" "$typellm_err" || grep -qF "$key" "$typellm_out" "$typellm_err"; then
+      echo 'a key reached ops-typellm output' >&2; return 1
+    fi
+    if grep -qF 'ops-typellm:' "$typellm_out"; then echo 'ops-typellm wrote its own messages to stdout' >&2; return 1; fi
+    case $expect in
+      pass | exit3 | signal143)
+        [ "$code" -eq "$([ "$expect" = pass ] && echo 0 || { [ "$expect" = exit3 ] && echo 3 || echo 143; })" ] \
+          && [ "$(wc -l < "$typellm_out")" -eq 1 ] && [ -e "$typellm_fds" ] \
+          && grep -qx 'fixture-typellm-child-stderr' "$typellm_err" ;;
+      red) [ "$code" -ne 0 ] && [ ! -s "$typellm_out" ] && [ ! -e "$typellm_fds" ] ;;
+    esac || { cat "$typellm_err" >&2; echo "ops-typellm: expected $expect, exit $code: $*" >&2; return 1; }
+  }
+  local typellm_args=(--envs-sha "$typellm_good" --ops-sha "$ops_good") typellm_digest
+  typellm_digest=$(printf %s "$typellm_key" | sha256sum | cut -d' ' -f1)
+  typellm_as pass "$request" "${typellm_args[@]}"
+  test "$(cat "$typellm_out")" = "{\"names\":\"HOME LANG PATH SSL_CERT_FILE TYPELLM_API_KEY \",\"home\":\"/homeless-shelter absent\",\"core\":\"0\",\"key\":\"$typellm_digest\",\"request\":\"$(printf %s "$request" | sha256sum | cut -d' ' -f1)\",\"argv\":\"clean\"}"
+  only_stdio "$typellm_fds"
+  test "$(grep -n 'ops-typellm: built ' "$typellm_err" | cut -d: -f1)" -lt "$(grep -n 'ops-typellm: decrypt ' "$typellm_err" | cut -d: -f1)"
+  typellm_as pass "$request" --ops-sha "$ops_good" --envs-sha "$typellm_good"
+  typellm_as exit3 '{"exit":3}' "${typellm_args[@]}"
+  typellm_as signal143 '{"signal":true}' "${typellm_args[@]}"
+  typellm_as red "$request" --envs-sha "$typellm_good"
+  typellm_as red "$request" --envs-sha "$typellm_good" --ops-sha "${ops_good^^}"
+  typellm_as red "$request" --envs-sha "$typellm_good" --envs-sha "$typellm_good"
+  for forbidden in --apps-sha --port --host --binding --cipher-path --key-name --program --attribute; do
+    typellm_as red "$request" "${typellm_args[@]}" "$forbidden" forbidden
+  done
+  typellm_as red "$request" --envs-sha "$typellm_stale" --ops-sha "$ops_good"
+  typellm_as red "$request" --envs-sha "$typellm_good" --ops-sha "$ops_bad"
+  if grep -q 'ops-typellm: decrypt' "$typellm_err"; then echo 'ops-typellm decrypted before its program was built' >&2; return 1; fi
+  chmod 0644 "$fx/age/oci-dev.key"; typellm_as red "$request" "${typellm_args[@]}"; chmod 0600 "$fx/age/oci-dev.key"
+  # A valid JEV ciphertext in the TypeLLM slot must fail capability selection before decrypt/child.
+  encrypt "$recipient" > "$typellm_cipher"; typellm_wrong=$(commit typellm-wrong-jev-field)
+  typellm_as red "$request" --envs-sha "$typellm_wrong" --ops-sha "$ops_good"
+  grep -q 'the ciphertext fields differ' "$typellm_err"
+  if grep -q 'ops-typellm: decrypt' "$typellm_err"; then echo 'ops-typellm accepted the JEV field' >&2; return 1; fi
+  plain "$typellm_fds"
   test -z "$(ls -A "$fx/tmp")"
   # scratch_clear as built into the launcher: it removes exactly the scratch the launcher writes, and keeps and refuses
   # anything else (here a loose object and a foreign pack name).
@@ -709,9 +794,10 @@ NIX
   test ! -e "$fx"
   rm -f "$marker" "$marker.fds"
   echo 'PASS formal admission: absent operand refused before identity/cipher/network/child; classifier owner-only true, empty/CI-only/mixed/product false;'
-  echo 'PASS jev tools (fixtures): production profile has only the three bounded tools and exact constants; same source;'
+  echo 'PASS jev tools (fixtures): production profile has only the four bounded tools and exact constants; same source;'
   echo 'PASS jev launch: closed child environment, loopback unless --host 0.0.0.0 is explicit, no core, absent HOME, only stdio descriptors, no temp left after any launch, key never in argv or output, build before decrypt;'
   echo 'PASS ops-jev: caller stdin is the request, one stdout JSON line, exit status passed through, launcher messages on stderr only, PATH HOME LANG SSL_CERT_FILE JEV_API_KEY only, only stdio descriptors, build before decrypt, RED on arguments/stale/off/unbuildable/unknown/identity;'
+  echo 'PASS ops-typellm: fixed TypeLLM cipher/field/package; own stale/current fixture; JEV field refused; caller stdin, one stdout line, stderr and exit/signal preserved; only TYPELLM_API_KEY with closed public environment and stdio; build before decrypt;'
   echo 'PASS jev scratch: removed file by file before the child, never recursively; unexpected entries and types kept and refused;'
   echo 'PASS jev fixtures: Git-verified objects and known files removed, foreign entries kept and refused; no fixture or test identity left;'
   echo 'PASS jev RED: arguments, host, stale/off/unknown envs commit, unbuildable apps, identity mode/missing/other, tamper, two recipients, extra field, absent'

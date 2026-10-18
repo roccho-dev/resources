@@ -1,5 +1,36 @@
 # Browser/Input結合 — tty-split-20261013-v1 / C
 
+## 現在のbase整列（0e1の有限成功後）
+
+0e1のA d5a/B1c4/terminal cfeによる同版結合は
+[39116044270](https://github.com/roccho-dev/resources/actions/runs/39116044270)で77Python/19Nix、
+16VM＋unknown-effect、保存/upload/re-download/verifyまでSUCCESS。intake12132252557と
+smoke12132927247（SHA256 1b1496e74bcdfbc7be98e7453ca5b82624b3ecd810396d02eb28c8ce350e4d2b）、
+35参照/33file・15trial両保存先・132埋込bytesを自読した。17CONSISTENT/8NOT_PROVENは維持する。
+
+統合直前の実proposalsは `ee37c36ba469bcc5842dd41a722acd088fe8368c` へ進み、
+PR45のproduction Meltype1.2.1.9/48fd source+ZIPと、PR46の固定TypeLLM launcher追加がある。
+両方を保全し、common mkLaunchのcompile-time auth.keyと当方のbounded reference fd4を合成した。
+Jev既定、元query/期限/上限、固定Apps/proposer/semcmp、fd閉鎖を緩めず、
+新TypeLLM鍵/許可/実呼出しをこのtaskへ借用しない。新しい実Provider呼出しは0。
+非作成者が旧/現/上流を同条件の実Nix parse・生成textで比較し、Jev既定の作用差は
+fields sortのLC_ALL=C固定だけ、鍵/FD/query/期限/上限/子envの生成値不変を確認した。
+各生成shellとproof.shのbash -nは0。これはsyntax/semantic対応でありrealbuildや新Jev評価ではない。
+親reference環境をTypeLLMへ注入する反例を追加し、通常fixtureの元closed-env/stdio判定を維持した。
+
+Cの13code/pins/A/B/terminal、host-nixpkgs node、実入力/期待値/観測/timeoutは不変だが、
+共通launcherの生成物対応と新baseの通常試験・保存・独立判定は別に実確認する。
+0e1成功だけでこの新統合版を合格にせず、当該版のCIへ接続する。
+
+0e1のgeneric own117641960396は、旧production console3cf6/v1.2.1.8・bcon575cの
+raw command ready待ち30.57sでFAILした。final joinの1c4/ca30とは別bindingである。
+basec936の117632720285及び同0e1の並行sourceVM117641925282は、厳密同一console drv
+`5f1rgyfzv8k3rmlhg6bljv9yspmqwn4d` で元DI2全期待値までSUCCESS。
+この一失敗を消さず、原因・入力到達/失敗画面未回収の範囲を残す。再Enter/無変更retry/
+timeout延長/skip化でGreenにしていない。新しいproduction bindingの結果も別判定する。
+
+以下は各時点のfinite履歴であり、現在の新sourceの合格へ自動転用しない。
+
 ## 2026-10-18の最終結合候補（Cの実行結果は別判定）
 
 現候補はA canonical `d5a669d976d4e0d6ddf9903ca534b7ae2539b8e2`、
