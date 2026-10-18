@@ -1,5 +1,21 @@
 # Browser/Input結合 — tty-split-20261013-v1 / C
 
+## 2026-10-18の結合候補（実行結果は別判定）
+
+現候補はAのcanonical `d5a669d976d4e0d6ddf9903ca534b7ae2539b8e2` と
+Bの `a86eb4c5911b456cc1d05d254216168ed60e127d`。B自身の通常Linux producer
+[39097581732](https://github.com/roccho-dev/Meltype/actions/runs/39097581732) が成功し、
+同版runtime artifact `12124694788` と供給receipt `12125303751` の実bytes・版・
+run・内ZIP・製品hash対応をroot/subが独立照合した。pinsのsource/package NARは
+同producerの実測保存値を消費する。CやWindows上での代替計算値ではない。
+
+既存receiverの二重ZIP/hash/NAR照合は維持する。最新baseで移動したlockは
+root `flake.lock` の `host-nixpkgs` を参照し、旧Cのhost入力と全locked値を保持する。
+Bが既存CLIで提供する `--compose` を明示して元のcdp子入力のpreedit契約を維持する。
+これらは新setの結合試験を開始する候補であり、Cの成功、B4の実Provider受入、
+旧helper拒否解除、A/Bの全条件成立や最終mergeを意味しない。後続の版変更は
+対応と影響を再判定する。以下の旧版実績は、それぞれの当時版の証拠として保持する。
+
 ## 目的
 
 A（Chrome ↔ cdp-tty）とB（bcon ↔ Meltype ↔ Shell/Editor）を独立完成させ、
@@ -88,7 +104,7 @@ verification/tty-browser-join/contract.nixが不足・不正な供給を検査�
 hash欠落、異なる実行system、余分なX入力を受理しない。構造が正しくても返す状態は
 INPUT_SHAPE_VALID_NOT_E2Eであり、合意・信用・品質・C合格を意味しない。
 
-VMのpackage setは既存nixos/flake.lockのnixpkgsだけを再利用し、own-OCI/windows入力や
+VMのpackage setは既存root flake.lockのhost-nixpkgsだけを再利用し、own-OCI/windows入力や
 恒久Host設定は評価・変更しない。A/BのProducer lockを統一し直すことやCでの再梱包はしない。
 
 CIのintake-unit-onlyは合成値による16反証/正常例のみ。ordinary-input-smoke-not-closureは

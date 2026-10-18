@@ -1,0 +1,114 @@
+name: release watch
+
+on:
+  pull_request:
+    branches: [proposals]
+    paths:
+      - profile/releases.json
+      - profile/nix.nix
+      - oci/own/codex.nix
+      - extensions/release-watch/watch.mjs
+      - extensions/release-watch/watch.test.mjs
+      - .github/workflows/release-watch.yml
+      - flake.nix
+  push:
+    branches: [proposals]
+  # Existing cron activates only at the coordinated M6 publisher handoff.
+  workflow_dispatch:
+    inputs:
+      propose:
+        description: Maintain the existing draft update proposals (no merge, host or schedule change)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: release-watch-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
+      - name: Build locked proof tools
+        id: tools
+        run: |
+          set -euo pipefail
+          tools=$(nix build --impure --no-link --print-out-paths --expr '
+            let
+              flake = builtins.getFlake (toString ./.);
+              pkgs = flake.inputs.nixpkgs.legacyPackages.x86_64-linux;
+            in pkgs.buildEnv {
+              name = "release-proof-tools";
+              paths = [ pkgs.cosign pkgs.gnupg ];
+            }
+          ')
+          test -x "$tools/bin/cosign"
+          test -x "$tools/bin/gpg"
+          echo "cosign=$tools/bin/cosign" >> "$GITHUB_OUTPUT"
+          echo "gpg=$tools/bin/gpg" >> "$GITHUB_OUTPUT"
+      - name: Verify contract, protocol and actual official selected bytes
+        env:
+          RELEASE_WATCH_COSIGN: ${{ steps.tools.outputs.cosign }}
+          RELEASE_WATCH_GPG: ${{ steps.tools.outputs.gpg }}
+        run: |
+          set -euo pipefail
+          node --test extensions/release-watch/watch.test.mjs
+          watcher=$(node extensions/release-watch/watch.mjs validate profile/releases.json)
+          nix_versions=$(nix eval --json .#releaseVersions --no-write-lock-file)
+          test "$watcher" = "$nix_versions"
+          node extensions/release-watch/watch.mjs resolve profile/releases.json | tee release-proof.json
+          printf 'source %s\nreleaseVersions %s\n' "$(git rev-parse HEAD)" "$nix_versions" >> "$GITHUB_STEP_SUMMARY"
+          cat release-proof.json >> "$GITHUB_STEP_SUMMARY"
+
+  propose:
+    if: github.event_name == 'workflow_dispatch' && inputs.propose && github.ref == 'refs/heads/proposals'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
+      - name: Build locked proof tools
+        id: tools
+        run: |
+          set -euo pipefail
+          tools=$(nix build --impure --no-link --print-out-paths --expr '
+            let
+              flake = builtins.getFlake (toString ./.);
+              pkgs = flake.inputs.nixpkgs.legacyPackages.x86_64-linux;
+            in pkgs.buildEnv {
+              name = "release-proof-tools";
+              paths = [ pkgs.cosign pkgs.gnupg ];
+            }
+          ')
+          echo "cosign=$tools/bin/cosign" >> "$GITHUB_OUTPUT"
+          echo "gpg=$tools/bin/gpg" >> "$GITHUB_OUTPUT"
+      - name: Resolve, prove and maintain one draft PR per CLI
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_WATCH_COSIGN: ${{ steps.tools.outputs.cosign }}
+          RELEASE_WATCH_GPG: ${{ steps.tools.outputs.gpg }}
+        run: |
+          set -euo pipefail
+          checkout_sha=$(git rev-parse HEAD)
+          test "$checkout_sha" = "$GITHUB_SHA"
+          RELEASE_WATCH_CHECKOUT_SHA="$checkout_sha" \
+            node extensions/release-watch/watch.mjs propose profile/releases.json | tee -a "$GITHUB_STEP_SUMMARY"

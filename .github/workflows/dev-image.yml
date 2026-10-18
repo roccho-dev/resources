@@ -1,0 +1,43 @@
+name: dev image
+
+on:
+  workflow_call:
+
+jobs:
+  fresh-develop-replace-continue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v31
+      - run: nix build .#binding-inputs --no-write-lock-file --out-link _bindings
+      - name: Read the declared source entry at this exact revision
+        run: |
+          set -euo pipefail
+          source=$(git rev-parse HEAD)
+          url=$(jq -er .cloneUrl oci/dev/spec.json)
+          test "$url" = "https://github.com/$GITHUB_REPOSITORY"
+          clone="$RUNNER_TEMP/dev-provider-source"
+          git init -q "$clone"
+          git -C "$clone" fetch --depth 1 "$url" "$source"
+          git -C "$clone" checkout --detach -q FETCH_HEAD
+          test "$(git -C "$clone" rev-parse HEAD)" = "$source"
+          test "$(nix eval --raw .#dev-profile.drvPath --no-write-lock-file)" = \
+               "$(nix eval --raw "git+file://$clone?rev=$source&shallow=1#dev-profile.drvPath" --no-write-lock-file)"
+          printf 'PASS dev provider: %s at %s; same profile derivation.\n' "$url" "$source" >> "$GITHUB_STEP_SUMMARY"
+      - name: Build the locked dev image
+        run: |
+          set -euo pipefail
+          nix build .#dev-image --no-write-lock-file --print-build-logs
+          git diff --exit-code -- flake.lock
+          printf 'source %s\ndrvPath %s\n' "$(git rev-parse HEAD)" \
+            "$(nix eval --raw .#dev-image.drvPath --no-write-lock-file)" >> "$GITHUB_STEP_SUMMARY"
+          sha256sum result >> "$GITHUB_STEP_SUMMARY"
+      - name: Prove actual development continues after replacement
+        run: |
+          set -euo pipefail
+          bash oci/dev/proof.sh result 2>&1 | tee dev-proof.log
+          grep -E '^(image |apps revision |PASS )' dev-proof.log >> "$GITHUB_STEP_SUMMARY"

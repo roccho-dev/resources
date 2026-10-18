@@ -3,8 +3,10 @@
 let
   inputs = (import ./contract.nix).require supplied;
   # Reuse only the existing package-set lock; do not evaluate own-OCI/windows.
-  lock = builtins.fromJSON (builtins.readFile ../../nixos/flake.lock);
-  selected = lock.nodes.${lock.root}.inputs.nixpkgs;
+  lock = builtins.fromJSON (builtins.readFile ../../flake.lock);
+  # The base moved the existing host lock to the root. Keep its host package
+  # set, not the distinct profile/tooling nixpkgs input.
+  selected = lock.nodes.${lock.root}.inputs.host-nixpkgs;
   pin = assert builtins.isString selected; lock.nodes.${selected}.locked;
   pkgs = import (builtins.fetchTarball {
     url = "https://github.com/${pin.owner}/${pin.repo}/archive/${pin.rev}.tar.gz";

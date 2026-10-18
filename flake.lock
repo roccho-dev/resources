@@ -1,0 +1,111 @@
+{
+  "nodes": {
+    "bcon": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1790547444,
+        "narHash": "sha256-JEwDgLneYxjmC2nmkTkj7CerstvE8dvuNBngwcjkesM=",
+        "owner": "sanohiro",
+        "repo": "bcon",
+        "rev": "575c293ddcf47ee55c907a894c11482621d05322",
+        "type": "github"
+      },
+      "original": {
+        "owner": "sanohiro",
+        "ref": "v1.5.1",
+        "repo": "bcon",
+        "type": "github"
+      }
+    },
+    "host-bindings": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1792280232,
+        "narHash": "sha256-DiaxAi6uzelo13KTdo7TWTAeA2hoxJ3Q/Das9rEjXjI=",
+        "owner": "roccho-org",
+        "repo": "envs",
+        "rev": "93691d331385e6e873fe6ba22d31917e4562297c",
+        "type": "github"
+      },
+      "original": {
+        "owner": "roccho-org",
+        "repo": "envs",
+        "rev": "93691d331385e6e873fe6ba22d31917e4562297c",
+        "type": "github"
+      }
+    },
+    "host-nixpkgs": {
+      "locked": {
+        "lastModified": 1791353474,
+        "narHash": "sha256-v72qr4LsSz61tQki/41nHKZKPY6NSeZavtGlAInOCng=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "2efa67fd26b6df417c33e4603185c701f260dd83",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "2efa67fd26b6df417c33e4603185c701f260dd83",
+        "type": "github"
+      }
+    },
+    "meltype-linux": {
+      "flake": false,
+      "locked": {
+        "narHash": "sha256-l4Jd7zvlHiOrG0UdjygZ5cZlBUxmnkgkAIh/xFnwZqQ=",
+        "type": "file",
+        "url": "https://github.com/roccho-dev/Meltype/releases/download/v1.2.1.8/Meltype-1.2.1.8-linux.zip"
+      },
+      "original": {
+        "type": "file",
+        "url": "https://github.com/roccho-dev/Meltype/releases/download/v1.2.1.8/Meltype-1.2.1.8-linux.zip"
+      }
+    },
+    "meltype-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1792241895,
+        "narHash": "sha256-lG+kGo3fYhznymxJsOX6gBcEhKCPGuuc+6c+GORXe9k=",
+        "owner": "roccho-dev",
+        "repo": "Meltype",
+        "rev": "3cf6f6ad1c6a0e920dc9032ba95f18c5e7396a15",
+        "type": "github"
+      },
+      "original": {
+        "owner": "roccho-dev",
+        "ref": "v1.2.1.8",
+        "repo": "Meltype",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1784115452,
+        "narHash": "sha256-BoYPdqk6jlKXy+DyUzyGV/CtRGfAhk2MmIgBhsemTGI=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "35d3407a3816f3b341d8cf1d60abaf2b7b8166ac",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "35d3407a3816f3b341d8cf1d60abaf2b7b8166ac",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "bcon": "bcon",
+        "host-bindings": "host-bindings",
+        "host-nixpkgs": "host-nixpkgs",
+        "meltype-linux": "meltype-linux",
+        "meltype-src": "meltype-src",
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

@@ -102,7 +102,7 @@ def begin(name, mode=None, websocket=None, expect_ready=True, *, diagnostic_trac
         assert websocket is not None, "fault observer target is required"
         viewer = fault.viewer_command(websocket, prefix + ".viewer.errors")
     script = (f"umask 077\nprintf %s $$ > {prefix}.parent\nstty -g > {prefix}.before\n"
-        + env + 'meltype-tty --raw-text --selection-fd 3 -- ' + viewer
+        + env + 'meltype-tty --compose --raw-text --selection-fd 3 -- ' + viewer
         + f" 3>>{prefix}.selection.jsonl 2>{prefix}.errors\nrc=$?\nstty -g > {prefix}.after\nprintf %s \"$rc\" > {prefix}.exit\n")
     put(prefix + ".trial", script)
     machine.send_chars("bash " + prefix + ".trial\n")

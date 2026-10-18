@@ -1,10 +1,10 @@
 name: tty-browser-join
 on:
   pull_request:
-    paths: ['verification/tty-browser-join/**', 'docs/split-tty-browser-join.md', '.github/workflows/tty-browser-join.yml', 'nixos/flake.lock']
+    paths: ['verification/tty-browser-join/**', 'docs/split-tty-browser-join.md', '.github/workflows/tty-browser-join.yml', 'flake.lock']
   push:
     branches: [proposals]
-    paths: ['verification/tty-browser-join/**', 'docs/split-tty-browser-join.md', '.github/workflows/tty-browser-join.yml', 'nixos/flake.lock']
+    paths: ['verification/tty-browser-join/**', 'docs/split-tty-browser-join.md', '.github/workflows/tty-browser-join.yml', 'flake.lock']
 env:
   PYTHONDONTWRITEBYTECODE: '1'
 permissions:
@@ -26,7 +26,7 @@ jobs:
           python3 -m unittest discover -s verification/tty-browser-join -p 'test_*.py' -v 2>&1 | tee "$RUNNER_TEMP/c-unit.log"
           git rev-parse HEAD > "$RUNNER_TEMP/c-checkout.txt"
           git rev-parse 'HEAD^{tree}' >> "$RUNNER_TEMP/c-checkout.txt"
-          git archive --format=tar.gz HEAD verification/tty-browser-join docs/split-tty-browser-join.md .github/workflows/tty-browser-join.yml nixos/flake.lock > "$RUNNER_TEMP/c-source.tar.gz"
+          git archive --format=tar.gz HEAD verification/tty-browser-join docs/split-tty-browser-join.md .github/workflows/tty-browser-join.yml flake.lock > "$RUNNER_TEMP/c-source.tar.gz"
           for file in verification/tty-browser-join/*.nix; do nix-instantiate --parse "$file" >/dev/null; done
           nix-instantiate --eval --strict --json verification/tty-browser-join/test-contract.nix | tee "$RUNNER_TEMP/c-intake.json"
       - uses: actions/upload-artifact@v4
