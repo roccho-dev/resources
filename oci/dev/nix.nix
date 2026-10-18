@@ -433,23 +433,30 @@ rec {
       typellm = mkLaunch {
         name = "ops-typellm";
         binding = "typellm";
-        usage = "--envs-sha <40-hex> --ops-sha <40-hex>";
+        usage = "--envs-sha <40-hex> --ops-sha <40-hex> [--response-metadata]";
         say = "2";
         announce = "ops $ops_sha typellm with PATH HOME LANG SSL_CERT_FILE TYPELLM_API_KEY";
         childEnv = "";
         parse = ''
           ops_remote=${q opsRemote}
-          envs_sha="" ops_sha=""
-          [ "$#" -eq 4 ] || usage
+          envs_sha="" ops_sha="" response_metadata=false
+          { [ "$#" -eq 4 ] || [ "$#" -eq 5 ]; } || usage
           while [ "$#" -gt 0 ]; do
             case "$1" in
-              --envs-sha) [ -z "$envs_sha" ] || usage; envs_sha=$2 ;;
-              --ops-sha) [ -z "$ops_sha" ] || usage; ops_sha=$2 ;;
+              --envs-sha)
+                { [ -z "$envs_sha" ] && [ "$#" -ge 2 ]; } || usage
+                envs_sha=$2; shift 2 ;;
+              --ops-sha)
+                { [ -z "$ops_sha" ] && [ "$#" -ge 2 ]; } || usage
+                ops_sha=$2; shift 2 ;;
+              --response-metadata)
+                [ "$response_metadata" = false ] || usage
+                response_metadata=true; shift ;;
               *) usage ;;
             esac
-            shift 2
           done
           [[ $envs_sha =~ ^[0-9a-f]{40}$ && $ops_sha =~ ^[0-9a-f]{40}$ ]] || usage
+          if [ "$response_metadata" = true ]; then program_args=(--response-metadata); fi
         '';
         build = ''
           out=$(nix_ build --no-link --print-out-paths "git+$ops_remote?rev=$ops_sha#packages.x86_64-linux.typellm") \

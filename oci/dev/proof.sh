@@ -497,8 +497,16 @@ NIX
       case "$input" in *'"exit":3'*) exit 3 ;; esac
     '';
     packages.x86_64-linux.typellm = nixpkgs.legacyPackages.x86_64-linux.writeShellScriptBin "typellm" ''
+      response_metadata=false
+      case "$#" in
+        0) ;;
+        1) [ "$1" = --response-metadata ] || exit 64; response_metadata=true ;;
+        *) exit 64 ;;
+      esac
       ls -1 /proc/$$/fd > "TYPELLM_FDS"
-      input=$(cat)
+      # JSON/UTF-8 fixture only: retain trailing LF; Bash variables cannot carry NUL.
+      input=$(cat; printf .)
+      input=''${input%.}
       names=$(tr '\0' '\n' < /proc/$$/environ | cut -d= -f1 | sort | tr '\n' ' ')
       home="$HOME $([ -e "$HOME" ] && echo present || echo absent)"
       key=$(printf %s "$TYPELLM_API_KEY" | sha256sum | cut -d' ' -f1)
@@ -507,6 +515,10 @@ NIX
       printf '{"names":"%s","home":"%s","core":"%s","key":"%s","request":"%s","argv":"%s"}\n' \
         "$names" "$home" "$(ulimit -c)" "$key" "$req" "$argv"
       printf 'fixture-typellm-child-stderr\n' >&2
+      # This fixture frame tests transport only, not an SDK/provider observation.
+      if [ "$response_metadata" = true ]; then
+        printf 'TYPELLM_RESPONSE_METADATA_JSON_BEGIN\n{"fixture":"typellm-response-metadata","argc":1,"stdinSha256":"%s"}\nTYPELLM_RESPONSE_METADATA_JSON_END\n' "$req" >&2
+      fi
       case "$input" in *'"exit":3'*) exit 3 ;; *'"signal":true'*) kill -TERM $$ ;; esac
     '';
   };
@@ -663,6 +675,7 @@ NIX
   # Arguments: exactly the two flags, exact SHAs; no apps flag, port, host, attribute or extra argument.
   ops_as red "$request" --envs-sha "$good"
   ops_as red "$request" "${ops_args[@]}" --port 20000
+  ops_as red "$request" "${ops_args[@]}" --response-metadata
   ops_as red "$request" "${ops_args[@]}" jev
   ops_as red "$request" --envs-sha "$good" --apps-sha "$ops_good"
   ops_as red "$request" --envs-sha "$good" --ops-sha "${ops_good^^}"
@@ -713,8 +726,45 @@ NIX
   typellm_as pass "$request" "${typellm_args[@]}"
   test "$(cat "$typellm_out")" = "{\"names\":\"HOME LANG PATH SSL_CERT_FILE TYPELLM_API_KEY \",\"home\":\"/homeless-shelter absent\",\"core\":\"0\",\"key\":\"$typellm_digest\",\"request\":\"$(printf %s "$request" | sha256sum | cut -d' ' -f1)\",\"argv\":\"clean\"}"
   only_stdio "$typellm_fds"
+  local typellm_default_stdout
+  typellm_default_stdout=$(cat "$typellm_out")
+  test "$(grep -cx 'fixture-typellm-child-stderr' "$typellm_err")" -eq 1
+  if grep -qE '^TYPELLM_RESPONSE_METADATA_JSON_(BEGIN|END)$' "$typellm_err"; then echo 'default TypeLLM argv enabled metadata' >&2; return 1; fi
   test "$(grep -n 'ops-typellm: built ' "$typellm_err" | cut -d: -f1)" -lt "$(grep -n 'ops-typellm: decrypt ' "$typellm_err" | cut -d: -f1)"
   typellm_as pass "$request" --ops-sha "$ops_good" --envs-sha "$typellm_good"
+  # The optional flag is one fixed child argument, never arbitrary argv or a new consumer.
+  # These three-scalar frames test stderr transport only; SDK observation tests live in ops.
+  typellm_metadata_frame() {
+    local input=$1 expected
+    test "$(grep -cx 'TYPELLM_RESPONSE_METADATA_JSON_BEGIN' "$typellm_err")" -eq 1
+    test "$(grep -cx 'TYPELLM_RESPONSE_METADATA_JSON_END' "$typellm_err")" -eq 1
+    test "$(grep -cx 'fixture-typellm-child-stderr' "$typellm_err")" -eq 1
+    expected=$(printf 'TYPELLM_RESPONSE_METADATA_JSON_BEGIN\n{"fixture":"typellm-response-metadata","argc":1,"stdinSha256":"%s"}\nTYPELLM_RESPONSE_METADATA_JSON_END\n' "$(printf %s "$input" | sha256sum | cut -d' ' -f1)")
+    test "$(sed -n '/^TYPELLM_RESPONSE_METADATA_JSON_BEGIN$/,/^TYPELLM_RESPONSE_METADATA_JSON_END$/p' "$typellm_err")" = "$expected"
+    only_stdio "$typellm_fds"
+    test "$(grep -n 'ops-typellm: built ' "$typellm_err" | cut -d: -f1)" -lt "$(grep -n 'ops-typellm: decrypt ' "$typellm_err" | cut -d: -f1)"
+  }
+  typellm_metadata_pass() {
+    typellm_as pass "$request" "$@"
+    test "$(cat "$typellm_out")" = "$typellm_default_stdout"
+    typellm_metadata_frame "$request"
+  }
+  typellm_metadata_pass --response-metadata "${typellm_args[@]}"
+  typellm_metadata_pass --envs-sha "$typellm_good" --response-metadata --ops-sha "$ops_good"
+  typellm_metadata_pass "${typellm_args[@]}" --response-metadata
+  # LF is part of this JSON/UTF-8 stdin; the shell fixture makes no arbitrary-binary claim.
+  local typellm_lf_request
+  typellm_lf_request="$request"$'\n'
+  typellm_as pass "$typellm_lf_request" "${typellm_args[@]}" --response-metadata
+  typellm_metadata_frame "$typellm_lf_request"
+  typellm_as exit3 '{"exit":3}' "${typellm_args[@]}" --response-metadata
+  typellm_metadata_frame '{"exit":3}'
+  typellm_as signal143 '{"signal":true}' "${typellm_args[@]}" --response-metadata
+  typellm_metadata_frame '{"signal":true}'
+  typellm_as red "$request" "${typellm_args[@]}" --response-metadata --response-metadata
+  typellm_as red "$request" "${typellm_args[@]}" --response-metadata true
+  typellm_as red "$request" "${typellm_args[@]}" --response-metadata=true
+  typellm_as red "$request" "${typellm_args[@]}" --unknown
   typellm_as exit3 '{"exit":3}' "${typellm_args[@]}"
   typellm_as signal143 '{"signal":true}' "${typellm_args[@]}"
   typellm_as red "$request" --envs-sha "$typellm_good"
@@ -798,6 +848,7 @@ NIX
   echo 'PASS jev launch: closed child environment, loopback unless --host 0.0.0.0 is explicit, no core, absent HOME, only stdio descriptors, no temp left after any launch, key never in argv or output, build before decrypt;'
   echo 'PASS ops-jev: caller stdin is the request, one stdout JSON line, exit status passed through, launcher messages on stderr only, PATH HOME LANG SSL_CERT_FILE JEV_API_KEY only, only stdio descriptors, build before decrypt, RED on arguments/stale/off/unbuildable/unknown/identity;'
   echo 'PASS ops-typellm: fixed TypeLLM cipher/field/package; own stale/current fixture; JEV field refused; caller stdin, one stdout line, stderr and exit/signal preserved; only TYPELLM_API_KEY with closed public environment and stdio; build before decrypt;'
+  echo 'PASS ops-typellm metadata fixture: fixed argv0/1, one unchanged stderr frame, default stdout/stderr, LF-preserving JSON/UTF-8 stdin, exit/signal and closed FD/key boundary; no SDK/provider observation claim;'
   echo 'PASS jev scratch: removed file by file before the child, never recursively; unexpected entries and types kept and refused;'
   echo 'PASS jev fixtures: Git-verified objects and known files removed, foreign entries kept and refused; no fixture or test identity left;'
   echo 'PASS jev RED: arguments, host, stale/off/unknown envs commit, unbuildable apps, identity mode/missing/other, tamper, two recipients, extra field, absent'
