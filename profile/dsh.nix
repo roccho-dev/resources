@@ -21,7 +21,7 @@ pkgs.stdenv.mkDerivation (finalAttrs: {
     inherit (finalAttrs) pname version src;
     inherit pnpm;
     fetcherVersion = 4;
-    hash = pkgs.lib.fakeHash; # Replace only after native CI reports the exact dependency hash.
+    hash = "sha256-C9Aw9AS4r7zubaEuT6mLXQ+AhhMVlTxPZRKTpzRUkcU=";
   };
   buildPhase = ''
     runHook preBuild
