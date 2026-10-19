@@ -92,12 +92,16 @@ jobs:
 
           def compare(old, new, role):
               allowed = {"own": {"image", "imageFrom"}, "dev": {"baseSha", "toolsRev"}}[role]
-              assert isinstance(new, dict) and set(old) == set(new) and allowed <= set(new), "Binding fields differ"
+              # envs' T selection (envs#117): own alone may add exactly the tool/toolFrom pair, absent from the pinned source.
+              pair = {"own": {"tool", "toolFrom"}, "dev": set()}[role]
+              assert isinstance(new, dict) and set(old) <= set(new) and set(new) - set(old) in (set(), pair) and allowed <= set(new), "Binding fields differ"
+              added = set(new) - set(old)
               for key in set(old) - allowed:
                   assert type(old[key]) is type(new[key]) and old[key] == new[key], f"unapproved {role}.{key} change"
-              assert all(isinstance(new[k], str) and new[k] for k in allowed), "selection must be nonempty text"
+              assert all(isinstance(new[k], str) and new[k] for k in allowed | added), "selection must be nonempty text"
               if role == "own":
                   assert re.fullmatch(r"ghcr\.io/roccho-dev/windows-own@sha256:[0-9a-f]{64}", new["image"])
+                  assert not added or re.fullmatch(r"/nix/store/[0-9a-z]{32}-own-tool-profile", new["tool"])
               else:
                   assert all(re.fullmatch(r"[0-9a-f]{40}", new[k]) for k in allowed)
 
@@ -117,7 +121,7 @@ jobs:
                   raise AssertionError(f"invalid {role} Binding was accepted")
               print(f"PASS {role}: exact adopted envs bytes; retained fields equal pinned source; {len(invalid)} refusals")
           PYCODE
-          echo 'PASS: pinned fonts full contents and own core derivation; adopted envs Binding bytes with only version selections changed; root flake has no windows input.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'PASS: pinned fonts full contents and own core derivation; adopted envs Binding bytes with only version selections changed or the own tool/toolFrom pair added; root flake has no windows input.' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: windows-path-inventory-${{ github.event.pull_request.head.sha || github.sha }}
