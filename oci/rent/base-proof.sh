@@ -78,8 +78,10 @@ docker run --rm --network none -v "$nixvol:/n:ro" "$stub" /bin/bash -euc '
   test -e /n/var/rent-nix
   test ! -e /n/var/nix/profiles/rent-dev && test ! -L /n/var/nix/profiles/rent-dev'
 run_start
-docker logs "$c" 2>&1 | grep -qF 'rent-profile: base-admin-ready apps=absent auth=unverified'
-docker logs "$c" 2>&1 | grep -qF 'profile=absent'
+# The logs are read whole first: a grep -q that stops reading early must not fail its writer under pipefail.
+logs=$(docker logs "$c" 2>&1)
+grep -qF 'rent-profile: base-admin-ready apps=absent auth=unverified' <<< "$logs"
+grep -qF 'profile=absent' <<< "$logs"
 docker exec "$c" /bin/bash -euc 'test ! -e /nix/var/nix/profiles/rent-dev; test ! -L /nix/var/nix/profiles/rent-dev'
 stop_start
 
