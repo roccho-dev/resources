@@ -122,6 +122,7 @@ jobs:
           $Binding = (New-TemporaryFile).FullName
           $B = Get-Content _bindings/own.json -Raw | ConvertFrom-Json
           $B.expectHost = 'CI-HOST'
+          "bound own binding keys: $(@($B.PSObject.Properties.Name) -join ', ')"
           $B | ConvertTo-Json | Set-Content $Binding
           $Plan = (& $Path -Step Plan -Binding $Binding) | ConvertFrom-Json
           $W = $Plan.pull[0]
@@ -162,8 +163,11 @@ jobs:
           if ((@($AltPlan.create) -join "`n") -cne ($AltCreate -join "`n") -or $AltPlan.site -cne $Alt.site -or
             $AltPlan.postGate -notlike "*'own-mounts ok home=$($Alt.volume) work=$($Alt.workVolume) nix=$($Alt.nixVolume)'*") { "alternate Plan differs: $(@($AltPlan.create) -join ' ')"; exit 1 }
           if (($AltPlan | ConvertTo-Json -Depth 5) -cmatch 'G6I3|wslc-cli-resta|g6i3-own') { 'alternate Plan carries a sample value'; exit 1 }
+          # envs' T selection: tool and toolFrom are admitted only together; one without the other is refused.
+          $AltTool = '/nix/store/' + ('a' * 32) + '-own-tool-profile'; $AltToolFrom = 'CI-only alternate T fixture'
           foreach ($Bad in @(@{ owner = 'bad owner' }, @{ session = 'other' }, @{ sshAlias = 'Bad Alias' }, @{ windowsIdentityFile = '/work/repos/key' },
-            @{ windowsIdentityFile = $Alt.knownHostsFile }, @{ extra = 'x' })) {
+            @{ windowsIdentityFile = $Alt.knownHostsFile }, @{ extra = 'x' }, @{ tool = $AltTool }, @{ toolFrom = $AltToolFrom },
+            @{ tool = $AltTool; toolFrom = $AltToolFrom; extra = 'x' })) {
             $C = Get-Content $AltPath -Raw | ConvertFrom-Json
             foreach ($K in $Bad.Keys) { $C | Add-Member -Force -NotePropertyName $K -NotePropertyValue $Bad[$K] }
             $F = (New-TemporaryFile).FullName; $C | ConvertTo-Json | Set-Content $F
@@ -171,6 +175,13 @@ jobs:
             try { & $Path -Step Plan -Binding $F | Out-Null } catch { $Refused = $true }
             if (-not $Refused) { "alternate not refused: $($Bad | ConvertTo-Json -Compress)"; exit 1 }
           }
+          # With the pair the reader accepts and the Plan is exactly the one without it: the T selection is admitted, not used.
+          $C = Get-Content $AltPath -Raw | ConvertFrom-Json
+          $C | Add-Member -NotePropertyName tool -NotePropertyValue $AltTool
+          $C | Add-Member -NotePropertyName toolFrom -NotePropertyValue $AltToolFrom
+          $F = (New-TemporaryFile).FullName; $C | ConvertTo-Json | Set-Content $F
+          $PairPlan = (& $Path -Step Plan -Binding $F) | ConvertFrom-Json
+          if (($PairPlan | ConvertTo-Json -Depth 5) -cne ($AltPlan | ConvertTo-Json -Depth 5)) { 'the tool/toolFrom pair changed the Plan'; exit 1 }
           $env:COMPUTERNAME = 'CI-HOST'
           # Replace on a fake WSLC, with the script's own functions and values.
           $Site = $B; $Spec = Get-Content oci/own/spec.json -Raw | ConvertFrom-Json

@@ -4,7 +4,7 @@
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/35d3407a3816f3b341d8cf1d60abaf2b7b8166ac";
 
   inputs.host-nixpkgs.url = "github:NixOS/nixpkgs/2efa67fd26b6df417c33e4603185c701f260dd83";
-  inputs.host-bindings = { url = "github:roccho-org/envs/93691d331385e6e873fe6ba22d31917e4562297c"; flake = false; };
+  inputs.host-bindings = { url = "github:roccho-org/envs/b8bce6bd2647bb58b048039ad40f98601ade09f1"; flake = false; };
   inputs.bcon = { url = "github:sanohiro/bcon/v1.5.1"; flake = false; };
   inputs.meltype-src = { url = "github:roccho-dev/Meltype/v1.2.1.11"; flake = false; };
   inputs.meltype-linux = { url = "file+https://github.com/roccho-dev/Meltype/releases/download/v1.2.1.11/Meltype-1.2.1.11-linux.zip"; flake = false; };

@@ -20,17 +20,17 @@
     "host-bindings": {
       "flake": false,
       "locked": {
-        "lastModified": 1792280232,
-        "narHash": "sha256-DiaxAi6uzelo13KTdo7TWTAeA2hoxJ3Q/Das9rEjXjI=",
+        "lastModified": 1792386993,
+        "narHash": "sha256-hBLAoeWkEhxOA1P83EFQAI7LCTa5ksjK/dkCK+YDmkQ=",
         "owner": "roccho-org",
         "repo": "envs",
-        "rev": "93691d331385e6e873fe6ba22d31917e4562297c",
+        "rev": "b8bce6bd2647bb58b048039ad40f98601ade09f1",
         "type": "github"
       },
       "original": {
         "owner": "roccho-org",
         "repo": "envs",
-        "rev": "93691d331385e6e873fe6ba22d31917e4562297c",
+        "rev": "b8bce6bd2647bb58b048039ad40f98601ade09f1",
         "type": "github"
       }
     },

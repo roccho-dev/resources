@@ -15,13 +15,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-function Read-Exact([string] $Path, [string[]] $Keys) {
+# Every key in $Keys, plus the keys of $Pair either all together or not at all; any other key is refused.
+function Read-Exact([string] $Path, [string[]] $Keys, [string[]] $Pair = @()) {
     $Data = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
     $Names = @($Data.PSObject.Properties.Name)
     $Missing = @($Keys | Where-Object { $Names -cnotcontains $_ })
-    $Extra = @($Names | Where-Object { $Keys -cnotcontains $_ })
-    if ($Missing -or $Extra) {
-        throw "$Path must have exactly [$($Keys -join ', ')]; missing [$($Missing -join ', ')], unexpected [$($Extra -join ', ')]"
+    $Extra = @($Names | Where-Object { $Keys -cnotcontains $_ -and $Pair -cnotcontains $_ })
+    $Unpaired = @($Pair | Where-Object { $Names -cnotcontains $_ })
+    if ($Unpaired.Count -eq $Pair.Count) { $Unpaired = @() }
+    if ($Missing -or $Extra -or $Unpaired) {
+        throw "$Path must have exactly [$($Keys -join ', ')] and all or none of [$($Pair -join ', ')]; missing [$(@($Missing + $Unpaired) -join ', ')], unexpected [$($Extra -join ', ')]"
     }
     $Data
 }
@@ -50,9 +53,10 @@ function Assert-Name([string] $Name, $Value) {
 $Spec = Read-Exact (Join-Path $PSScriptRoot 'spec.json') @(
     'role', 'imageRepository', 'sshPort', 'cdpPort', 'publishAddress',
     'stateMount', 'workMount', 'nixMount', 'shmSize', 'authorizedKeyEnv', 'syntheticTrialEnv')
+# tool/toolFrom (envs' T selection) are only admitted, never read: this script runs B, and matching T on the Target is the next stage.
 $Site = Read-Exact $Binding @(
     'role', 'site', 'expectHost', 'owner', 'session', 'sshAlias', 'container', 'hostPort', 'volume', 'workVolume', 'nixVolume',
-    'publicKeyFile', 'privateKeyFile', 'knownHostsFile', 'windowsIdentityFile', 'image', 'imageFrom')
+    'publicKeyFile', 'privateKeyFile', 'knownHostsFile', 'windowsIdentityFile', 'image', 'imageFrom') @('tool', 'toolFrom')
 
 if ($Site.role -cne $Spec.role) { throw "Binding role $($Site.role) does not match Spec role $($Spec.role)" }
 foreach ($Name in 'sshPort', 'cdpPort') { Assert-Port $Name $Spec.$Name 1 }
