@@ -635,6 +635,11 @@ jobs:
           }
           # The fake's last exit code must not become this step's exit code.
           $global:LASTEXITCODE = 0
+      # Fail before expensive Nix/OCI work on malformed SOURCE-only receiver/proof.
+      - name: Parse native rent SOURCE fixture (no Host or Docker)
+        run: |
+          bash -n oci/rent/native-proof.sh
+          python3 -m py_compile oci/rent/tool-receiver.py oci/rent/proposed-binding-proof.py oci/rent/caller-receiver-proof.py
       - uses: cachix/install-nix-action@v31
       - name: Build from locked Nix inputs
         env:
@@ -660,9 +665,30 @@ jobs:
           else
             echo 'own image derivation base: unavailable for this event'
           fi
-          # result: the published image; result-1: its CI-only tunnel-stub twin; result-2: the stub twin plus one package.
-          nix build .#rent-image .#rent-image-stub .#rent-image-next --no-write-lock-file --print-build-logs
-          test -e result && test -e result-1 && test -e result-2
+          # Legacy results 0..2 retain their existing published/stub/next identities. B-only results 3..4
+          # are never published: true cloudflared image and its inert tunnel twin for isolated runtime proof.
+          nix build .#rent-image .#rent-image-stub .#rent-image-next .#rent-base-image .#rent-base-image-stub \
+            --no-write-lock-file --print-build-logs
+          for i in result result-1 result-2 result-3 result-4; do test -e "$i"; done
+      - name: Prove new Base-only OCI starts, retains Tool generations and refuses foreign state
+        shell: bash
+        run: bash oci/rent/base-proof.sh result-3 result-4 result-1 result-2
+      - name: Prove bound PROPOSED q/Host and actual native rent Tool/readonly O
+        shell: bash
+        run: |
+          set -euo pipefail
+          # D: the Target is one file of the envs host-binding pinned by this flake's host-bindings input (exact rev in
+          # flake.lock); B and T are this commit's rent-base-image-stub and rent-tool-profile. No envs Draft source,
+          # F1 fixture or Relation is read. The Tool material D names is the ancestor PIN of
+          # oci/rent/proposed-binding-proof.py (never this commit itself), held to this build by output identity.
+          pin=$(sed -n 's/^PIN = "\([0-9a-f]\{40\}\)"$/\1/p' oci/rent/proposed-binding-proof.py)
+          [[ $pin =~ ^[0-9a-f]{40}$ ]] || { echo 'no single material PIN' >&2; exit 1; }
+          pinned=$(nix eval --raw "github:roccho-dev/resources/$pin#packages.x86_64-linux.rent-tool-profile.outPath")
+          t0=$(nix build .#rent-tool-profile --no-link --print-out-paths --no-write-lock-file)
+          [ "$t0" = "$pinned" ] || { echo "rent-tool-profile $t0 is not the PIN material output $pinned" >&2; exit 1; }
+          t1=$(nix build .#rent-tool-profile-next --no-link --print-out-paths --no-write-lock-file)
+          envs=$(nix eval --impure --raw --expr '(builtins.getFlake (toString ./.)).inputs.host-bindings.outPath')
+          bash oci/rent/native-proof.sh result-4 "$t0" "$t1" "$envs/contracts/host-bindings" rent/PC7337
       - name: Load and test tools, mounts, state, restart, and recreate
         shell: bash
         run: |
