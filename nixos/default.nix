@@ -20,6 +20,8 @@ let
   meltypeConsole = import ./meltype-console.nix { inherit bcon meltype-src meltype-linux; };
   versapro = nixpkgs.lib.nixosSystem {
     inherit system;
+    # Native own's B carries the own Core, the same one the own OCI's B carries (#72).
+    specialArgs.ownCore = defaultOwn.core;
     modules = [
       ./versapro.nix
       ownModule
@@ -38,6 +40,8 @@ in {
     own-image = defaultOwn.image;
     own-profile = defaultOwn.profile;
     own-profile-extended = extendedOwn.profile;
+    # The T native own selects (nixos/own-native-profile.sh): built here so a broken zmx or profile fails CI.
+    own-profile-native = producer.packages.${system}.own-profile-native;
     own-oci-vm = pkgs.testers.runNixOSTest (import ./tests/own-oci.nix {
       inherit pkgs ownModule;
       extendedProfile = extendedOwn.profile;
