@@ -1,6 +1,6 @@
 # One Linux development profile for own and rent. Agent packages retain their existing fixed sources;
 # nothing is installed into a host by hand. `extra` supplies role tools and the CI upgrade proof.
-# own keeps its Tool generation separate from the OCI Base; this file does not add a service or Windows installer.
+# own and rent keep their Tool generation separate from the OCI Base; this file does not add a service or Windows installer.
 # `owner` only names the stable Git credential helper. Each repository's principal is declared by its own
 # binding (profile/gh.nix), never derived from owner or the URL namespace.
 # `piTarget` (own only) names one exact envs target for the existing Pi credential launcher; null keeps the plain entry.
@@ -61,9 +61,9 @@ ${releaseVersionCases}      *) echo "release-version: unknown CLI ''${1:-}" >&2;
 in
 assert piTarget == null || mode == "own";
 assert piTarget == null || piTarget ? identity;
-assert builtins.elem mode [ "legacy" "core" "own" ];
-if mode == "core" then pkgs.buildEnv {
-  name = "own-core";
+assert builtins.elem mode [ "legacy" "core" "rent-core" "own" "rent" ];
+if builtins.elem mode [ "core" "rent-core" ] then pkgs.buildEnv {
+  name = if mode == "rent-core" then "rent-core" else "own-core";
   paths = corePaths ++ [ github.wrapper github.helper ];
   pathsToLink = [ "/bin" ];
   passthru = { inherit github; credentialOwner = owner; };
@@ -82,9 +82,10 @@ assert claudeContract.proof.kind == "gpg-signed-manifest";
 assert claudeContract.proof.keyFingerprint == "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE";
 assert claudeContract.packageShape == "single-glibc-executable";
 pkgs.buildEnv {
-  name = if mode == "own" then "own-tool-profile" else "dev-profile";
+  name = if mode == "own" then "own-tool-profile" else if mode == "rent" then "rent-tool-profile" else "dev-profile";
   # Every supported own generation anchors the identical H_B at the existing absolute helper locator.
   paths = (if mode == "own" then [ github.helper ] ++ pkgs.lib.optional (piTarget != null) ownAgeInit
+      else if mode == "rent" then [ github.helper ]
       else corePaths ++ [ github.wrapper github.helper ])
     ++ builtins.attrValues cli ++ [ releaseVersion ] ++ extra;
   pathsToLink = [ "/bin" ];
