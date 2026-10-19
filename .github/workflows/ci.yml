@@ -128,6 +128,43 @@ jobs:
           path: ci-bindings/own.json
           if-no-files-found: error
           retention-days: 7
+      # T (the own Tool generation) as an exact, rebuildable reference beside B's registry digest: source, flake output,
+      # store path and NAR hash. No closure or cache is distributed; a consumer rebuilds the output and compares.
+      - name: Describe the own Tool generation (own-tool.json)
+        run: |
+          set -euo pipefail
+          out=$(nix build .#own-profile --no-link --print-out-paths --no-write-lock-file)
+          nix store verify "$out"
+          nar=$(nix path-info --json "$out" | jq -r 'if type == "array" then .[0].narHash else .[].narHash end')
+          nixpkgs=$(nix flake metadata --json --no-write-lock-file | jq -r '.locks.nodes[.locks.nodes.root.inputs.nixpkgs].locked.rev')
+          mkdir tool
+          jq -n --arg source "$(git rev-parse HEAD)" --arg path "$out" --arg nar "$nar" --arg nixpkgs "$nixpkgs" \
+            --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{kind: "windows.ownTool.v1", source: $source, output: "packages.x86_64-linux.own-profile",
+              storePath: $path, narHash: $nar, nixpkgs: $nixpkgs, run: $run}' > tool/own-tool.json
+          valid() {
+            jq -e --arg source "$(git rev-parse HEAD)" '
+              keys == ["kind", "narHash", "nixpkgs", "output", "run", "source", "storePath"] and
+              .kind == "windows.ownTool.v1" and .source == $source and .output == "packages.x86_64-linux.own-profile" and
+              (.storePath | test("^/nix/store/[0-9a-z]{32}-own-tool-profile$")) and
+              (.narHash | test("^sha256[-:][A-Za-z0-9+/=]+$")) and (.nixpkgs | test("^[0-9a-f]{40}$")) and
+              (.run | test("^https://github[.]com/roccho-dev/resources/actions/runs/[0-9]+$"))' "$1" > /dev/null
+          }
+          valid tool/own-tool.json
+          # Each single defect of the descriptor is refused (RED), so the GREEN above is not vacuous.
+          for bad in '.kind = "windows.ownImage.v1"' '.extra = 1' 'del(.narHash)' '.storePath = "/nix/store/x-own-tool-profile"' \
+              '.source = "0000000000000000000000000000000000000000"' '.nixpkgs = "main"'; do
+            jq "$bad" tool/own-tool.json > tool/bad.json
+            if valid tool/bad.json; then echo "RED: accepted a descriptor with $bad" >&2; exit 1; fi
+          done
+          rm tool/bad.json
+          cat tool/own-tool.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: own-tool
+          path: tool/own-tool.json
+          if-no-files-found: error
+          retention-days: 7
       - id: source
         run: |
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -384,6 +421,9 @@ jobs:
         with:
           artifact-ids: ${{ needs.build.outputs.artifact }}
           merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: own-tool
       - env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -403,7 +443,8 @@ jobs:
           export DOCKER_CONFIG="$RUNNER_TEMP/provider-pull"
           mkdir -p "$DOCKER_CONFIG"
           docker pull "$RENT_IMAGE"
-          assets=(windows-dist.zip windows-dist.zip.sha256 rent-image.json)
+          jq -e --arg source "$SOURCE" '.kind == "windows.ownTool.v1" and .source == $source' own-tool.json > /dev/null
+          assets=(windows-dist.zip windows-dist.zip.sha256 rent-image.json own-tool.json)
           if [ "$OWN_TOOL_ONLY" != true ]; then
             own="ghcr.io/roccho-dev/windows-own:sha-$SOURCE"
             docker pull "$own"
