@@ -25,9 +25,9 @@ REQUEST_FIELDS = {"kind", "action", "target_ref", "host_ref", "unit_ref",
 GRANT_FIELDS = {"kind", "target_ref", "host_ref", "unit_ref", "scope",
                 "actor_ref", "work_ref", "attempt_ref", "route_ref",
                 "step", "permit", "issuer_fixture"}
-BOUND_FIELDS = {"kind", "binding", "desired", "current_q", "previous_state",
-                "read_grant", "quiet", "single_writer", "recovery",
-                "fixture_issuer"}
+BOUND_FIELDS = {"kind", "binding", "host_bindings", "desired", "current_q",
+                "previous_state", "read_grant", "quiet", "single_writer",
+                "recovery", "fixture_issuer"}
 DESIRED_FIELDS = {"kind", "target_ref", "proposed_q", "material",
                   "revision", "store_path"}
 OBS_FIELDS = {"kind", "target_ref", "host_ref", "unit_ref", "scope",
@@ -83,45 +83,21 @@ def _preflight(request: Any, grant: Any, bound: Any, transport: Any):
     demand(b["kind"] == "windows.syntheticBoundSource.v0"
            and b["fixture_issuer"] == "ci-independent-source-issuer",
            "not an independently supplied SOURCE binding")
-    bind = exact(b["binding"], {"kind", "admission", "target_ref",
-              "host_ref", "parent_ref", "unit_ref", "scope", "selector",
-              "desired_output", "proposed_q", "material", "hosts",
-              "relations", "identity"}, "exact F1 shape")
-    demand(bind.get("kind") == "envs.hostToolFunctionalBindingProposal.v0"
-           and bind.get("admission") == "NOT_ADMITTED"
-           and all(req[k] == bind[k] for k in
-                   ("target_ref", "host_ref", "unit_ref", "scope"))
-           and req["proposed_q"] == bind.get("proposed_q")
-           and bind.get("selector") == "/nix/var/nix/profiles/rent-dev",
-           "foreign F1 Host/Unit/q or attempted admission")
-    # Reuse exactly the existing windows F1 material preflight, not a new
-    # q hash or an assumed runner's global permission.
+    # The bound D is the pinned envs host-binding Target with this commit's B and
+    # T, checked by the same CI-only check_source as the preflight; no F1 shape,
+    # envs material or Relation. A refusal raises before any transport call.
     spec = importlib.util.spec_from_file_location(
         "rent_proposed_source_preflight",
         Path(__file__).with_name("proposed-binding-proof.py"))
-    demand(spec is not None and spec.loader is not None, "fixed F1 unavailable")
+    demand(spec is not None and spec.loader is not None, "bound D check unavailable")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    demand(bind.get("material") == {
-        "repository": "roccho-dev/windows", "source_commit": module.PIN,
-        "flake_output": module.OUTPUT,
-    } and bind.get("identity") == module.EXPECTED
-           and bind.get("unit_ref") == "ci-rent-oci-unit-1",
-           "not pinned immutable windows Tool SOURCE")
-    import json
-    canon = json.dumps({"target_ref": bind["target_ref"],
-                        "material": bind["material"]},
-                       sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    q = "sha256:" + module.hashlib.sha256(canon.encode("utf-8")).hexdigest()
-    demand(bind.get("proposed_q") == q and req["proposed_q"] == q,
-           "fake PROPOSED q or foreign fixed Tool")
-    rel = bind["relations"]
-    demand(type(rel) is list and len([
-        x for x in rel if type(x) is dict and x.get("kind") == "contains"
-        and x.get("parent") == bind["parent_ref"]
-        and x.get("child") == bind["host_ref"]
-        and x.get("scope") == bind["scope"]]) == 1,
-           "missing scoped Host containment relation")
+    bind = b["binding"]
+    module.check_source(bind, b["host_bindings"])
+    demand(all(req[k] == bind[k] for k in
+               ("target_ref", "host_ref", "unit_ref", "scope"))
+           and req["proposed_q"] == bind["proposed_q"],
+           "foreign Host/Unit/q or attempted admission")
     demand(type(transport) is not str
            and getattr(transport, "kind", None)
            == "windows.syntheticDisposableNixTransport.v0"
@@ -179,6 +155,7 @@ def _current_d(req, b, port):
            and d["revision"] == "ci-" + bind["proposed_q"][7:23]
            and b["current_q"] == d["revision"]
            and req["requested_store"] == d["store_path"]
+           and d["store_path"] == bind["tool"]
            and type(d["store_path"]) is str
            and STORE.fullmatch(d["store_path"]) is not None,
            "missing exact current synthetic D/q selected store")

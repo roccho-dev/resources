@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Disposable SOURCE proof for the fixed rent B-only OCI, not a live update controller.
 # CI alone owns the quiet window. Target version/admission, real credentials and WSLC are outside this proof.
+# D is CI-only: the Target is one file of the pinned envs host-binding; B and T are this commit's builds.
 set -Eeuo pipefail
-[ "$#" = 4 ] || { echo 'usage: native-proof.sh BASE_STUB_ARCHIVE T0_STORE_PATH T1_STORE_PATH FIXED_PROPOSED_BINDING_JSON' >&2; exit 2; }
-archive=$1 t0=$2 t1=$3 binding=$4
-[ -f "$binding" ] && [ ! -L "$binding" ] || { echo 'missing immutable public SOURCE fixture' >&2; exit 2; }
+[ "$#" = 5 ] || { echo 'usage: native-proof.sh BASE_STUB_ARCHIVE T0_STORE_PATH T1_STORE_PATH HOST_BINDINGS_DIR TARGET_REF' >&2; exit 2; }
+archive=$1 t0=$2 t1=$3 hb=$4 target=$5
+[ -d "$hb" ] && [ ! -L "$hb" ] || { echo 'missing pinned host-binding directory' >&2; exit 2; }
 [[ $t0 =~ ^/nix/store/[0-9a-z]{32}-[^/]+$ && $t1 =~ ^/nix/store/[0-9a-z]{32}-[^/]+$ ]] &&
   [ "$t0" != "$t1" ] || { echo 'expected two distinct immutable Nix Tool closures' >&2; exit 2; }
 p="rent-native-proof-$$"
@@ -17,7 +18,7 @@ cleanup() {
   if [ "$status" -ne 0 ]; then docker logs "$c" 2>&1 | tail -n 25 || true; fi
   docker rm -f "$c" >/dev/null 2>&1 || true
   docker volume rm "$repos" "$state" "$nixvol" >/dev/null 2>&1 || true
-  rm -f -- "$evidence/seed" "$evidence/import"
+  rm -f -- "$evidence/seed" "$evidence/import" "$evidence"/binding*.json
   rmdir -- "$evidence" || status=1
   exit "$status"
 }
@@ -87,6 +88,13 @@ nix-store --export $(nix-store --query --requisites "$t0" "$t1") |
 for t in "$t0" "$t1"; do
   docker exec "$c" /bin/nix-store --check-validity "$t"
 done
+# The narHash of a T as this disposable Target's own store reports it.
+nar_of() { docker exec "$c" /bin/nix-store --query --hash "$1"; }
+# D (CI only): the Target from the pinned host-binding; B is this base image and T is T0 with its narHash.
+binding="$evidence/binding.json"
+python3 oci/rent/proposed-binding-proof.py "$binding" --mode build --host-bindings "$hb" \
+  --target "$target" --image "$image" --tool "$t0" --nar-hash "$(nar_of "$t0")" >/dev/null ||
+  fail 'D could not be built from the pinned host-binding and this commit'
 # This helper lives only in the fixture. Real target changes require an independent current D/authority,
 # continuous quiet ownership and a recovery plan; this process does not grant any of them.
 native_set() {
@@ -109,21 +117,37 @@ native_set() {
 }
 # CI-only functional bridge: same proposed q/Host/scope goes from readonly O
 # to actual fixed closure selection. No admitted D, credential or Target GO.
-bound_q=$(python3 - "$binding" <<'PY'
+q_of() {
+  python3 - "$1" <<'PY'
 import json,sys
 with open(sys.argv[1], encoding="utf-8") as f:
     x=json.load(f)
 print(x["proposed_q"])
 PY
-)
+}
+bound_q=$(q_of "$binding")
+# bound_preflight SOURCE WANTED Q HOST SCOPE PRIOR OBSERVATION [ACTUAL_B [ACTUAL_NAR]]
 bound_preflight() {
-  local wanted=$1 q=$2 host=$3 scope=$4 prior=$5 observation=$6
-  local base=${7:-ci:rent-base-only-B0}
-  python3 oci/rent/proposed-binding-proof.py "$binding" --mode preflight \
-    --candidate "$wanted" --expected-store "$t0" --q "$q" --host-ref "$host" --scope "$scope" \
+  local source=$1 wanted=$2 q=$3 host=$4 scope=$5 prior=$6 observation=$7
+  local base=${8:-$image} nar=${9:-}
+  [ -n "$nar" ] || nar=$(nar_of "$wanted")
+  python3 oci/rent/proposed-binding-proof.py "$source" --mode preflight --host-bindings "$hb" \
+    --candidate "$wanted" --expected-store "$t0" --nar-hash "$nar" --q "$q" --host-ref "$host" --scope "$scope" \
     --previous "$prior" --observation "$observation" --base "$base" \
     --launch ci:rent-start-S0 --config-binding ci:rent-binding-C0 \
     --state-contract ci:rent-state-K0
+}
+# variant NAME PYTHON: a copy of D changed by PYTHON (on x), with q recomputed for its own Target and material.
+variant() {
+  python3 - "$binding" "$evidence/binding-$1.json" "$2" <<'PY'
+import hashlib,json,sys
+x=json.load(open(sys.argv[1],encoding="utf-8"))
+exec(sys.argv[3])
+canon=json.dumps({"target_ref":x["target_ref"],"material":x["material"]},sort_keys=True,separators=(",",":"),ensure_ascii=True)
+x["proposed_q"]="sha256:"+hashlib.sha256(canon.encode()).hexdigest()
+json.dump(x,open(sys.argv[2],"w",encoding="utf-8"))
+PY
+  printf '%s\n' "$evidence/binding-$1.json"
 }
 selection() {
   local want=$1
@@ -144,27 +168,44 @@ state_snapshot() {
     stat -c "%n %u:%g %a" /var/lib/rent/dev/codex/auth.json /var/lib/rent/dev/claude/ci-session-marker'
 }
 snapshot=$(state_snapshot)
-# F2: negatives with the SAME exact proposed binding as envs F1. All deny
-# before any native_set, so the empty selector, image and state must persist.
+# F2: negatives against the SAME D. Each must refuse for its own reason before any native_set,
+# so the empty selector, image and state persist.
 before_o=$(observe_ro)
-for mode in wrong-tool wrong-q wrong-host wrong-scope unknown-effect wrong-B; do
-  case "$mode" in
-    wrong-tool) args=("$t1" "$bound_q" ci-host-rent-1 ci-session-1 NONE "$before_o");;
-    wrong-q) args=("$t0" sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ci-host-rent-1 ci-session-1 NONE "$before_o");;
-    wrong-host) args=("$t0" "$bound_q" ci-host-foreign ci-session-1 NONE "$before_o");;
-    wrong-scope) args=("$t0" "$bound_q" ci-host-rent-1 ci-other-session NONE "$before_o");;
-    unknown-effect) args=("$t0" "$bound_q" ci-host-rent-1 ci-session-1 UNKNOWN "$before_o");;
-    wrong-B) args=("$t0" "$bound_q" ci-host-rent-1 ci-session-1 NONE "$before_o" ci:other-B);;
-  esac
-  if bound_preflight "${args[@]}" >/dev/null 2>&1; then
-    fail "bounded SOURCE input $mode reached native mutation"
-  fi
+refusals=0
+refuse_p1() {
+  local label=$1 want=$2 out; shift 2
+  if out=$(bound_preflight "$@" 2>&1); then fail "bounded SOURCE input $label reached native mutation"; fi
+  [[ $out == *"SOURCE_PROPOSED_BINDING_REFUSED: $want"* ]] || fail "$label refused for another reason: $out"
   [ "$(observe_ro)" = "$before_o" ] && [ "$(state_snapshot)" = "$snapshot" ] ||
-    fail "bounded refusal $mode changed selection or auth/work state"
-done
+    fail "bounded refusal $label changed selection or auth/work state"
+  refusals=$((refusals + 1))
+  echo "REFUSED P1 $label: $want"
+}
+nar0=$(nar_of "$t0") nar1=$(nar_of "$t1")
+[ "$nar0" != "$nar1" ] || fail 'T0 and T1 report the same narHash'
+other_b="sha256:$(printf 'b%.0s' {1..64})"
+ok=(ci-host-rent-1 ci-session-1 NONE "$before_o")
+refuse_p1 other-T-store-path 'candidate is not the D Tool store path' "$binding" "$t1" "$bound_q" "${ok[@]}"
+refuse_p1 other-T-narHash 'candidate narHash differs from the D Tool' "$binding" "$t0" "$bound_q" "${ok[@]}" "$image" "$nar1"
+refuse_p1 other-B 'I(D) and actual SOURCE B/launch/config/state facts differ' "$binding" "$t0" "$bound_q" "${ok[@]}" "$other_b"
+refuse_p1 wrong-q 'wrong q' "$binding" "$t0" "sha256:$(printf 'a%.0s' {1..64})" "${ok[@]}"
+refuse_p1 wrong-host 'wrong explicit scoped Host/Unit' "$binding" "$t0" "$bound_q" ci-host-foreign ci-session-1 NONE "$before_o"
+refuse_p1 wrong-scope 'wrong explicit scoped Host/Unit' "$binding" "$t0" "$bound_q" ci-host-rent-1 ci-other-session NONE "$before_o"
+refuse_p1 unknown-effect 'prior effect unresolved' "$binding" "$t0" "$bound_q" ci-host-rent-1 ci-session-1 UNKNOWN "$before_o"
+v=$(variant target-not-in-host-binding 'x["target_ref"]="rent/PC0000"')
+refuse_p1 target-not-in-host-binding 'Target is not in the pinned host-binding' "$v" "$t0" "$(q_of "$v")" "${ok[@]}"
+v=$(variant target-of-another-role 'x["target_ref"]="own/G6I3"')
+refuse_p1 target-of-another-role 'Target is not a rent host-binding path' "$v" "$t0" "$(q_of "$v")" "${ok[@]}"
+v=$(variant tool-without-toolFrom 'del x["toolFrom"]')
+refuse_p1 tool-without-toolFrom 'tool and toolFrom are selected together' "$v" "$t0" "$bound_q" "${ok[@]}"
+v=$(variant toolFrom-without-tool 'del x["tool"]')
+refuse_p1 toolFrom-without-tool 'tool and toolFrom are selected together' "$v" "$t0" "$bound_q" "${ok[@]}"
+v=$(NAR1="$nar1" variant D-narHash-of-another-T 'import os; x["toolFrom"]=x["toolFrom"].rsplit("=",1)[0]+"="+os.environ["NAR1"]')
+refuse_p1 D-narHash-of-another-T 'candidate narHash differs from the D Tool' "$v" "$t0" "$bound_q" "${ok[@]}"
+echo "P1 refusals: $refusals"
 # The positive bound preflight is a non-executable candidate. The existing
 # native_set is the ONLY Nix mutation inside this disposable Docker CI process.
-preflight=$(bound_preflight "$t0" "$bound_q" ci-host-rent-1 ci-session-1 NONE "$before_o") ||
+preflight=$(bound_preflight "$binding" "$t0" "$bound_q" ci-host-rent-1 ci-session-1 NONE "$before_o") ||
   fail 'bound q/Host/unit/source material rejected actual first O'
 [[ $preflight == *'"stage": "SYNTHETIC_PROPOSED_DQ_PREFLIGHT_ONLY"'* &&
    $preflight == *'"effect": "FORBIDDEN"'* &&
@@ -200,15 +241,17 @@ PY
   fail 'missing bounded SOURCE attempt evidence'
 # A lost receipt is UNKNOWN, not success or automatic NOOP. Re-read O but
 # never perform an equivalent second write; a preflight retry must be denied.
-if bound_preflight "$t0" "$bound_q" ci-host-rent-1 ci-session-1 UNKNOWN "$actual_bound_o" >/dev/null 2>&1; then
+if out=$(bound_preflight "$binding" "$t0" "$bound_q" ci-host-rent-1 ci-session-1 UNKNOWN "$actual_bound_o" 2>&1); then
   fail 'unknown bound effect retried blindly'
 fi
+[[ $out == *'SOURCE_PROPOSED_BINDING_REFUSED: prior effect unresolved'* ]] || fail "UNKNOWN retry refused for another reason: $out"
+echo 'REFUSED P1 retry-after-UNKNOWN: prior effect unresolved'
 [ "$(observe_ro)" = "$actual_bound_o" ] ||
   fail 'UNKNOWN reconciliation read mutated the selected Tool'
 # Simulate losing the caller's in-memory CI receipt; selection must remain
 # observed, but retry cannot fabricate an additional successful effect.
 unset bound_receipt
-echo 'PASS: proposed D/q/Host binding -> actual OCI O -> exact T0 Nix selector -> readback; wrong q/T/Host/scope/B/UNKNOWN refused'
+echo 'PASS: proposed D/q/Host binding -> actual OCI O -> exact T0 Nix selector -> readback; other T (store path, narHash)/B, Target not in the host-binding, half pair, wrong q/Host/scope and UNKNOWN refused'
 case "$(observe)" in
   "selection=SELECTED generation=rent-dev-1-link store=$t0 proof=geometry-only") ;;
   *) fail 'T0 observed generation does not match selected T0' ;;
@@ -277,15 +320,19 @@ test "$(observe)" = "$(observe_ro)" || fail 'recreation changed observed selecti
 docker exec "$c" /bin/nix-env --profile /nix/var/nix/profiles/rent-dev --list-generations
 # P2/P3 SOURCE fixture: same actual Docker/Nix instance and native generations.
 # The receiver is never installed into B, launched by logon, or authorized LIVE.
-python3 - "$c" "$t0" "$t1" "$binding" <<'PY'
+python3 - "$c" "$t0" "$t1" "$binding" "$hb" <<'PY'
 import copy, importlib.util, json, re, subprocess, sys
 from pathlib import Path
-container,t0,t1,source_path=sys.argv[1:]
+container,t0,t1,source_path,host_bindings=sys.argv[1:]
 binding=json.loads(Path(source_path).read_text(encoding="utf-8"))
 spec=importlib.util.spec_from_file_location("rent_receiver",Path("oci/rent/tool-receiver.py"))
 assert spec and spec.loader
 receiver=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(receiver)
+spec=importlib.util.spec_from_file_location("rent_ci_bound_source",Path("oci/rent/proposed-binding-proof.py"))
+assert spec and spec.loader
+source=importlib.util.module_from_spec(spec)
+spec.loader.exec_module(source)
 q=binding["proposed_q"]
 rev="ci-"+q[7:23]
 subject=dict(target_ref=binding["target_ref"],host_ref=binding["host_ref"],
@@ -307,6 +354,7 @@ def request(action,**updates):
     return r
 def bound(**updates):
     b=dict(kind="windows.syntheticBoundSource.v0",binding=copy.deepcopy(binding),
+           host_bindings=host_bindings,
            desired=dict(kind="envs.syntheticDesired.v0",target_ref=binding["target_ref"],
                         proposed_q=q,material=binding["material"],
                         revision=rev,store_path=t0),
@@ -321,6 +369,9 @@ def docker(*args,input=None):
     if p.returncode:
         raise RuntimeError("disposable Docker/Nix command failed: "+p.stderr[-700:])
     return p.stdout.strip()
+def nar_of(store):
+    # The narHash of a T as this disposable Target's own store reports it.
+    return docker("exec",container,"/bin/nix-store","--query","--hash",store)
 class Actual:
     kind="windows.syntheticDisposableNixTransport.v0"
     fixture_only=True
@@ -332,8 +383,8 @@ class Actual:
         self.fail_rollback_before_write=False
         self.reader=Path("oci/rent/read-selected.sh").read_text(encoding="utf-8")
     def expected_producer_store(self):
-        # $t0 is the actual immutable F1 Nix-built Tool-only output,
-        # independent of caller-proposed store/desired/q.
+        # $t0 is this commit's actual Nix-built Tool-only output, held to the
+        # PIN material by output identity, independent of caller-proposed store/desired/q.
         return t0
     def observe(self):
         self.reads+=1
@@ -415,6 +466,8 @@ state=docker("exec",container,"/bin/bash","-euc",
              "sha256sum /var/lib/rent/dev/codex/auth.json "
              "/var/lib/rent/dev/claude/ci-session-marker /work/repos/proof-marker")
 assert port.observe()["store_path"]==t1
+assert binding["image"]==image and binding["tool"]==t0
+refusals=0
 def call(action,*,req_over=None,grant_over=None,bound_over=None,receipt=None):
     step={"READ":"READ","CHANGE":"TOOL_CHANGE",
           "RECORD":"RECORD","ROLLBACK":"ROLLBACK"}[action]
@@ -427,61 +480,88 @@ def call(action,*,req_over=None,grant_over=None,bound_over=None,receipt=None):
         g["attempt_ref"]=req["attempt_ref"]
         b["read_grant"]["attempt_ref"]=req["attempt_ref"]
     return receiver.receive_step(req,g,b,port,receipt=receipt)
-def check(ref,stage,**kwargs):
+def check(ref,stage,label=None,**kwargs):
+    global refusals
     result=call(ref,**kwargs)
-    assert result["stage"]==stage,(ref,stage,result)
+    assert result["stage"]==stage,(ref,stage,label,result)
     assert result["admission"]=="NOT_ADMITTED"
     assert result["production_effect"]=="FORBIDDEN"
     assert result["target_ready"] is False and result["merge_ready"] is False
+    if stage=="REFUSED_PRE_EFFECT":
+        refusals+=1
+        print(f"REFUSED P2 {ref} {label or ''}: {stage}".replace("  "," "))
     return result
 start_reads=port.reads
-check("READ","REFUSED_PRE_EFFECT",grant_over={"permit":False},
+check("READ","REFUSED_PRE_EFFECT","revoked-read-grant",grant_over={"permit":False},
       bound_over={"desired":None,"current_q":None,"previous_state":"UNKNOWN"})
 assert port.reads==start_reads and port.selects==0
 got=check("READ","READ_OBSERVED",
           bound_over={"desired":None,"current_q":None,"previous_state":"UNKNOWN"})
 assert got["observation"]["store_path"]==t1 and port.selects==0
-check("CHANGE","REFUSED_PRE_EFFECT",grant_over={"step":"RECORD"})
-check("CHANGE","REFUSED_PRE_EFFECT",req_over={"route_ref":"ci-other-route"})
-check("CHANGE","REFUSED_PRE_EFFECT",req_over={"requested_store":t1})
+# D at the receiver: a Target absent from the pinned host-binding, half of the T pair,
+# another T store path and another B are refused before any select.
+def d_variant(**change):
+    bad=copy.deepcopy(binding)
+    for key,value in change.items():
+        if value is None:
+            del bad[key]
+        else:
+            bad[key]=value
+    bad["proposed_q"]=source.proposed_q(bad["target_ref"],bad["material"])
+    return bad
+nar1=nar_of(t1)
+origin=binding["toolFrom"].rsplit("=",1)[0]+"="
+other_b="sha256:"+"b"*64
+for label,bad in (
+    ("target-not-in-host-binding",d_variant(target_ref="rent/PC0000")),
+    ("tool-without-toolFrom",d_variant(toolFrom=None)),
+    ("toolFrom-without-tool",d_variant(tool=None)),
+    ("other-T-store-path",d_variant(tool=t1,toolFrom=origin+nar1)),
+    ("other-B",d_variant(image=other_b,identity=dict(binding["identity"],base=other_b))),
+):
+    check("CHANGE","REFUSED_PRE_EFFECT",label,bound_over={"binding":bad})
+    assert port.selects==0 and port.records==0 and port.rollbacks==0
+check("CHANGE","REFUSED_PRE_EFFECT","stage-grant-step",grant_over={"step":"RECORD"})
+check("CHANGE","REFUSED_PRE_EFFECT","foreign-route",req_over={"route_ref":"ci-other-route"})
+check("CHANGE","REFUSED_PRE_EFFECT","other-requested-store",req_over={"requested_store":t1})
 # R B: q/material unchanged while both caller-owned desired and request
-# point at t1 (the other VALID closure). Independently built F1 says t0.
+# point at t1 (the other VALID closure). This commit's built T0 is the D.
 bad_d=bound()["desired"]
 bad_d["store_path"]=t1
-check("CHANGE","REFUSED_PRE_EFFECT",req_over={"requested_store":t1},
+check("CHANGE","REFUSED_PRE_EFFECT","desired-and-request-other-T",req_over={"requested_store":t1},
       bound_over={"desired":bad_d})
 assert port.selects==0 and port.records==0 and port.rollbacks==0
 issued=check("CHANGE","TOOL_CHANGE_READBACK_CANDIDATE")["issued_receipt"]
 assert issued and issued["selected"]==t0 and issued["preimage"]==t1
 assert port.selects==1 and port.observe()["store_path"]==t0
-check("CHANGE","REFUSED_PRE_EFFECT")  # same current D Tool, no second write
+check("CHANGE","REFUSED_PRE_EFFECT","same-T-no-second-write")  # same current D Tool, no second write
 assert port.selects==1
-check("RECORD","REFUSED_PRE_EFFECT",grant_over={"permit":False},
+check("RECORD","REFUSED_PRE_EFFECT","revoked-record-grant",grant_over={"permit":False},
       bound_over={"previous_state":"CONFIRMED","quiet":False,
                   "single_writer":False,"recovery":False},receipt=issued)
 assert port.records==0
-check("RECORD","REFUSED_PRE_EFFECT",bound_over={"previous_state":"CONFIRMED"},
+check("RECORD","REFUSED_PRE_EFFECT","copied-receipt",bound_over={"previous_state":"CONFIRMED"},
       receipt=copy.deepcopy(issued))
 assert port.records==0
 check("RECORD","RECORD_ONLY_CANDIDATE",
       bound_over={"previous_state":"CONFIRMED","quiet":False,
                   "single_writer":False,"recovery":False},receipt=issued)
 assert port.records==1 and port.selects==1
-check("RECORD","REFUSED_PRE_EFFECT",
+check("RECORD","REFUSED_PRE_EFFECT","duplicate-record",
       bound_over={"previous_state":"CONFIRMED"},receipt=issued)
 assert port.records==1
-check("ROLLBACK","REFUSED_PRE_EFFECT",grant_over={"permit":False},
+check("ROLLBACK","REFUSED_PRE_EFFECT","revoked-rollback-grant",grant_over={"permit":False},
       bound_over={"previous_state":"CONFIRMED"},receipt=issued)
 assert port.rollbacks==0
 check("ROLLBACK","ROLLBACK_READBACK_REQUIRED",
       bound_over={"previous_state":"CONFIRMED"},receipt=issued)
 assert port.rollbacks==1 and port.observe()["store_path"]==t1
-check("ROLLBACK","REFUSED_PRE_EFFECT",
+check("ROLLBACK","REFUSED_PRE_EFFECT","duplicate-rollback",
       bound_over={"previous_state":"CONFIRMED"},receipt=issued)
 assert port.rollbacks==1
 # R C: ROLLBACK must not erase the consumed-attempt tombstone. The same
 # attempt, now with old T1 selected and previous_state reset, may NOT select.
-check("CHANGE","REFUSED_PRE_EFFECT")
+check("CHANGE","REFUSED_PRE_EFFECT","consumed-attempt-after-rollback")
 assert port.selects==1 and port.observe()["store_path"]==t1
 # Simulate a real Nix write followed by lost acknowledgement: UNKNOWN, never
 # retry an equivalent change in this disposable instance. CI cleanup is explicit.
@@ -489,7 +569,7 @@ port.fail_after_write=True
 check("CHANGE","UNKNOWN_AFTER_SEND_NO_REPLAY",
       req_over={"attempt_ref":"ci-rent-source-2"})
 assert port.selects==2 and port.observe()["store_path"]==t0
-check("CHANGE","REFUSED_PRE_EFFECT",
+check("CHANGE","REFUSED_PRE_EFFECT","retry-after-UNKNOWN-write",
       req_over={"attempt_ref":"ci-rent-source-2"})
 assert port.selects==2
 docker("exec",container,"/bin/nix-env","--profile",
@@ -503,7 +583,7 @@ check("CHANGE","UNKNOWN_AFTER_SEND_NO_REPLAY",
       req_over={"attempt_ref":"ci-rent-source-3"})
 assert port.selects==3 and port.observe()["store_path"]==t1
 port.fail_before_write=False
-check("CHANGE","REFUSED_PRE_EFFECT",
+check("CHANGE","REFUSED_PRE_EFFECT","retry-after-UNKNOWN-before-write",
       req_over={"attempt_ref":"ci-rent-source-3"})
 assert port.selects==3 and port.observe()["store_path"]==t1
 # R A: RECORD ACK loss can follow a real CI-only record side effect. The
@@ -517,7 +597,7 @@ check("RECORD","UNKNOWN_AFTER_SEND_NO_REPLAY",
       bound_over={"previous_state":"CONFIRMED"},receipt=issued4)
 assert port.records==2
 port.fail_record_ack=False
-check("RECORD","REFUSED_PRE_EFFECT",
+check("RECORD","REFUSED_PRE_EFFECT","retry-after-UNKNOWN-record",
       req_over={"attempt_ref":"ci-rent-source-4"},
       bound_over={"previous_state":"CONFIRMED"},receipt=issued4)
 assert port.records==2 and port.selects==4
@@ -538,7 +618,7 @@ check("ROLLBACK","UNKNOWN_AFTER_SEND_NO_REPLAY",
       bound_over={"previous_state":"CONFIRMED"},receipt=issued5)
 assert port.rollbacks==before_rollback+1 and port.observe()["store_path"]==t0
 port.fail_rollback_before_write=False
-check("ROLLBACK","REFUSED_PRE_EFFECT",
+check("ROLLBACK","REFUSED_PRE_EFFECT","retry-after-UNKNOWN-rollback",
       req_over={"attempt_ref":"ci-rent-source-5"},
       bound_over={"previous_state":"CONFIRMED"},receipt=issued5)
 assert port.rollbacks==before_rollback+1 and port.observe()["store_path"]==t0
@@ -556,17 +636,16 @@ assert docker("inspect","-f","{{.Image}}",container)==image
 assert docker("exec",container,"/bin/bash","-euc",
               "sha256sum /var/lib/rent/dev/codex/auth.json "
               "/var/lib/rent/dev/claude/ci-session-marker /work/repos/proof-marker")==state
-print("PASS: same real OCI/Nix receiver READ->CHANGE->RECORD-only->ROLLBACK; "
-      "pre-effect refusal zero, post-send CHANGE/RECORD/ROLLBACK UNKNOWN no replay, "
+print(f"PASS: same real OCI/Nix receiver READ->CHANGE->RECORD-only->ROLLBACK; {refusals} pre-effect "
+      "refusals with zero transport effect, post-send CHANGE/RECORD/ROLLBACK UNKNOWN no replay, "
       "Base/state unchanged")
-# P3: invoke the actual envs #103 caller in THIS Python process against
-# THIS SAME disposable receiver + Docker/Nix Port. The separate script fetches
-# immutable public SOURCE files by fixed SHA and verifies Git blob bytes.
+# P3: the CI-only minimal caller in THIS Python process against THIS SAME
+# disposable receiver + Docker/Nix Port. Nothing is downloaded.
 import runpy
 runpy.run_path("oci/rent/caller-receiver-proof.py", run_name="__main__",
                init_globals={
                    "P2_ACTUAL": port, "P2_RECEIVER": receiver, "P2_BINDING": binding,
-                   "P2_BINDING_PATH": source_path, "P2_DOCKER": docker,
+                   "P2_HOST_BINDINGS": host_bindings, "P2_NAR": nar_of, "P2_DOCKER": docker,
                    "P2_REQUEST": request, "P2_GRANT": grant, "P2_BOUND": bound,
                    "P2_CONTAINER": container, "P2_T0": t0, "P2_T1": t1,
                    "P2_Q": q, "P2_REV": rev, "P2_IMAGE": image, "P2_STATE": state,
