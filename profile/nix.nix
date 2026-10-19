@@ -4,7 +4,7 @@
 # `owner` only names the stable Git credential helper. Each repository's principal is declared by its own
 # binding (profile/gh.nix), never derived from owner or the URL namespace.
 # `piTarget` (own only) names one exact envs target for the existing Pi credential launcher; null keeps the plain entry.
-{ pkgs, extra ? [], owner ? "roccho-dev", mode ? "legacy", piTarget ? null }:
+{ pkgs, extra ? [], owner ? "roccho-dev", mode ? "legacy", piTarget ? null, dshSource ? null }:
 let
   # Core(L_B, owner) never evaluates an app pin. The default retains rent/dev's existing profile.
   github = import ./gh.nix { inherit pkgs owner; };
@@ -34,6 +34,7 @@ ${releaseVersionCases}      *) echo "release-version: unknown CLI ''${1:-}" >&2;
     esac
   '';
   opencode = import ./opencode.nix { inherit pkgs; };
+  dsh = if dshSource == null then null else import ./dsh.nix { inherit pkgs; source = dshSource; };
   # Only the immutable upstream is consumed; plain own never evaluates the dev credential resolver/launcher.
   pi = import ../oci/dev/pi.nix { inherit pkgs; };
   ownPiEntry = pkgs.runCommand "own-pi-entry-${pi.version}" {
@@ -49,7 +50,8 @@ ${releaseVersionCases}      *) echo "release-version: unknown CLI ''${1:-}" >&2;
   # One declaration drives both Linux profile composition and its startup checks.
   # Pi keeps its existing own-only entry here; dev composes its existing launcher separately.
   cli = { inherit codex claude opencode; }
-    // pkgs.lib.optionalAttrs (mode == "own") { pi = ownPi; };
+    // pkgs.lib.optionalAttrs (mode == "own") { pi = ownPi; }
+    // pkgs.lib.optionalAttrs (mode == "own" && dsh != null) { inherit dsh; };
   # The same bounded jev-age-init (absent-only, safe parent, public recipient only) over this target's identity, so the
   # target creates its own key in place; only its init is used (remotes are the dev values, never reached by init).
   ownAgeInit = ((import ../oci/dev/nix.nix { inherit pkgs; }).jevTools {
@@ -60,6 +62,7 @@ ${releaseVersionCases}      *) echo "release-version: unknown CLI ''${1:-}" >&2;
   }).init;
 in
 assert piTarget == null || mode == "own";
+assert dshSource == null || mode == "own";
 assert piTarget == null || piTarget ? identity;
 assert builtins.elem mode [ "legacy" "core" "own" ];
 if mode == "core" then pkgs.buildEnv {

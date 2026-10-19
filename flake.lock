@@ -17,6 +17,23 @@
         "type": "github"
       }
     },
+    "dsh-source": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1792286097,
+        "narHash": "sha256-zL0Ji2Y0Lma/IGf0zdqKBZmsLcB2Pr8v6QkWeG+4mmg=",
+        "owner": "shiguredo",
+        "repo": "deepseek-harness",
+        "rev": "fbe85cf3050ffa8b3ed2d1b0bb8d555c2346b6b0",
+        "type": "github"
+      },
+      "original": {
+        "owner": "shiguredo",
+        "repo": "deepseek-harness",
+        "rev": "fbe85cf3050ffa8b3ed2d1b0bb8d555c2346b6b0",
+        "type": "github"
+      }
+    },
     "host-bindings": {
       "flake": false,
       "locked": {
@@ -98,6 +115,7 @@
     "root": {
       "inputs": {
         "bcon": "bcon",
+        "dsh-source": "dsh-source",
         "host-bindings": "host-bindings",
         "host-nixpkgs": "host-nixpkgs",
         "meltype-linux": "meltype-linux",

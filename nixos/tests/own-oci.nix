@@ -116,6 +116,14 @@
         "resolver=$(grep -oE '/nix/store/[^ ]*/bin/pi-opencode-go-key' \"$launcher\" | head -n1); "
         "grep -qF ${piBindingId} \"$resolver\"; ! grep -qF oci-dev \"$launcher\" \"$resolver\"")
 
+    # The actual fork DSH CLI composes its native headless profile without any API key.
+    ssh('dsh --version >/dev/null; test ! -e "$HOME/.dsh/.credentials.yaml"')
+    ssh('dsh --profile headless --dump-config > /tmp/dsh-config.yml; '
+        'grep -q "llm-pi-ai" /tmp/dsh-config.yml; '
+        'test -f "$HOME/.dsh/profiles/headless/cordis.patch.yml"; '
+        'test ! -e "$HOME/.dsh/.credentials.yaml"')
+    ssh('dsh --profile headless --help >/dev/null')
+
     mount_probe = (
         "mounts=$(docker inspect --format '{{range .Mounts}}{{println .Name .Destination .RW}}{{end}}' versapro-own-oci); "
         "test \"$(printf '%s\\n' \"$mounts\" | sed '/^$/d' | wc -l)\" = 3; "
@@ -133,6 +141,8 @@
     )
 
     ssh("echo home > ~/.own-oci-home; mkdir -p /work/repos/own-oci-test; echo work > /work/repos/own-oci-test/marker")
+    # A user-authored change must survive both OCI recreation and an own T update.
+    ssh('printf "\\n# ci-user-marker: persistent\\n" >> "$HOME/.dsh/profiles/headless/cordis.patch.yml"; grep -q "ci-user-marker" "$HOME/.dsh/profiles/headless/cordis.patch.yml"')
     before_id = machine.succeed("docker inspect -f '{{.Id}}' versapro-own-oci").strip()
     before_key = machine.succeed("docker exec versapro-own-oci cat /home/dev/.ssh/ssh_host_ed25519_key.pub").strip()
     before_profile = ssh("readlink /nix/var/nix/profiles/own-dev").strip()
@@ -144,6 +154,7 @@
     after_restart_id = machine.succeed("docker inspect -f '{{.Id}}' versapro-own-oci").strip()
     assert after_restart_id != before_id
     pin_host_key()
+    ssh('grep -q "ci-user-marker" "$HOME/.dsh/profiles/headless/cordis.patch.yml"; dsh --profile headless --dump-config >/dev/null')
     ssh('test "$(cat ~/.own-oci-home)" = home; test "$(cat /work/repos/own-oci-test/marker)" = work')
     assert machine.succeed("docker exec versapro-own-oci cat /home/dev/.ssh/ssh_host_ed25519_key.pub").strip() == before_key
     # Recreation keeps the selected T: no new generation, same tools.
@@ -160,7 +171,8 @@
     machine.wait_for_open_port(2223)
     pin_host_key()
     ssh('test "$(cat ~/.own-oci-home)" = home; test "$(cat /work/repos/own-oci-test/marker)" = work')
-    ssh('test "$(codex --version)" = "codex-cli ${codexVersion}"; hello >/dev/null; pi --version >/dev/null')
+    ssh('test "$(codex --version)" = "codex-cli ${codexVersion}"; hello >/dev/null; pi --version >/dev/null; dsh --version >/dev/null')
+    ssh('grep -q "ci-user-marker" "$HOME/.dsh/profiles/headless/cordis.patch.yml"')
     assert machine.succeed("docker exec versapro-own-oci cat /home/dev/.ssh/ssh_host_ed25519_key.pub").strip() == before_key
     after_profile = ssh("readlink /nix/var/nix/profiles/own-dev").strip()
     assert after_profile != before_profile
