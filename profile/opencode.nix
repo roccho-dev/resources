@@ -29,6 +29,14 @@ pkgs.stdenv.mkDerivation (finalAttrs: {
   doInstallCheck = true;
   nativeInstallCheckInputs = [ pkgs.versionCheckHook ];
   versionCheckProgramArg = "--version";
+  # The CLI writes a log even for --version. The hook clears the environment,
+  # so preserve only its writable test home and data path.
+  versionCheckKeepEnvironment = "HOME XDG_DATA_HOME";
+  preInstallCheck = ''
+    export HOME="$TMPDIR/opencode-home"
+    export XDG_DATA_HOME="$HOME/data"
+    mkdir -p "$XDG_DATA_HOME"
+  '';
 
   meta = with pkgs.lib; {
     description = "Official OpenCode 2 CLI binary";
