@@ -462,9 +462,14 @@ $nocttyDirectory = Join-Path $localAppData ('Programs\noctty-' + $manifest.noctt
 $nocttyConfig = Join-Path $localAppData 'noctty\config.ghostty'
 # Never created, written or removed; Uninstall only reports whether one exists.
 $nocttyShortcut = Join-Path ([Environment]::GetFolderPath('StartMenu')) 'Programs\noctty.lnk'
-# The native System32 OpenSSH client and the owned client slot ClientSsh writes: readonly path
-# lookups, not an installation prerequisite or an SSH run.
-$nocttyConfigText = Get-NocttyConfigText $manifest.noctty (Join-Path ([Environment]::SystemDirectory) 'OpenSSH\ssh.exe') (Join-Path (HostProfile) '.ssh\windows-client\config')
+# Ordinary Noctty windows run the native System32 OpenSSH client with only files this distribution owns beside the
+# configuration: the bundled VersaPro SSH entries, their UserKnownHostsFile bound to the bundled host key pin written
+# next to them (Get-NocttySshConfigText). Nothing here runs SSH.
+$nocttySshConfig, $nocttyKnownHosts = (Join-Path $localAppData 'noctty\versapro.config'), (Join-Path $localAppData 'noctty\versapro.known_hosts')
+$nocttyFiles = [ordered]@{
+    $nocttySshConfig = [Text.UTF8Encoding]::new($false).GetBytes((Get-NocttySshConfigText ([IO.File]::ReadAllText((BundlePath 'ssh/versapro.config'))) $nocttyKnownHosts))
+    $nocttyKnownHosts = [IO.File]::ReadAllBytes((BundlePath 'ssh/versapro.known_hosts')) }
+$nocttyConfigText = Get-NocttyConfigText $manifest.noctty (Join-Path ([Environment]::SystemDirectory) 'OpenSSH\ssh.exe') $nocttySshConfig
 $terminalStartup = 'HKCU:\Console\%%Startup'
 $startupSubkey = 'Console\%%Startup'
 $registryViews = @(@('HKCU', 'CurrentUser', 'Default'), @('HKLM', 'LocalMachine', 'Registry64'), @('HKLM32', 'LocalMachine', 'Registry32'))
@@ -1448,6 +1453,8 @@ function NocttyEffects {
         tree = [ordered]@{ id = 'tree-extracted:' + $nocttyDirectory.ToUpperInvariant(); kind = 'tree-extracted'; target = $nocttyDirectory
             prior = [ordered]@{ exists = $false }; desired = [ordered]@{ exists = $true; files = $files } }
         config = FileEffect $nocttyConfig (-join ($config | ForEach-Object { $_.ToString('x2') }))
+        files = @(foreach ($path in $nocttyFiles.Keys) {
+            FileEffect $path (-join ([Security.Cryptography.SHA256]::Create().ComputeHash($nocttyFiles[$path]) | ForEach-Object { $_.ToString('x2') })) })
         startup = KeyEffect 'Console\%%Startup'
         keys = @($nocttyRegistration.keys | ForEach-Object { KeyEffect $_ })
         values = @($nocttyRegistration.values | ForEach-Object { ValueEffect $_.name $_.data ('HKCU\' + $_.key) })
@@ -1501,7 +1508,7 @@ function ObserveNoctty($Effect) {
     $leaf = [IO.Path]::GetFileName($target)
     if ($kind -ceq 'tree-extracted' -and [IO.Path]::GetDirectoryName($target) -eq (Join-Path $localAppData 'Programs') -and
         $leaf -cmatch '^noctty-[A-Za-z0-9][A-Za-z0-9.-]*$' -and (Test-PathSegment $leaf)) { return ObserveTree $target }
-    if ($kind -ceq 'file-created' -and $target -eq $selected.config.target) { return ObserveFile $target }
+    if ($kind -ceq 'file-created' -and @(@($selected.config) + $selected.files | Where-Object { $_.target -eq $target }).Count) { return ObserveFile $target }
     if ($kind -ceq 'registry-key-created' -and @(@($selected.startup) + $selected.keys | Where-Object { $_.target -eq $target }).Count) {
         return ObserveKey $subkey
     }
@@ -1559,7 +1566,7 @@ function Observe($Effect) {
         $subkey = $target -replace '^HKCU\\', ''
         if ($kind -ceq 'registry-key-created') { return ObserveKey $subkey } else { return ObserveValue '' $subkey }
     }
-    if ($kind -cne 'file-created' -or $target -eq $nocttyConfig) { return ObserveNoctty $Effect }
+    if ($kind -cne 'file-created' -or $target -eq $nocttyConfig -or $nocttyFiles.Contains($target)) { return ObserveNoctty $Effect }
     throw "The effect ledger holds $kind $target, which this version (owned fonts only) does not handle."
 }
 
@@ -3275,7 +3282,7 @@ function PlanNoctty([switch]$Restore) {
     if ($machine) { throw "A machine-wide Noctty is present ($machine); nothing was changed." }
     if ((LegacyPlan).reason -ceq 'Malformed default-terminal record.') { throw "Unreadable default-terminal provenance: $terminalProvenance" }
     $effects, $classes = (NocttyEffects), @{}
-    foreach ($effect in @($effects.tree, $effects.config, $effects.startup) + $effects.keys + $effects.values) {
+    foreach ($effect in @($effects.tree, $effects.config, $effects.startup) + $effects.files + $effects.keys + $effects.values) {
         $state = Classify $effect
         if ($state.class -ceq 'indeterminate') { throw "Noctty effect $($effect.id) is indeterminate: $($state.reason)" }
         $classes[$effect.id] = $state
@@ -3313,7 +3320,7 @@ function PlanNoctty([switch]$Restore) {
 # parents (Programs, %LOCALAPPDATA%\noctty, the CLSID and Interface roots) are created as needed
 # and listed, never owned.
 function ConvergeNocttyConfig($Effect, $State) {
-    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($nocttyConfigText)
+    [byte[]]$bytes = if ($nocttyFiles.Contains($Effect.target)) { $nocttyFiles[$Effect.target] } else { [Text.UTF8Encoding]::new($false).GetBytes($nocttyConfigText) }
     switch ($State.class) {
         'absent' { SharedDirectory (Split-Path -Parent $Effect.target); CreateOwnedFile $Effect $bytes }
         'owned-match' {
@@ -3323,16 +3330,19 @@ function ConvergeNocttyConfig($Effect, $State) {
             }
         }
         'preexisting-match' { }
-        default { throw "Noctty drift: configuration is $($State.class); never overwritten." }
+        default { throw "Noctty drift: configuration $($Effect.target) is $($State.class); never overwritten." }
     }
 }
 
+# The configuration and the SSH files its command reads.
 function ApplyNocttyConfigOnly {
-    $effect = (NocttyEffects).config
-    RecoverId $effect.id
-    ConvergeNocttyConfig $effect (Classify $effect)
-    if (-not (Test-EffectStateEqual 'file-created' $effect.desired (Observe $effect))) { throw 'Noctty configuration did not converge.' }
-    return $effect
+    $effects = NocttyEffects
+    foreach ($effect in @($effects.files) + @($effects.config)) {
+        RecoverId $effect.id
+        ConvergeNocttyConfig $effect (Classify $effect)
+        if (-not (Test-EffectStateEqual 'file-created' $effect.desired (Observe $effect))) { throw 'Noctty configuration did not converge.' }
+    }
+    return $effects.config
 }
 
 function ApplyNoctty($Plan) {
@@ -3341,6 +3351,7 @@ function ApplyNoctty($Plan) {
         SharedDirectory (Split-Path -Parent $effects.tree.target)
         CreateOwnedTree $effects.tree (BundlePath 'payload/noctty.zip')
     }
+    foreach ($file in $effects.files) { ConvergeNocttyConfig $file $classes[$file.id] }
     ConvergeNocttyConfig $effects.config $classes[$effects.config.id]
     if ($classes[$effects.startup.id].class -ceq 'absent') { CreateOwnedKey $effects.startup }
     if ($Plan.com -ceq 'converge') {
@@ -3391,7 +3402,7 @@ function SelectNoctty([switch]$Check) {
 function TestNoctty {
     $effects = NocttyEffects
     (Test-EffectStateEqual 'tree-extracted' $effects.tree.desired (ObserveTree $nocttyDirectory)) -and
-        (Test-EffectStateEqual 'file-created' $effects.config.desired (ObserveFile $nocttyConfig))
+        -not @(@($effects.config) + $effects.files | Where-Object { -not (Test-EffectStateEqual 'file-created' $_.desired (ObserveFile $_.target)) }).Count
 }
 
 # Value and subkey names of an HKCU key now (empty when it is absent), for A3.
