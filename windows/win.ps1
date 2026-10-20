@@ -462,9 +462,9 @@ $nocttyDirectory = Join-Path $localAppData ('Programs\noctty-' + $manifest.noctt
 $nocttyConfig = Join-Path $localAppData 'noctty\config.ghostty'
 # Never created, written or removed; Uninstall only reports whether one exists.
 $nocttyShortcut = Join-Path ([Environment]::GetFolderPath('StartMenu')) 'Programs\noctty.lnk'
-# Native ProgramFiles is independent of process bitness. This readonly path
-# lookup is not a platform inventory or an installation prerequisite.
-$nocttyConfigText = Get-NocttyConfigText $manifest.noctty (Join-Path (PlatformDirectory) 'wslc.exe')
+# The native System32 OpenSSH client and the owned client slot ClientSsh writes: readonly path
+# lookups, not an installation prerequisite or an SSH run.
+$nocttyConfigText = Get-NocttyConfigText $manifest.noctty (Join-Path ([Environment]::SystemDirectory) 'OpenSSH\ssh.exe') (Join-Path (HostProfile) '.ssh\windows-client\config')
 $terminalStartup = 'HKCU:\Console\%%Startup'
 $startupSubkey = 'Console\%%Startup'
 $registryViews = @(@('HKCU', 'CurrentUser', 'Default'), @('HKLM', 'LocalMachine', 'Registry64'), @('HKLM32', 'LocalMachine', 'Registry32'))
@@ -3866,7 +3866,7 @@ try {
             $effect = ApplyNocttyConfigOnly
             [ordered]@{ mode = $Mode; source = $manifest.source; scope = 'Noctty configuration only'; target = $effect.target
                 changedProperties = $script:changed; recordsWritten = $script:recordsWritten; inDesiredState = $true
-                runtimeProof = 'unproven'; session = $manifest.noctty.launch.session; container = $manifest.noctty.launch.container } | ConvertTo-Json -Depth 8 -Compress
+                runtimeProof = 'unproven'; alias = $manifest.noctty.launch.alias; session = $manifest.noctty.launch.session } | ConvertTo-Json -Depth 8 -Compress
             return
         }
         RecoverLedger

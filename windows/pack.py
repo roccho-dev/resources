@@ -544,16 +544,16 @@ def verify_platform(lock: object, asset: Path) -> None:
 
 
 def noctty_launch(value: object) -> dict:
-    """Bounded existing-session shell selection; no startup/create fallback."""
-    if (not isinstance(value, dict) or set(value) != {"session", "container", "shell", "windowSaveState"}
+    """Bounded SSH alias and zmx session selection; no other remote command or fallback."""
+    if (not isinstance(value, dict) or set(value) != {"alias", "session", "windowSaveState"}
             or any(not isinstance(value.get(k), str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]+", value[k])
-                   for k in ("session", "container"))
-            or value.get("shell") != "/bin/sh" or value.get("windowSaveState") != "never"):
-        raise ValueError("Invalid Noctty existing-session shell selection")
+                   for k in ("alias", "session"))
+            or value.get("windowSaveState") != "never"):
+        raise ValueError("Invalid Noctty SSH session selection")
     return dict(value)
 
 
-def own_resume(value, launch):
+def own_resume(value):
     """A projection generated from the declared own target's Binding, not a second authored OCI binding."""
     if value is None:
         return None
@@ -565,7 +565,6 @@ def own_resume(value, launch):
             not re.fullmatch(r"[A-Za-z0-9]([A-Za-z0-9-]{0,13}[A-Za-z0-9])?", value["expectHost"]) or
             not isinstance(value["container"], str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]+", value["container"]) or
             not isinstance(value["session"], str) or not re.fullmatch(r"wslc-cli-[a-z0-9][a-z0-9-]*", value["session"]) or
-            value["session"] != launch["session"] or value["container"] != launch["container"] or
             type(value["hostPort"]) is not int or not 1024 <= value["hostPort"] <= 65535 or
             not isinstance(value["image"], str) or not re.fullmatch(
                 r"ghcr\.io/roccho-dev/windows-own@sha256:[a-f0-9]{64}", value["image"])):
@@ -615,7 +614,7 @@ def distribution(fonts: Path, noctty: Path, cloudflared: Path, choices: Path,
     noctty_files = noctty_inventory(noctty)
     registration = noctty_registration(selected["noctty"].get("registration"), noctty_files)
     launch = noctty_launch(selected["noctty"].get("launch"))
-    own = own_resume(selected.get("ownResume"), launch)
+    own = own_resume(selected.get("ownResume"))
     packages = inventoried(selected.get("packages"))
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)

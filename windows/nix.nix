@@ -7,9 +7,11 @@ let
   # A Binding Windows SSH path (%USERPROFILE%\.ssh\<name>) as the profile-relative form the runtime joins.
   profileRelative = path: let m = builtins.match ''%USERPROFILE%\\\.ssh\\([A-Za-z0-9._-]+)'' path; in
     assert m != null; ".ssh/${builtins.head m}";
-  # The declared target's session and container; nothing here names a site.
-  nocttyLaunch = { inherit (ownBinding) session container;
-    shell = "/bin/sh"; windowSaveState = "never"; };
+  # VersaPro's native own (#72) as dev, in its persistent zmx session (#75): the alias the owned client slot declares
+  # (ssh/versapro.config, applied by ClientSsh). It is the same for every own Binding.
+  nocttyLaunch = let alias = "versapro-dev"; in
+    assert builtins.elem "Host ${alias}" (pkgs.lib.splitString "\n" (builtins.readFile ./ssh/versapro.config));
+    { inherit alias; session = "own"; windowSaveState = "never"; };
   # One implementation, shared with the NixOS console.
   fonts = (import ../profile/fonts.nix { inherit pkgs; }).commonFonts;
   python = pkgs.python3.withPackages (ps: [ ps.fonttools ]);
@@ -157,8 +159,7 @@ let
     python ${./pack.py} inventory ${pkgs.writeText "${lock.name}-lock.json" (builtins.toJSON upstream)} ${archive} listing.txt tree "$out"
   '';
   ownResume = {
-    inherit (ownBinding) expectHost container hostPort image;
-    session = nocttyLaunch.session;
+    inherit (ownBinding) expectHost container hostPort image session;
     volumes = [
       { name = ownBinding.volume; destination = ownSpec.stateMount; }
       { name = ownBinding.workVolume; destination = ownSpec.workMount; }
@@ -171,8 +172,8 @@ let
     noctty = {
       version = nocttyVersion;
       fontFamily = "PlemolJP Console NF";
-      # Ordinary windows/tabs enter this existing normal-user OCI. Handoff
-      # adopts the caller's PTY instead. No session/container is started here.
+      # Ordinary windows/tabs attach over SSH to the native dev zmx session. Handoff
+      # adopts the caller's PTY instead. Nothing is started on Windows here.
       launch = nocttyLaunch;
       # The HKCU String values the default-terminal handoff needs, as the vendor registration
       # wrote them on CI #58 (G4) without its own bookkeeping and descriptions; {install} is
@@ -228,7 +229,7 @@ let
   '';
 in {
   inherit fonts dist python;
-  # The production projection of ownBinding, exactly as windowsChoices carries it.
+  # The production projection, exactly as windowsChoices carries it; only ownResume comes from ownBinding.
   ownProjection = { launch = nocttyLaunch; inherit ownResume; };
   check = pkgs.runCommand "windows-dist-check" {
     nativeBuildInputs = [ python pkgs.unzip ];

@@ -54,17 +54,19 @@ jobs:
               [ "$got" = none ] && [ -z "$3" ] && got=''
               [ "$got" = "$3" ] || { echo "$1 $2: '$got' != '$3'" >&2; return 1; }
             }
-            for alias in versapro-ssd; do
+            # The root management entry and the native dev entry (#72): the same host, key and pin, two users.
+            for alias in versapro-ssd versapro-dev; do
               expect "$alias" stricthostkeychecking true || return 1
               expect "$alias" batchmode yes || return 1
               expect "$alias" identitiesonly yes || return 1
               expect "$alias" identityfile '~/.ssh/id_ed25519_windows_own' || return 1
               expect "$alias" userknownhostsfile "$kh" || return 1
+              # ssh -G prints host key aliases lowercased; known_hosts matching is case-insensitive.
+              expect "$alias" hostname 192.168.0.103 && expect "$alias" port 22 &&
+                expect "$alias" hostkeyalias versapro-ssd-1804bq0831cwm370 && expect "$alias" proxyjump '' || return 1
             done
-            # ssh -G prints host key aliases lowercased; known_hosts matching is case-insensitive.
-            expect versapro-ssd user root && expect versapro-ssd hostname 192.168.0.103 && expect versapro-ssd port 22 &&
-              expect versapro-ssd hostkeyalias versapro-ssd-1804bq0831cwm370 && expect versapro-ssd proxyjump '' || return 1
-            [ "$(grep -Ec '^Host ' "$cfg")" = 1 ] || { echo 'only native target is declared' >&2; return 1; }
+            expect versapro-ssd user root && expect versapro-dev user dev || return 1
+            [ "$(grep -Ec '^Host ' "$cfg")" = 2 ] || { echo 'only the native root and dev entries are declared' >&2; return 1; }
             [ "$(grep -cv '^[[:space:]]*$' "$pins")" = 1 ] || { echo 'pins: exactly the one declared line' >&2; return 1; }
             tmp=$(mktemp)
             for key in versapro-ssd-1804BQ0831CWM370; do
@@ -88,6 +90,10 @@ jobs:
           { cat "$cfg"; printf 'Host versapro-own-oci\n  HostName 127.0.0.1\n  Port 2223\n'; } > "$t/retired"; neg "$t/retired" "$pins" 'retired OCI entry'
           sed '0,/StrictHostKeyChecking yes/s//StrictHostKeyChecking accept-new/' "$cfg" > "$t/weak"; neg "$t/weak" "$pins" 'weakened host key checking'
           sed '0,/windows-client\/known_hosts/s//versapro\/known_hosts/' "$cfg" > "$t/slot"; neg "$t/slot" "$pins" 'pins outside the owned windows-client slot'
+          awk '/^Host /{ skip = ($2 == "versapro-dev") } !skip' "$cfg" > "$t/nodev"; neg "$t/nodev" "$pins" 'missing native dev entry'
+          sed '/^Host versapro-dev$/,$ s/^  User dev$/  User root/' "$cfg" > "$t/devroot"; neg "$t/devroot" "$pins" 'dev entry as root'
+          sed '/^Host versapro-dev$/,$ s/^  HostKeyAlias .*/  HostKeyAlias versapro-other/' "$cfg" > "$t/devkey"; neg "$t/devkey" "$pins" 'dev entry under another host key'
+          sed '/^Host versapro-dev$/,$ s/StrictHostKeyChecking yes/StrictHostKeyChecking accept-new/' "$cfg" > "$t/devweak"; neg "$t/devweak" "$pins" 'weakened dev host key checking'
   source-vm:
     runs-on: ubuntu-latest
     timeout-minutes: 90
