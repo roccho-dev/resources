@@ -2269,7 +2269,7 @@ foreach ($definition in $winAst.FindAll({ param($n) $n -is [Management.Automatio
 $effectRoot = Join-Path $env:RUNNER_TEMP ('noctty-effects-' + [guid]::NewGuid().ToString('N'))
 $localAppData = $effectRoot
 $nocttyDirectory, $nocttyConfig = "$effectRoot\Programs\noctty-$($manifest.noctty.version)", "$effectRoot\noctty\config.ghostty"
-$nocttyConfigText = SelectedNocttyConfigText $manifest.noctty
+$nocttyConfigText = Get-NocttyConfigText $manifest.noctty (Join-Path ([Environment]::SystemDirectory) 'OpenSSH\ssh.exe') "$effectRoot\noctty\versapro.config"  # as Primitive51 writes it
 $nocttyFiles = [ordered]@{}  # the owned SSH files Noctty reads are proven by A15 below
 $nocttyRegistration = Get-NocttyRegistration $manifest.noctty.registration $nocttyDirectory $manifest.noctty.files
 $selected = NocttyEffects
