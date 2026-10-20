@@ -136,7 +136,7 @@ complete that goal. This change does not complete the broader HQ/G6I3 migration 
 | `own-native-profile-vm` | Actual selector accepts a native NixOS VM and refuses detected/unknown containers before build/set | Real target credentials or provider response |
 | Historical `own-oci-vm` | Isolated OCI regression only | NixOS native execution, auth or success |
 | Native OpenCode version/auth catalog | Installed tool and current authentication metadata | Model inference or a date-specific backend |
-| Native SSH/runuser dev launch chain, native binary and owned session plus one real paid DS response | That native attempt, selected provider alias, response and reported usage | A live child PID/mount-namespace snapshot (not captured); a 1017 backend unless provider attests it; other hosts or OCI |
+| Native SSH/runuser dev launch chain, native binary and owned session plus one real paid DS response | That native attempt, selected provider alias, response and reported usage | A live child PID/mount-namespace snapshot; a 1017 backend unless provider attests it; other hosts or OCI |
 
 OCI responses, container PATHs, forwarded ports, HTTP 200 and copied authentication cannot satisfy
 native acceptance. Normal provider login belongs to the actual native user; no credential is copied
@@ -183,9 +183,9 @@ Windows OCI. Authentication and transient servers need not be migrated. Known te
 return to the affected stage; unknown effects are observed before any repeat. Authentication/provider
 waiting does not block unrelated secret-free source work. Final acceptance requires the actual native SSH/runuser-dev launch chain, native binary and
 owned session/event readback, the finite response and reported usage, retired unit/container/port absence,
-and independent readback after reconnection. No live child PID/mount-namespace snapshot was captured;
-the observed native launch chain and owned session do not substitute for that missing snapshot, and it
-does not justify a repeated paid call. Retire the target container/volumes while Docker still runs after
+and independent readback after reconnection. Record for each attempt whether a live child PID/mount-namespace snapshot was captured.
+A native launch chain and owned session alone do not prove that snapshot.
+Missing optional observations do not by themselves justify repeating a paid call. Retire the target container/volumes while Docker still runs after
 standard build/dry-activation inspection; then activate the native-only system and reconnect. Activation
 stops Docker, so cleanup must not depend on starting the retired daemon again. Until the remaining live
 observations exist, they remain unproven.
