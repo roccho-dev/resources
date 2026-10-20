@@ -136,7 +136,7 @@ complete that goal. This change does not complete the broader HQ/G6I3 migration 
 | `own-native-profile-vm` | Actual selector accepts a native NixOS VM and refuses detected/unknown containers before build/set | Real target credentials or provider response |
 | Historical `own-oci-vm` | Isolated OCI regression only | NixOS native execution, auth or success |
 | Native OpenCode version/auth catalog | Installed tool and current authentication metadata | Model inference or a date-specific backend |
-| Native process plus one real paid DS response | That native attempt, selected provider alias, response and reported usage | A 1017 backend unless provider attests it; other hosts or OCI |
+| Native SSH/runuser dev launch chain, native binary and owned session plus one real paid DS response | That native attempt, selected provider alias, response and reported usage | A live child PID/mount-namespace snapshot (not captured); a 1017 backend unless provider attests it; other hosts or OCI |
 
 OCI responses, container PATHs, forwarded ports, HTTP 200 and copied authentication cannot satisfy
 native acceptance. Normal provider login belongs to the actual native user; no credential is copied
@@ -155,15 +155,17 @@ flowchart TB
   A --> S["🛠️ W：native宣言と接続入口を最小是正"]
   S --> C["🧪 同headのCI・R独立確認"]
   C -->|FAIL| S
-  C -->|PASS| H["💻 root：標準NixOS適用と再接続"]
-  H --> O["🧹 root：保存照合後に対象OCIだけ退役"]
+  C -->|PASS| H["💻 root：標準buildとdry-activation"]
+  H --> O["🧹 root：Docker稼働中に保存照合・対象OCIだけ退役"]
+  O --> J["💻 root：標準NixOS適用と再接続"]
   A --> N["🔐 native devの標準認証"]
   N --> D["💬 native OCで有限1回の有料DS実応答"]
-  O --> V["🔍 R・root：native実応答 AND OCI不在を照合"]
+  J --> V["🔍 R・root：native実応答 AND OCI不在を照合"]
   D --> V
   V -->|不足| F["🔧 最初の無効工程だけ是正"]
   F -->|source・CIの欠陥| S
-  F -->|実機反映の欠陥| H
+  F -->|build・事前適用確認の欠陥| H
+  F -->|実機反映・再接続の欠陥| J
   F -->|保存照合・退役の欠陥| O
   F -->|native認証の実失効だけ| N
   F -->|未実行または許可済み是正だけ| D
@@ -179,6 +181,11 @@ pushed/checkpointed and the requested DS-state copy retained. Delete only the id
 container and its exact three volumes after preservation; never run a broad Docker prune or touch
 Windows OCI. Authentication and transient servers need not be migrated. Known technical failures
 return to the affected stage; unknown effects are observed before any repeat. Authentication/provider
-waiting does not block unrelated secret-free source work. Final acceptance requires actual native
-identity/process evidence, the finite response and reported usage, retired unit/container/port absence,
-and independent readback after reconnection. Until those live observations exist, they remain unproven.
+waiting does not block unrelated secret-free source work. Final acceptance requires the actual native SSH/runuser-dev launch chain, native binary and
+owned session/event readback, the finite response and reported usage, retired unit/container/port absence,
+and independent readback after reconnection. No live child PID/mount-namespace snapshot was captured;
+the observed native launch chain and owned session do not substitute for that missing snapshot, and it
+does not justify a repeated paid call. Retire the target container/volumes while Docker still runs after
+standard build/dry-activation inspection; then activate the native-only system and reconnect. Activation
+stops Docker, so cleanup must not depend on starting the retired daemon again. Until the remaining live
+observations exist, they remain unproven.
