@@ -2775,9 +2775,9 @@ MustReject { Run 'Test' } 'Installed bytes differ:*'
 
 # A1: the first Apply reverts and owns fonts[0]'s damaged file again, then owns every other file
 # and every value from no record at all (one intent and one commit each); a second Apply writes
-# nothing. The same Apply creates the Noctty tree and configuration (the two other copies, A15).
+# nothing. The same Apply creates the Noctty tree, configuration and the two SSH files it reads (the four other copies, A15).
 $first = Run 'Apply'
-if ($first.copied -ne $n + 2 -or $first.removed -ne 1 -or @(Ledger | Where-Object { IsFontRecord $_ }).Count -ne 4 * $n + 3 -or
+if ($first.copied -ne $n + 4 -or $first.removed -ne 1 -or @(Ledger | Where-Object { IsFontRecord $_ }).Count -ne 4 * $n + 3 -or
     @($fonts | Where-Object { (Phases (ValueId (ValueName $_))) -cne 'intent,commit' }).Count -or
     (Get-FileHash -LiteralPath (FontPath $fonts[0])).Hash -ne $fonts[0].sha256 -or
     (Phases (FileId (FontPath $fonts[0]))) -cne 'intent,commit,undone,intent,commit') {
