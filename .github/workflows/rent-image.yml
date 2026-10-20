@@ -640,6 +640,9 @@ jobs:
           # The fake's last exit code must not become this step's exit code.
           $global:LASTEXITCODE = 0
       # Fail before expensive Nix/OCI work on malformed SOURCE-only receiver/proof.
+      - name: Check ToolApply release descriptor and dry-run refusals
+        shell: pwsh
+        run: ./oci/rent/tool-apply-plan-proof.ps1
       - name: Parse native rent SOURCE fixture (no Host or Docker)
         run: |
           bash -n oci/rent/native-proof.sh
@@ -691,8 +694,9 @@ jobs:
           t0=$(nix build .#rent-tool-profile --no-link --print-out-paths --no-write-lock-file)
           [ "$t0" = "$pinned" ] || { echo "rent-tool-profile $t0 is not the PIN material output $pinned" >&2; exit 1; }
           t1=$(nix build .#rent-tool-profile-next --no-link --print-out-paths --no-write-lock-file)
+          apply=$(nix build .#rent-tool-apply --no-link --print-out-paths --no-write-lock-file)
           envs=$(nix eval --impure --raw --expr '(builtins.getFlake (toString ./.)).inputs.host-bindings.outPath')
-          bash oci/rent/native-proof.sh result-4 "$t0" "$t1" "$envs/contracts/host-bindings" rent/PC7337
+          bash oci/rent/native-proof.sh result-4 "$t0" "$t1" "$envs/contracts/host-bindings" rent/PC7337 "$apply"
       - name: Load and test tools, mounts, state, restart, and recreate
         shell: bash
         run: |
