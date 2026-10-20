@@ -632,6 +632,10 @@ def distribution(fonts: Path, noctty: Path, cloudflared: Path, choices: Path,
         for name in ("win.ps1", "proof.ps1", "handoff-proof.ps1", "handoff-evaluate.ps1",
                      "package-view.ps1", "ui-font.ahk", "rent-access.ps1", "README.md"):
             shutil.copyfile(scripts / name, root / name)
+        # The SSH entries and host key pin Noctty's command reads; win.ps1 writes them beside its configuration.
+        (root / "ssh").mkdir()
+        for name in ("versapro.config", "versapro.known_hosts"):
+            shutil.copyfile(scripts / "ssh" / name, root / "ssh" / name)
         (root / "payload").mkdir()
         shutil.copyfile(noctty, root / "payload/noctty.zip")
         # The pinned official client, installed only by the explicit RentSsh mode, never by Restore.

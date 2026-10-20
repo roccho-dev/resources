@@ -94,13 +94,14 @@ check; `Test` checks fonts only.
 
 The Nix selection keeps `PlemolJP Console NF` and makes ordinary new Noctty
 windows and tabs run the native `%SystemRoot%\System32\OpenSSH\ssh.exe` directly:
-`-F %USERPROFILE%\.ssh\windows-client\config -t versapro-dev zmx attach own`,
-both paths written absolute by Apply. `versapro-dev` is VersaPro's native own
-`dev` user (#72), declared with its host key pin in `windows/ssh/versapro.config`
-and placed in the owned client slot by `ClientSsh`, which must be applied first.
-Only that slot is read (`-F`), and the one remote command attaches the persistent
-`own` zmx session (#75), creating it when absent. Configuration/CI is not live
-SSH or zmx proof.
+`-F %LOCALAPPDATA%\noctty\versapro.config -t versapro-dev zmx attach own`, the path
+written absolute by Apply. `versapro-dev` is VersaPro's native own `dev` user (#72).
+Apply (and `-NocttyConfig`) writes, owned beside the Noctty configuration, the
+bundled `ssh/versapro.config` with its `UserKnownHostsFile` bound to the bundled
+pin `noctty\versapro.known_hosts`; a later distribution rewrites them the same way.
+No `ClientSsh` slot is read. The one remote command attaches the persistent `own`
+zmx session (#75), creating it when absent. Configuration/CI is not live SSH or
+zmx proof.
 
 `window-save-state = never` gives a fresh ordinary window instead of replaying
 saved profiles/windows. The saved session file is not deleted. This policy is

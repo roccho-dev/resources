@@ -428,6 +428,9 @@ class CompilerTests(unittest.TestCase):
         for name in ("win.ps1", "proof.ps1", "handoff-proof.ps1", "handoff-evaluate.ps1",
                      "package-view.ps1", "ui-font.ahk", "rent-access.ps1", "README.md"):
             (scripts / name).write_text("fixture")
+        (scripts / "ssh").mkdir(exist_ok=True)
+        for name in ("versapro.config", "versapro.known_hosts"):
+            (scripts / "ssh" / name).write_text(f"fixture {name}\n")
         return noctty, cloudflared, choices, scripts
 
     APP = {"name": "ChatGPT", "source": "msstore", "id": "9PLM9XGG6VKS", "package": "OpenAI.Codex",
@@ -630,6 +633,9 @@ class CompilerTests(unittest.TestCase):
             self.assertEqual(set(manifest["files"]), set(z.namelist()) - {"manifest.json"})
             for name in ("handoff-proof.ps1", "handoff-evaluate.ps1", "package-view.ps1", "rent-access.ps1"):
                 self.assertIn(name, manifest["files"])
+            # Noctty's SSH entries and pin ride in the bundle, byte for byte.
+            for name in ("versapro.config", "versapro.known_hosts"):
+                self.assertEqual(z.read(f"ssh/{name}"), (scripts / "ssh" / name).read_bytes())
             for name, sha in manifest["files"].items():
                 self.assertEqual(pack.hashlib.sha256(z.read(name)).hexdigest(), sha)
             # Nix is the only authority and win.ps1 the native adapter: no DSC backend or document.

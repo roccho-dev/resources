@@ -7,8 +7,8 @@ let
   # A Binding Windows SSH path (%USERPROFILE%\.ssh\<name>) as the profile-relative form the runtime joins.
   profileRelative = path: let m = builtins.match ''%USERPROFILE%\\\.ssh\\([A-Za-z0-9._-]+)'' path; in
     assert m != null; ".ssh/${builtins.head m}";
-  # VersaPro's native own (#72) as dev, in its persistent zmx session (#75): the alias the owned client slot declares
-  # (ssh/versapro.config, applied by ClientSsh). It is the same for every own Binding.
+  # VersaPro's native own (#72) as dev, in its persistent zmx session (#75): an alias of ssh/versapro.config, which
+  # the distribution bundles with its pin and win.ps1 writes beside the Noctty configuration. Same for every own Binding.
   nocttyLaunch = let alias = "versapro-dev"; in
     assert builtins.elem "Host ${alias}" (pkgs.lib.splitString "\n" (builtins.readFile ./ssh/versapro.config));
     { inherit alias; session = "own"; windowSaveState = "never"; };

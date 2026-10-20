@@ -1374,6 +1374,20 @@ function Get-NocttyConfigText($Noctty, [string]$Ssh, [string]$Config) {
     return 'font-family = ' + $face + "`ncommand = direct:" + (Join-NativeArguments $arguments) + "`nwindow-save-state = never`n"
 }
 
+# The bundled SSH entries ($Config) as Noctty's command reads them: every UserKnownHostsFile bound to $KnownHosts, the
+# absolute path of the bundled host key pin written beside them; no other line changes. None, or a path that is not
+# absolute or not one quotable line, refuses.
+function Get-NocttySshConfigText([string]$Config, [string]$KnownHosts) {
+    if ($KnownHosts -cnotmatch '^[A-Za-z]:\\' -or $KnownHosts -match '[\r\n\x00"]') { throw 'Noctty requires an absolute known_hosts path.' }
+    $bound = 0
+    $lines = foreach ($line in $Config.Split("`n")) {
+        $directive = Get-SshDirective $line
+        if ($null -ne $directive -and $directive.keyword -ceq 'userknownhostsfile') { $bound++; '  UserKnownHostsFile "' + $KnownHosts + '"' } else { $line }
+    }
+    if (-not $bound) { throw 'The Noctty SSH configuration names no UserKnownHostsFile.' }
+    @($lines) -join "`n"
+}
+
 function Join-NativeArguments([string[]]$Arguments) {
     @(foreach ($value in @($Arguments)) {
         $argument = [string]$value

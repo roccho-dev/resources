@@ -45,11 +45,8 @@ function Win51([string[]]$Arguments) {
 }
 function Run([string]$Mode) { Win51 @('-Mode', $Mode) }
 function SelectedNocttyConfigText($Noctty) {
-    # Same production native-path observers and pure renderer; no SSH run.
-    $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'win.ps1'), [ref]$null, [ref]$null)
-    $definition = $ast.Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'HostProfile' }, $false)
-    . ([scriptblock]::Create($definition.Extent.Text))
-    return Get-NocttyConfigText $Noctty (Join-Path ([Environment]::SystemDirectory) 'OpenSSH\ssh.exe') (Join-Path (HostProfile) '.ssh\windows-client\config')
+    # Same production paths and pure renderer: the owned SSH configuration beside the Noctty one; no SSH run.
+    return Get-NocttyConfigText $Noctty (Join-Path ([Environment]::SystemDirectory) 'OpenSSH\ssh.exe') (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'noctty\versapro.config')
 }
 # A wrapped child message may gain or lose a space at a line break, so a pattern
 # that fails exactly is compared once more with all whitespace removed.
@@ -331,10 +328,24 @@ Must ((Get-AppAction @() $app) -ceq 'install' -and (Get-AppAction @(@{ name = 'O
 # The bootstrap action has no registration branch. Validate every native candidate
 # before accepting a sufficient version (a later foreign record cannot be hidden by order).
 $bootstrap = $manifest.wingetBootstrap
-$manualText = Get-NocttyConfigText $manifest.noctty 'C:\Windows\System32\OpenSSH\ssh.exe' 'C:\Users\a b\.ssh\windows-client\config'
+$manualText = Get-NocttyConfigText $manifest.noctty 'C:\Windows\System32\OpenSSH\ssh.exe' 'C:\Users\a b\AppData\Local\noctty\versapro.config'
 Must ($manualText -ceq ('font-family = ' + $manifest.noctty.fontFamily + "`n" +
-    'command = direct:C:\Windows\System32\OpenSSH\ssh.exe -F "C:\Users\a b\.ssh\windows-client\config" -t ' + $manifest.noctty.launch.alias +
-    ' zmx attach ' + $manifest.noctty.launch.session + "`nwindow-save-state = never`n")) 'Noctty direct SSH into the declared zmx session through the owned client slot alone, quoted native paths'
+    'command = direct:C:\Windows\System32\OpenSSH\ssh.exe -F "C:\Users\a b\AppData\Local\noctty\versapro.config" -t ' + $manifest.noctty.launch.alias +
+    ' zmx attach ' + $manifest.noctty.launch.session + "`nwindow-save-state = never`n")) 'Noctty direct SSH into the declared zmx session through its own SSH configuration alone, quoted native paths'
+# The SSH configuration Noctty reads: the bundled entries with every UserKnownHostsFile bound to the bundled pin's
+# absolute path and nothing else changed, never the ClientSsh slot; the declared alias is there, each HostKeyAlias pinned.
+$bundledSsh, $bundledPins = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'ssh\versapro.config')), [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'ssh\versapro.known_hosts'))
+$boundSsh = Get-NocttySshConfigText $bundledSsh 'C:\Users\a b\AppData\Local\noctty\versapro.known_hosts'
+$pinAliases = @([regex]::Matches($boundSsh, '(?m)^\s*HostKeyAlias\s+(\S+)') | ForEach-Object { $_.Groups[1].Value })
+Must (-not $boundSsh.Contains('windows-client') -and $boundSsh.Contains("`nHost $($manifest.noctty.launch.alias)`n") -and
+    [regex]::Matches($boundSsh, '(?m)^  UserKnownHostsFile "C:\\Users\\a b\\AppData\\Local\\noctty\\versapro\.known_hosts"$').Count -eq [regex]::Matches($bundledSsh, '(?m)^\s*UserKnownHostsFile\s').Count -and
+    $boundSsh.Replace('  UserKnownHostsFile "C:\Users\a b\AppData\Local\noctty\versapro.known_hosts"', '  UserKnownHostsFile ~/.ssh/windows-client/known_hosts') -ceq $bundledSsh -and
+    $pinAliases.Count -and -not @($pinAliases | Where-Object { -not $bundledPins.StartsWith("$_ ssh-ed25519 ") -and -not $bundledPins.Contains("`n$_ ssh-ed25519 ") }).Count) 'Noctty SSH configuration: the bundled entries bound to the bundled pin, nothing else changed'
+foreach ($bad in @(@($bundledSsh, 'versapro.known_hosts'), @($bundledSsh, 'C:\a"b\known_hosts'), @($bundledSsh, "C:\a`nb"), @("Host a`n  HostName h`n", 'C:\k'))) {
+    $refused = $false
+    try { $null = Get-NocttySshConfigText $bad[0] $bad[1] } catch { $refused = $true }
+    Must $refused 'Noctty SSH configuration refuses a relative, quoted or multi-line pin path, or entries without UserKnownHostsFile'
+}
 foreach ($paths in @(@('ssh.exe', 'C:\Users\a\.ssh\windows-client\config'), @('C:\Windows\System32\OpenSSH\ssh.exe', '%USERPROFILE%\.ssh\windows-client\config'),
         @('C:\Windows\System32\OpenSSH\ssh.exe', "C:\Users\a`n\config"), @('C:\Windows\System32\OpenSSH\ssh.exe', 'C:\Users\a"b\config'))) {
     $refused = $false
@@ -870,7 +881,11 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
     $fontDirectory, $fontSubkey = (Join-Path $Scratch 'fonts'), 'Software\Microsoft\Windows NT\CurrentVersion\Fonts'
     $fontKey = 'HKCU\' + $fontSubkey
     $nocttyDirectory = Join-Path $Scratch ('Programs\noctty-' + $manifest.noctty.version)
-    $nocttyConfig, $nocttyConfigText = (Join-Path $Scratch 'noctty\config.ghostty'), (Get-NocttyConfigText $manifest.noctty (Join-Path ([Environment]::SystemDirectory) 'OpenSSH\ssh.exe') (Join-Path (HostProfile) '.ssh\windows-client\config'))
+    $nocttySshConfig, $nocttyKnownHosts = (Join-Path $Scratch 'noctty\versapro.config'), (Join-Path $Scratch 'noctty\versapro.known_hosts')
+    $nocttyFiles = [ordered]@{
+        $nocttySshConfig = [Text.UTF8Encoding]::new($false).GetBytes((Get-NocttySshConfigText ([IO.File]::ReadAllText((Join-Path $Root 'ssh\versapro.config'))) $nocttyKnownHosts))
+        $nocttyKnownHosts = [IO.File]::ReadAllBytes((Join-Path $Root 'ssh\versapro.known_hosts')) }
+    $nocttyConfig, $nocttyConfigText = (Join-Path $Scratch 'noctty\config.ghostty'), (Get-NocttyConfigText $manifest.noctty (Join-Path ([Environment]::SystemDirectory) 'OpenSSH\ssh.exe') $nocttySshConfig)
     $clsid = '{' + [guid]::NewGuid().ToString().ToUpperInvariant() + '}'
     $nocttyRegistration = Get-NocttyRegistration @(@{ key = "Software\Classes\CLSID\$clsid\LocalServer32"; name = ''; data = 'proof' }) $nocttyDirectory $manifest.noctty.files
     $script:ledgerRecords, $script:nextSeq, $script:recordsWritten, $script:copied, $script:changed, $script:removed = @(), 1, 0, 0, 0, 0
@@ -1288,7 +1303,9 @@ public static string[] Split(string cmd) {
         $null = ApplyNocttyConfigOnly
         $mark = $script:recordsWritten
         $null = ApplyNocttyConfigOnly
-        Must ($script:recordsWritten -eq $mark -and [IO.File]::ReadAllText($nocttyConfig) -ceq $desiredConfigText) 'config-only owned migration and repeated no-op'
+        Must ($script:recordsWritten -eq $mark -and [IO.File]::ReadAllText($nocttyConfig) -ceq $desiredConfigText -and
+            -not @($nocttyFiles.Keys | Where-Object { (Phases (FileEffect $_ 'x')) -cne 'intent,commit' -or
+                [Convert]::ToBase64String([IO.File]::ReadAllBytes($_)) -cne [Convert]::ToBase64String($nocttyFiles[$_]) }).Count) 'config-only owned migration with its SSH files, and repeated no-op'
         [IO.File]::WriteAllText($nocttyConfig, "font-family = user`n")
         Refused { ApplyNocttyConfigOnly } '*Noctty drift:*'
         Must ($script:recordsWritten -eq $mark -and [IO.File]::ReadAllText($nocttyConfig) -ceq "font-family = user`n") 'config-only user drift refuses without writes'
@@ -2253,6 +2270,7 @@ $effectRoot = Join-Path $env:RUNNER_TEMP ('noctty-effects-' + [guid]::NewGuid().
 $localAppData = $effectRoot
 $nocttyDirectory, $nocttyConfig = "$effectRoot\Programs\noctty-$($manifest.noctty.version)", "$effectRoot\noctty\config.ghostty"
 $nocttyConfigText = SelectedNocttyConfigText $manifest.noctty
+$nocttyFiles = [ordered]@{}  # the owned SSH files Noctty reads are proven by A15 below
 $nocttyRegistration = Get-NocttyRegistration $manifest.noctty.registration $nocttyDirectory $manifest.noctty.files
 $selected = NocttyEffects
 $all = @($selected.tree, $selected.config, $selected.startup) + $selected.keys + $selected.values
@@ -2833,6 +2851,9 @@ Must ((TreeExact) -and [IO.File]::ReadAllText($realConfig) -ceq (SelectedNocttyC
     -not @($bound.values | Where-Object { (ComValue $_) -cne "String:$($_.data)" }).Count -and -not @($bound.keys | Where-Object { -not (KeyExists $_) }).Count -and
     (Selection) -ceq "$wtConsole|$noctty" -and (Test-Path -LiteralPath (Join-Path $realLocal 'windows-iac\provenance\default-terminal.json')) -and
     (Test-Path -LiteralPath $shortcut) -eq $shortcutBefore -and $first.registrationState -ceq 'registered') 'A15: independent readback'
+$realSshConfig, $realKnownHosts = (Join-Path $realLocal 'noctty\versapro.config'), (Join-Path $realLocal 'noctty\versapro.known_hosts')
+Must ((Phases ('file-created:' + $realSshConfig.ToUpperInvariant())) -ceq 'intent,commit' -and (Phases ('file-created:' + $realKnownHosts.ToUpperInvariant())) -ceq 'intent,commit' -and
+    [IO.File]::ReadAllText($realSshConfig) -ceq (Get-NocttySshConfigText $bundledSsh $realKnownHosts) -and [IO.File]::ReadAllText($realKnownHosts) -ceq $bundledPins) 'A15: Noctty reads only the SSH configuration and pin it owns beside its configuration'
 
 # A16: an owned tree that differs (a file removed) is never overwritten: Apply stops before any effect.
 [IO.File]::Delete((Join-Path $realTree 'noctty\noctty.com'))
@@ -2847,6 +2868,7 @@ try { $startupKey.DeleteValue('DelegationTerminal') } finally { $startupKey.Clos
 $gone = RunUninstall -Apply
 Must ((@($gone.resumed) -join ',') -ceq $treeId -and $gone.defaultTerminal -ceq 'restore' -and (Selection) -ceq '|' -and $gone.ownedOpen -eq 0 -and
     $gone.changedAfterClose -eq 0 -and -not (Test-Path -LiteralPath $realTree) -and -not (Test-Path -LiteralPath $realConfig) -and
+    -not (Test-Path -LiteralPath $realSshConfig) -and -not (Test-Path -LiteralPath $realKnownHosts) -and
     -not @($bound.values | Where-Object { $null -ne (ComValue $_) }).Count -and -not @($owned | ForEach-Object { $_.Substring(26) } | Where-Object { KeyExists $_ }).Count) 'A17: selection half state and a resumed tree'
 AssertEmpty
 
