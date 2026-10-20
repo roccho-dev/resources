@@ -12,6 +12,9 @@ on:
       image:
         description: The pushed image of this source by registry digest (ghcr.io/roccho-dev/windows-rent@sha256:<64 hex>); empty unless published
         value: ${{ jobs.build-test-publish.outputs.image }}
+      base_image:
+        description: The pushed B-only image of this source by registry digest (ghcr.io/roccho-dev/windows-rent@sha256:<64 hex>); empty unless published
+        value: ${{ jobs.build-test-publish.outputs.base_image }}
 
 jobs:
   build-test-publish:
@@ -21,6 +24,7 @@ jobs:
       packages: write
     outputs:
       image: ${{ steps.publish.outputs.image }}
+      base_image: ${{ steps.publish.outputs.base_image }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -665,8 +669,8 @@ jobs:
           else
             echo 'own image derivation base: unavailable for this event'
           fi
-          # Legacy results 0..2 retain their existing published/stub/next identities. B-only results 3..4
-          # are never published: true cloudflared image and its inert tunnel twin for isolated runtime proof.
+          # Legacy results 0..2 retain their existing published/stub/next identities. B-only result 3 (true cloudflared) is
+          # published by digest as base-sha-<source> after every proof; result 4, its inert tunnel twin, never is.
           nix build .#rent-image .#rent-image-stub .#rent-image-next .#rent-base-image .#rent-base-image-stub \
             --no-write-lock-file --print-build-logs
           for i in result result-1 result-2 result-3 result-4; do test -e "$i"; done
@@ -1498,3 +1502,15 @@ jobs:
           [ "$repo_digests" = "$repo@$pushed" ] || { echo 'RED: local RepoDigest differs from the pushed digest' >&2; exit 1; }
           echo "image=$repo@$pushed" >> "$GITHUB_OUTPUT"
           echo "$repo@$pushed" >> "$GITHUB_STEP_SUMMARY"
+          # The B-only image (result-3) this job built and proved, the same way by its own tag; never the stub twin.
+          docker load < result-3 > /dev/null
+          base="$repo:base-sha-${GITHUB_SHA}"
+          docker tag "$repo:base" "$base"
+          docker push "$base" | tee push-base.log
+          pushed_base=$(sed -nE 's/^base-sha-[0-9a-f]{40}: digest: (sha256:[0-9a-f]{64}) size: [0-9]+$/\1/p' push-base.log)
+          [ "$(printf '%s\n' "$pushed_base" | grep -c .)" = 1 ] || { echo 'RED: B-only push reported no single digest' >&2; exit 1; }
+          base_digests=$(docker image inspect "$base" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep -F "$repo@" || true)
+          [ "$base_digests" = "$repo@$pushed_base" ] || { echo 'RED: local B-only RepoDigest differs from the pushed digest' >&2; exit 1; }
+          [ "$pushed_base" != "$pushed" ] || { echo 'RED: the B-only image is the combined image' >&2; exit 1; }
+          echo "base_image=$repo@$pushed_base" >> "$GITHUB_OUTPUT"
+          echo "$repo@$pushed_base (B-only)" >> "$GITHUB_STEP_SUMMARY"
