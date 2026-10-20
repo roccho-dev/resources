@@ -43,7 +43,7 @@ pkgs.writeShellScriptBin "rent-tool-apply" ''
   mapfile -t closure <<< "$closure_text"
   [ ''${#closure[@]} -gt 0 ] || fail 'desired closure is empty'
   nix-store --check-validity "''${closure[@]}" || fail 'desired closure is not valid'
-  nix store verify --recursive "$desired" || fail 'desired closure bytes are not valid'
+  nix store verify --recursive --no-trust "$desired" || fail 'desired closure bytes are not valid'
   core_helper=$(readlink -e /bin/git-credential-github-roccho-dev) || fail 'B helper is absent'
   tool_helper=$(readlink -e "$desired/bin/git-credential-github-roccho-dev") || fail 'Tool helper is absent'
   [ "$core_helper" = "$tool_helper" ] || fail 'Tool helper differs from B'

@@ -387,8 +387,8 @@ if ($Step -eq 'ToolApply') {
         $BaseEvidence.image -cne $Image) { throw 'Tool release descriptors differ from the reviewed source or exact B image.' }
     $ToolStore = [string] $ToolEvidence.storePath
     $ToolNar = [string] $ToolEvidence.narHash
-    $ApplyStore = '/nix/store/fbyhkg9jx42iahqq412ai775465haa29-rent-tool-apply'
-    $ApplyNar = 'sha256-xmLhuzoBB6DEctkY+JzDLy7WQ1c27Db3U8GKKwZbzVM='
+    $ApplyStore = '/nix/store/iw6vk514p89pll5j3li7zxswdqfqw70g-rent-tool-apply'
+    $ApplyNar = 'sha256-6ZMn9UlQf/R7Cvbtwj7uWkbFXXz0CMxqzZB83eeXHBY='
 }
 
 if ($Step -eq 'Plan') {
