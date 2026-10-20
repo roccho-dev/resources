@@ -15,7 +15,7 @@ command -v systemd-detect-virt >/dev/null || { echo 'own-native-profile: contain
 container_status=0
 systemd-detect-virt --container --quiet || container_status=$?
 [ "$container_status" = 1 ] || { echo 'own-native-profile: container or unknown runtime is not a native target' >&2; exit 2; }
-want=$(nix build "github:roccho-dev/resources/$rev#own-profile-native" --no-link --print-out-paths)
+want=$(nix build "github:roccho-dev/resources/$rev#own-profile" --no-link --print-out-paths)
 nix-env --profile /nix/var/nix/profiles/own-dev --set "$want"
 test "$(readlink -f /nix/var/nix/profiles/own-dev)" = "$want"
 echo "own-native-profile: selected=$want"
