@@ -1,7 +1,7 @@
 # ownCore: the own Core (git, the gh wrapper and its credential helper, nix), from nixos/default.nix.
 { ownCore, ... }:
 let
-  # The one declared management key (root here, the own OCI's SSH entry, and the native dev user).
+  # The one declared management key for root management and the native dev user.
   managementKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIf3e6NN1SmMo0PxHFRLADSY4fG3wSv6kEhA5Yq57I1l windows-own";
 in
 {
@@ -41,7 +41,7 @@ in
   };
   users.users.root.openssh.authorizedKeys.keys = [ managementKey ];
 
-  # Native own (#72, oci-own = native). B declares the development user, its repository root, the own Core (the
+  # Native own (#72): the NixOS host executes tools directly, without an OCI wrapper. B declares the development user, its repository root, the own Core (the
   # same Core the own OCI's B carries) and where the selected T is found. B never contains or selects a Tool: T is
   # the own tool profile, set by root as the native generation /nix/var/nix/profiles/own-dev
   # (nixos/own-native-profile.sh), where the Core's gh wrapper finds its credential helper.
