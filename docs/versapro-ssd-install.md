@@ -46,7 +46,7 @@ source/lockだけでhardware適合・有効認証・USB-free bootを保証しな
 
 標準build locatorは `github:roccho-dev/resources/<actual-public-head>#nixosConfigurations.versapro.config.system.build.toplevel`。既存strict USB SSHから非秘密のlock/eval/buildだけを行う。tmpfs free、RAM、AC、必要substitute/download/build量を確認し、現live storeに収まる余裕がなければbuildを進めずPへ境界を返す。第一toplevelを実生成し、実derivation/output/closure量とGRUB/root/initrd/NM/sshd仕様を独立Rが確認する。新helper・別builder・秘密input・全agent packageは不要。
 
-旧版の固定commitが提供していた `?dir=nixos` と、root統合後の版を混ぜない。既存の採択版・実機状態はこの文書の修正では変わらない。新版の取得入口・検証結果は [提供契約](./windows-migration-preparation.md) と [PR31](https://github.com/roccho-dev/resources/pull/31) で確認する。標準CIの `versapro-own-oci-host` は同じ `versapro` のtoplevelを検査する。入口とその検査対象の一致をCIで確認するが、実SSDの適合・消去前独立受入・USB-free bootの代用にはしない。
+旧版の固定commitが提供していた `?dir=nixos` と、root統合後の版を混ぜない。既存の採択版・実機状態はこの文書の修正では変わらない。新版の取得入口・検証結果は [提供契約](./windows-migration-preparation.md) と [PR31](https://github.com/roccho-dev/resources/pull/31) で確認する。標準CIの `versapro-native-host` は同じ `versapro` のtoplevelを検査する。入口とその検査対象の一致をCIで確認するが、実SSDの適合・消去前独立受入・USB-free bootの代用にはしない。
 
 ### 有限受入表
 
@@ -113,3 +113,79 @@ flowchart TB
 外部条件の成功保証ではない。物理待ちはinstall済み/USB依存の安全な状態と再開担当を残し、DONEへ迂回しない。既にUserが許可した対象SSD eraseの再確認や全Windows backupを余計なgateにしない。通常のknownFAILと作用UNKNOWNを区別し、修復は観測された影響分だけ。
 
 常設後のNixOS内部進化、通常rebuild/回線復帰、auth/work/agent保持、Mesh、VPS評価は[先行設計](https://github.com/roccho-dev/windows/issues/69#issuecomment-6074206950)の別scope。今回の最小SSD boot受入・source PRを、それらの完成やmerge/Issue closeへ広げない。
+
+
+## Native-only development and OCI retirement (2026-10-20)
+
+The current target is the physical VersaPro NixOS host, reached through `versapro-ssd`.
+Tools execute as native `dev` through the existing Core and independently selected
+`/nix/var/nix/profiles/own-dev` generation introduced by [PR80](https://github.com/roccho-dev/resources/pull/80).
+The host declaration no longer imports an OCI module, starts Docker, or exports the retired
+VersaPro OCI module. Its storage, management SSH identity, native user and physical console remain intact.
+Windows own/rent OCI implementations and the isolated historical OCI regression VM remain separate.
+
+[Issue72's explicit native-only decision](https://github.com/roccho-dev/resources/issues/72#issuecomment-6276509736)
+supersedes that issue body's older future-only wording for this target. The former
+[Issue10](https://github.com/roccho-dev/resources/issues/10) describes an OCI goal: retiring it does not
+complete that goal. This change does not complete the broader HQ/G6I3 migration in Issue72 or all of Issue61.
+
+| Evidence | What it proves | What it does not prove |
+|---|---|---|
+| `versapro-native-boundary` | Canonical host has no Docker/OCI declaration and retains native user/profile entry | Current machine activation or authenticated inference |
+| `versapro-native-host` | Exact host system builds from the declared root output | Actual SSH reconnection, target identity or runtime application |
+| `own-native-profile-vm` | Actual selector accepts a native NixOS VM and refuses detected/unknown containers before build/set | Real target credentials or provider response |
+| Historical `own-oci-vm` | Isolated OCI regression only | NixOS native execution, auth or success |
+| Native OpenCode version/auth catalog | Installed tool and current authentication metadata | Model inference or a date-specific backend |
+| Native SSH/runuser dev launch chain, native binary and owned session plus one real paid DS response | That native attempt, selected provider alias, response and reported usage | A live child PID/mount-namespace snapshot; a 1017 backend unless provider attests it; other hosts or OCI |
+
+OCI responses, container PATHs, forwarded ports, HTTP 200 and copied authentication cannot satisfy
+native acceptance. Normal provider login belongs to the actual native user; no credential is copied
+from a container. The existing native profile selector refuses a non-NixOS runtime, a detected
+container, a missing detector or an unknown detector result before any build/profile mutation.
+A genuine NixOS VM is permitted for source tests and is labelled VM evidence.
+The mocked detector tests prove the entrypoint branches only; actual OCI refusal is a separate
+pre-retirement observation and is never inferred from the fixture.
+
+### Finite closure
+
+```mermaid
+flowchart TB
+  U["🎯 NixOS nativeだけでOC＋DS"] --> Q["🔎 W・R・root：Issue／PR／現物を実読"]
+  Q --> A["⚖️ 3者：完成条件と反例を相互検証"]
+  A --> S["🛠️ W：native宣言と接続入口を最小是正"]
+  S --> C["🧪 同headのCI・R独立確認"]
+  C -->|FAIL| S
+  C -->|PASS| H["💻 root：標準buildとdry-activation"]
+  H --> O["🧹 root：Docker稼働中に保存照合・対象OCIだけ退役"]
+  O --> J["💻 root：標準NixOS適用と再接続"]
+  A --> N["🔐 native devの標準認証"]
+  N --> D["💬 native OCで有限1回の有料DS実応答"]
+  J --> V["🔍 R・root：native実応答 AND OCI不在を照合"]
+  D --> V
+  V -->|不足| F["🔧 最初の無効工程だけ是正"]
+  F -->|source・CIの欠陥| S
+  F -->|build・事前適用確認の欠陥| H
+  F -->|実機反映・再接続の欠陥| J
+  F -->|保存照合・退役の欠陥| O
+  F -->|native認証の実失効だけ| N
+  F -->|未実行または許可済み是正だけ| D
+  V -->|結果不明| X["⏸️ 実状態を読戻す・盲再送しない"]
+  X --> Q
+  V -->|残件0| Z["✅ 公開PRと実機証拠を引渡し"]
+```
+
+Source changes/CI, actual host activation, OCI retirement and paid inference are distinct effects.
+A source PR does not authorize merge. Root performs only the separately authorized live retirement
+and standard host application; W authors source and R independently evaluates it. Work must first be
+pushed/checkpointed and the requested DS-state copy retained. Delete only the identified VersaPro OCI
+container and its exact three volumes after preservation; never run a broad Docker prune or touch
+Windows OCI. Authentication and transient servers need not be migrated. Known technical failures
+return to the affected stage; unknown effects are observed before any repeat. Authentication/provider
+waiting does not block unrelated secret-free source work. Final acceptance requires the actual native SSH/runuser-dev launch chain, native binary and
+owned session/event readback, the finite response and reported usage, retired unit/container/port absence,
+and independent readback after reconnection. Record for each attempt whether a live child PID/mount-namespace snapshot was captured.
+A native launch chain and owned session alone do not prove that snapshot.
+Missing optional observations do not by themselves justify repeating a paid call. Retire the target container/volumes while Docker still runs after
+standard build/dry-activation inspection; then activate the native-only system and reconnect. Activation
+stops Docker, so cleanup must not depend on starting the retired daemon again. Until the remaining live
+observations exist, they remain unproven.

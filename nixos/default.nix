@@ -24,24 +24,32 @@ let
     specialArgs.ownCore = defaultOwn.core;
     modules = [
       ./versapro.nix
-      ownModule
       meltypeConsole
       {
-        services.versaproOwnOci.enable = true;
         system.configurationRevision = self.rev or null;
       }
     ];
   };
 in {
-  nixosModules."versapro-own-oci" = ownModule;
   nixosConfigurations.versapro = versapro;
   checks.${system} = {
-    versapro-own-oci-host = versapro.config.system.build.toplevel;
+    versapro-native-host = versapro.config.system.build.toplevel;
+    # The actual target configuration must stay native-only. The separate OCI VM below is regression evidence only.
+    versapro-native-boundary =
+      assert !versapro.config.virtualisation.docker.enable;
+      assert versapro.config.virtualisation.oci-containers.containers == {};
+      assert !(builtins.hasAttr "docker-versapro-own-oci" versapro.config.systemd.services);
+      assert !(builtins.hasAttr "versapro-own-oci-profile" versapro.config.systemd.services);
+      assert versapro.config.users.users.dev.isNormalUser;
+      assert builtins.elem "/nix/var/nix/profiles/own-dev" versapro.config.environment.profiles;
+      pkgs.runCommand "versapro-native-boundary" {} "touch $out";
     own-image = defaultOwn.image;
     own-profile = defaultOwn.profile;
     own-profile-extended = extendedOwn.profile;
     # The T native own selects (nixos/own-native-profile.sh): built here so a broken zmx or profile fails CI.
     own-profile-native = producer.packages.${system}.own-profile-native;
+    own-native-profile-vm = pkgs.testers.runNixOSTest (import ./tests/native-profile.nix { inherit pkgs; });
+    # Historical isolated OCI regression: this must never count as a native target proof.
     own-oci-vm = pkgs.testers.runNixOSTest (import ./tests/own-oci.nix {
       inherit pkgs ownModule;
       extendedProfile = extendedOwn.profile;
