@@ -46,8 +46,6 @@ in {
     own-image = defaultOwn.image;
     own-profile = defaultOwn.profile;
     own-profile-extended = extendedOwn.profile;
-    # The T native own selects (nixos/own-native-profile.sh): built here so a broken zmx or profile fails CI.
-    own-profile-native = producer.packages.${system}.own-profile-native;
     own-native-profile-vm = pkgs.testers.runNixOSTest (import ./tests/native-profile.nix { inherit pkgs; });
     # Historical isolated OCI regression: this must never count as a native target proof.
     own-oci-vm = pkgs.testers.runNixOSTest (import ./tests/own-oci.nix {

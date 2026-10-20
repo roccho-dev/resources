@@ -84,7 +84,8 @@ assert claudeContract.packageShape == "single-glibc-executable";
 pkgs.buildEnv {
   name = if mode == "own" then "own-tool-profile" else if mode == "rent" then "rent-tool-profile" else "dev-profile";
   # Every supported own generation anchors the identical H_B at the existing absolute helper locator.
-  paths = (if mode == "own" then [ github.helper ] ++ pkgs.lib.optional (piTarget != null) ownAgeInit
+  # own has one T on every target; it carries zmx (#75), the persistent PTY.
+  paths = (if mode == "own" then [ github.helper pkgs.zmx ] ++ pkgs.lib.optional (piTarget != null) ownAgeInit
       else if mode == "rent" then [ github.helper ]
       else corePaths ++ [ github.wrapper github.helper ])
     ++ builtins.attrValues cli ++ [ releaseVersion ] ++ extra;

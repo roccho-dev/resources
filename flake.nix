@@ -640,8 +640,6 @@
         own-semlint-versa = versaSemlint;
         own-profile-versa-typellm = versaTypeLLMOwn.profile;
         own-profile-next = (mkOwn { extra = [ pkgs.hello ]; }).profile;
-        # Native own (#72): the same own tool profile plus zmx (#75, persistent PTY), selected natively as own-dev.
-        own-profile-native = (mkOwn { extra = [ pkgs.zmx ]; }).profile;
         # The existing legacy profile is an explicit migration input, never seeded by B.
         own-profile-legacy = import ./profile/nix.nix { inherit pkgs; owner = ownOwner; };
         # CI only: a second base tag for same-volume recreation, independent of the extra tool.
