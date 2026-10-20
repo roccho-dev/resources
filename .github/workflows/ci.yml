@@ -128,41 +128,57 @@ jobs:
           path: ci-bindings/own.json
           if-no-files-found: error
           retention-days: 7
-      # T (the own Tool generation) as an exact, rebuildable reference beside B's registry digest: source, flake output,
-      # store path and NAR hash. No closure or cache is distributed; a consumer rebuilds the output and compares.
-      - name: Describe the own Tool generation (own-tool.json)
+      # T (the own and rent Tool generations) as an exact, rebuildable reference beside B's registry digest: source, flake
+      # output, store path and NAR hash. No closure or cache is distributed; a consumer rebuilds the output and compares.
+      - name: Describe the own and rent Tool generations (own-tool.json, rent-tool.json)
         run: |
           set -euo pipefail
-          out=$(nix build .#own-profile --no-link --print-out-paths --no-write-lock-file)
-          nix store verify "$out"
-          nar=$(nix path-info --json "$out" | jq -r 'if type == "array" then .[0].narHash else .[].narHash end')
           nixpkgs=$(nix flake metadata --json --no-write-lock-file | jq -r '.locks.nodes[.locks.nodes.root.inputs.nixpkgs].locked.rev')
           mkdir tool
-          jq -n --arg source "$(git rev-parse HEAD)" --arg path "$out" --arg nar "$nar" --arg nixpkgs "$nixpkgs" \
-            --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            '{kind: "windows.ownTool.v1", source: $source, output: "packages.x86_64-linux.own-profile",
-              storePath: $path, narHash: $nar, nixpkgs: $nixpkgs, run: $run}' > tool/own-tool.json
-          valid() {
-            jq -e --arg source "$(git rev-parse HEAD)" '
-              keys == ["kind", "narHash", "nixpkgs", "output", "run", "source", "storePath"] and
-              .kind == "windows.ownTool.v1" and .source == $source and .output == "packages.x86_64-linux.own-profile" and
-              (.storePath | test("^/nix/store/[0-9a-z]{32}-own-tool-profile$")) and
-              (.narHash | test("^sha256[-:][A-Za-z0-9+/=]+$")) and (.nixpkgs | test("^[0-9a-f]{40}$")) and
-              (.run | test("^https://github[.]com/roccho-dev/resources/actions/runs/[0-9]+$"))' "$1" > /dev/null
-          }
-          valid tool/own-tool.json
-          # Each single defect of the descriptor is refused (RED), so the GREEN above is not vacuous.
-          for bad in '.kind = "windows.ownImage.v1"' '.extra = 1' 'del(.narHash)' '.storePath = "/nix/store/x-own-tool-profile"' \
-              '.source = "0000000000000000000000000000000000000000"' '.nixpkgs = "main"'; do
-            jq "$bad" tool/own-tool.json > tool/bad.json
-            if valid tool/bad.json; then echo "RED: accepted a descriptor with $bad" >&2; exit 1; fi
+          # One descriptor form for each role's T; only the role and its flake output differ.
+          for pair in own:own-profile rent:rent-tool-profile; do
+            role=${pair%%:*} output=packages.x86_64-linux.${pair#*:}
+            out=$(nix build ".#${pair#*:}" --no-link --print-out-paths --no-write-lock-file)
+            nix store verify "$out"
+            nar=$(nix path-info --json "$out" | jq -r 'if type == "array" then .[0].narHash else .[].narHash end')
+            jq -n --arg kind "windows.${role}Tool.v1" --arg source "$(git rev-parse HEAD)" --arg output "$output" \
+              --arg path "$out" --arg nar "$nar" --arg nixpkgs "$nixpkgs" \
+              --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+              '{kind: $kind, source: $source, output: $output,
+                storePath: $path, narHash: $nar, nixpkgs: $nixpkgs, run: $run}' > "tool/$role-tool.json"
+            valid() {
+              jq -e --arg source "$(git rev-parse HEAD)" --arg kind "windows.${role}Tool.v1" --arg output "$output" \
+                --arg store "^/nix/store/[0-9a-z]{32}-$role-tool-profile\$" '
+                keys == ["kind", "narHash", "nixpkgs", "output", "run", "source", "storePath"] and
+                .kind == $kind and .source == $source and .output == $output and
+                (.storePath | test($store)) and
+                (.narHash | test("^sha256[-:][A-Za-z0-9+/=]+$")) and (.nixpkgs | test("^[0-9a-f]{40}$")) and
+                (.run | test("^https://github[.]com/roccho-dev/resources/actions/runs/[0-9]+$"))' "$1" > /dev/null
+            }
+            valid "tool/$role-tool.json"
+            # Each single defect of the descriptor is refused (RED), so the GREEN above is not vacuous.
+            for bad in '.kind = "windows.ownImage.v1"' '.extra = 1' 'del(.narHash)' ".storePath = \"/nix/store/x-$role-tool-profile\"" \
+                '.source = "0000000000000000000000000000000000000000"' '.nixpkgs = "main"'; do
+              jq "$bad" "tool/$role-tool.json" > tool/bad.json
+              if valid tool/bad.json; then echo "RED: accepted a $role descriptor with $bad" >&2; exit 1; fi
+            done
+            rm tool/bad.json
+            cat "tool/$role-tool.json" >> "$GITHUB_STEP_SUMMARY"
           done
-          rm tool/bad.json
-          cat tool/own-tool.json >> "$GITHUB_STEP_SUMMARY"
+          # The two roles' descriptors are not interchangeable.
+          if (role=rent output=packages.x86_64-linux.rent-tool-profile; valid tool/own-tool.json); then
+            echo 'RED: the own descriptor passed as rent' >&2; exit 1
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: own-tool
           path: tool/own-tool.json
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rent-tool
+          path: tool/rent-tool.json
           if-no-files-found: error
           retention-days: 7
       - id: source
@@ -409,6 +425,8 @@ jobs:
 
   # One Release per source: the proved Windows distribution and rent-image.json, the rent image this same run
   # tested and pushed (by registry digest), so a consumer binds both to the source and runs the image by digest.
+  # rent's B-only image and T are described as own's are: rent-base-image.json (the form of own-image.json) and
+  # rent-tool.json (the form of own-tool.json). rent-image.json keeps naming the combined image its consumers run.
   publish:
     needs: [scope, build, windows, rent, own, dev]
     if: needs.scope.outputs.launcher_only != 'true' && github.repository == 'roccho-dev/resources' && ((github.event_name == 'push' && github.ref == 'refs/heads/proposals') || (github.event_name == 'workflow_dispatch' && inputs.publish))
@@ -424,12 +442,16 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: own-tool
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: rent-tool
       - env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           SOURCE: ${{ needs.build.outputs.source }}
           EXPECTED_SHA256: ${{ needs.build.outputs.checksum }}
           RENT_IMAGE: ${{ needs.rent.outputs.image }}
+          RENT_BASE_IMAGE: ${{ needs.rent.outputs.base_image }}
           OWN_TOOL_ONLY: ${{ needs.scope.outputs.own_tool_only }}
         run: |
           set -euo pipefail
@@ -438,13 +460,19 @@ jobs:
           [[ $RENT_IMAGE =~ ^ghcr\.io/roccho-dev/windows-rent@sha256:[0-9a-f]{64}$ ]] || { echo 'RED: no pushed rent image digest from this run' >&2; exit 1; }
           jq -n --arg source "$SOURCE" --arg image "$RENT_IMAGE" \
             '{kind: "windows.rentImage.v1", source: $source, image: $image}' > rent-image.json
+          [[ $RENT_BASE_IMAGE =~ ^ghcr\.io/roccho-dev/windows-rent@sha256:[0-9a-f]{64}$ ]] && [ "$RENT_BASE_IMAGE" != "$RENT_IMAGE" ] ||
+            { echo 'RED: no pushed B-only rent image digest from this run' >&2; exit 1; }
+          jq -n --arg source "$SOURCE" --arg image "$RENT_BASE_IMAGE" \
+            '{kind: "windows.rentBaseImage.v1", source: $source, image: $image}' > rent-base-image.json
           # Read the newly published immutable images as an unauthenticated consumer.
           # No mutable tag, host, credential or existing consumer selection is changed.
           export DOCKER_CONFIG="$RUNNER_TEMP/provider-pull"
           mkdir -p "$DOCKER_CONFIG"
           docker pull "$RENT_IMAGE"
+          docker pull "$RENT_BASE_IMAGE"
           jq -e --arg source "$SOURCE" '.kind == "windows.ownTool.v1" and .source == $source' own-tool.json > /dev/null
-          assets=(windows-dist.zip windows-dist.zip.sha256 rent-image.json own-tool.json)
+          jq -e --arg source "$SOURCE" '.kind == "windows.rentTool.v1" and .source == $source' rent-tool.json > /dev/null
+          assets=(windows-dist.zip windows-dist.zip.sha256 rent-image.json rent-base-image.json rent-tool.json own-tool.json)
           if [ "$OWN_TOOL_ONLY" != true ]; then
             own="ghcr.io/roccho-dev/windows-own:sha-$SOURCE"
             docker pull "$own"
