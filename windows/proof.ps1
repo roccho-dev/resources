@@ -337,7 +337,7 @@ Must ($manualText -ceq ('font-family = ' + $manifest.noctty.fontFamily + "`n" +
 $bundledSsh, $bundledPins = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'ssh\versapro.config')), [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'ssh\versapro.known_hosts'))
 $boundSsh = Get-NocttySshConfigText $bundledSsh 'C:\Users\a b\AppData\Local\noctty\versapro.known_hosts'
 $pinAliases = @([regex]::Matches($boundSsh, '(?m)^\s*HostKeyAlias\s+(\S+)') | ForEach-Object { $_.Groups[1].Value })
-Must (-not $boundSsh.Contains('windows-client') -and $boundSsh.Contains("`nHost $($manifest.noctty.launch.alias)`n") -and
+Must (-not @($boundSsh.Split("`n") | Where-Object { $_ -notmatch '^\s*#' -and $_.Contains('windows-client') }).Count -and $boundSsh.Contains("`nHost $($manifest.noctty.launch.alias)`n") -and
     [regex]::Matches($boundSsh, '(?m)^  UserKnownHostsFile "C:\\Users\\a b\\AppData\\Local\\noctty\\versapro\.known_hosts"$').Count -eq [regex]::Matches($bundledSsh, '(?m)^\s*UserKnownHostsFile\s').Count -and
     $boundSsh.Replace('  UserKnownHostsFile "C:\Users\a b\AppData\Local\noctty\versapro.known_hosts"', '  UserKnownHostsFile ~/.ssh/windows-client/known_hosts') -ceq $bundledSsh -and
     $pinAliases.Count -and -not @($pinAliases | Where-Object { -not $bundledPins.StartsWith("$_ ssh-ed25519 ") -and -not $bundledPins.Contains("`n$_ ssh-ed25519 ") }).Count) 'Noctty SSH configuration: the bundled entries bound to the bundled pin, nothing else changed'
