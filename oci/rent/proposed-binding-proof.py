@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 # The material: an ancestor commit of this branch that already defines the output, never this commit itself.
-PIN = "601b275785bf8361248da90f1ae5383989b208a9"
+PIN = "07bde302f8708c1a1bea4fa1b0585ec4b9ac3f01"
 PRODUCER = "roccho-dev/resources"
 OUTPUT = "packages.x86_64-linux.rent-tool-profile"
 KIND = "resources.ciRentBoundSource.v0"
