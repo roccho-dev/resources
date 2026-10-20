@@ -93,13 +93,14 @@ check; `Test` checks fonts only.
 ### Manual Noctty launch
 
 The Nix selection keeps `PlemolJP Console NF` and makes ordinary new Noctty
-windows and tabs run the native `%ProgramFiles%\WSL\wslc.exe` directly:
-`--session wslc-cli-resta exec --interactive --tty windows-own /bin/sh -i`.
-The existing G6I3 binding names `windows-own`. The explicit session must already
-be running and the container available; this configuration does not create,
-reopen or start either, and has no fallback to a different session or container.
-After WSL service restart, owner-controlled reopening of the existing storage
-and target is a separate prerequisite. Configuration/CI is not live OCI proof.
+windows and tabs run the native `%SystemRoot%\System32\OpenSSH\ssh.exe` directly:
+`-F %USERPROFILE%\.ssh\windows-client\config -t versapro-dev zmx attach own`,
+both paths written absolute by Apply. `versapro-dev` is VersaPro's native own
+`dev` user (#72), declared with its host key pin in `windows/ssh/versapro.config`
+and placed in the owned client slot by `ClientSsh`, which must be applied first.
+Only that slot is read (`-F`), and the one remote command attaches the persistent
+`own` zmx session (#75), creating it when absent. Configuration/CI is not live
+SSH or zmx proof.
 
 `window-save-state = never` gives a fresh ordinary window instead of replaying
 saved profiles/windows. The saved session file is not deleted. This policy is

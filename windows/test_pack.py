@@ -50,22 +50,18 @@ class CompilerTests(unittest.TestCase):
                ssh={"alias": "alt-own", "identity": ".ssh/id_alt", "knownHosts": ".ssh/known_hosts_alt"})
 
     def test_resume_projection_and_installed_subset(self):
-        launch = {"session": "wslc-cli-resta", "container": "windows-own"}
-        self.assertEqual(pack.own_resume(self.OWN, launch), self.OWN)
+        self.assertEqual(pack.own_resume(self.OWN), self.OWN)
         ssh = self.OWN["ssh"]
         for change in ({"expectHost": "bad host"}, {"expectHost": ""}, {"hostPort": True}, {"hostPort": 80},
                        {"image": "latest"}, {"image": "ghcr.io/other/windows-own@sha256:" + "6" * 64},
-                       {"volumes": self.OWN["volumes"][:1]}, {"session": "other"}, {"container": "other-own"},
+                       {"volumes": self.OWN["volumes"][:1]}, {"session": "other"}, {"container": "Other Own"},
                        {"ssh": {"identity": "/work/repos/private"}}, {"ssh": dict(ssh, alias="Bad Alias")},
                        {"ssh": dict(ssh, identity="/work/repos/private")}, {"ssh": dict(ssh, knownHosts=".ssh/..")},
                        {"ssh": dict(ssh, identity=ssh["knownHosts"])}, {"ssh": dict(ssh, extra="x")}):
             with self.subTest(change=change), self.assertRaises(ValueError):
-                pack.own_resume(dict(self.OWN, **change), launch)
-        # The alternate target is accepted on its own launch, and refused on the sample's.
-        alt_launch = {"session": "wslc-cli-alt", "container": "alt-own"}
-        self.assertEqual(pack.own_resume(self.ALT, alt_launch), self.ALT)
-        with self.assertRaises(ValueError):
-            pack.own_resume(self.ALT, launch)
+                pack.own_resume(dict(self.OWN, **change))
+        # The alternate target is accepted on its own values; the Noctty launch no longer names any own target.
+        self.assertEqual(pack.own_resume(self.ALT), self.ALT)
         fonts = self.payload()
         noctty, cloudflared, choices, scripts = self.inputs()
         selected = json.loads(choices.read_text())
@@ -84,10 +80,9 @@ class CompilerTests(unittest.TestCase):
             self.assertIn("host-runtime/manifest.json", manifest["files"])
         # A later accepted image is projected; the old image is not a permanent authority.
         next_binding = dict(self.OWN, image=self.OWN["image"].replace("6" * 64, "7" * 64))
-        self.assertEqual(pack.own_resume(next_binding, launch)["image"], next_binding["image"])
+        self.assertEqual(pack.own_resume(next_binding)["image"], next_binding["image"])
         # The whole distribution for the alternate target carries its values only, with no sample fallback.
         selected["ownResume"] = self.ALT
-        selected["noctty"]["launch"] = dict(selected["noctty"]["launch"], session="wslc-cli-alt", container="alt-own")
         choices.write_text(json.dumps(selected))
         pack.distribution(fonts, noctty, cloudflared, choices, scripts, "a" * 40, self.root / "alt")
         with zipfile.ZipFile(self.root / "alt/windows-dist.zip") as z:
@@ -99,13 +94,19 @@ class CompilerTests(unittest.TestCase):
         for sample in ("G6I3", "wslc-cli-resta", "g6i3-own", "windows_own"):
             self.assertNotIn(sample, projected)
 
-    def test_noctty_existing_session_selection(self):
-        launch = {"session": "wslc-cli-resta", "container": "windows-own", "shell": "/bin/sh", "windowSaveState": "never"}
+    def test_noctty_ssh_session_selection(self):
+        launch = {"alias": "versapro-dev", "session": "own", "windowSaveState": "never"}
         self.assertEqual(pack.noctty_launch(launch), launch)
-        for change in ({"session": ""}, {"session": "name\ncommand = cmd"}, {"container": "other name"},
-                       {"shell": "/bin/sh -c cmd"}, {"windowSaveState": "always"}, {"fallback": "create"}):
+        for change in ({"alias": ""}, {"alias": "name\ncommand = cmd"}, {"alias": "-oProxyCommand=cmd"},
+                       {"session": "other name"}, {"session": "own;sh"}, {"windowSaveState": "always"},
+                       {"shell": "/bin/sh"}, {"fallback": "create"}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 pack.noctty_launch(dict(launch, **change))
+        # A missing key, and the retired existing-OCI shell selection, are refused rather than adapted.
+        for value in ({"alias": "versapro-dev", "windowSaveState": "never"},
+                      {"session": "wslc-cli-resta", "container": "windows-own", "shell": "/bin/sh", "windowSaveState": "never"}):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                pack.noctty_launch(value)
 
     def test_platform_bytes_and_supported_scope(self):
         self.assertEqual(pack.wsl_platform(WSL_LOCK), WSL_LOCK)
@@ -417,8 +418,8 @@ class CompilerTests(unittest.TestCase):
         choices = self.root / "choices.json"
         choices.write_text(json.dumps({"noctty": {"version": "1.0", "fontFamily": "Test Font",
                                                   "registration": REGISTRATION,
-                                                  "launch": {"session": "wslc-cli-resta", "container": "windows-own",
-                                                             "shell": "/bin/sh", "windowSaveState": "never"}},
+                                                  "launch": {"alias": "versapro-dev", "session": "own",
+                                                             "windowSaveState": "never"}},
                                        "cloudflared": {"version": "2.0"},
                                        "wingetBootstrap": self.bootstrap(),
                                        "packages": [self.lock(inventory=str(self.inventory()))]}))
@@ -618,8 +619,8 @@ class CompilerTests(unittest.TestCase):
             self.assertEqual(manifest["source"], "a" * 40)
             self.assertEqual(manifest["noctty"]["version"], "1.0")
             self.assertEqual(manifest["noctty"]["registration"], REGISTRATION)
-            self.assertEqual(manifest["noctty"]["launch"], {"session": "wslc-cli-resta", "container": "windows-own",
-                                                        "shell": "/bin/sh", "windowSaveState": "never"})
+            self.assertEqual(manifest["noctty"]["launch"], {"alias": "versapro-dev", "session": "own",
+                                                        "windowSaveState": "never"})
             self.assertEqual(manifest["cloudflared"], {"version": "2.0", "file": "payload/cloudflared.exe",
                                                        "sha256": pack.digest(cloudflared)})
             self.assertEqual(z.read("payload/cloudflared.exe"), cloudflared.read_bytes())

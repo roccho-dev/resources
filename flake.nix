@@ -888,6 +888,7 @@
           nativeBuildInputs = [ ciAlt.python ];
           projection = builtins.toJSON ciAlt.ownProjection;
           binding = builtins.toJSON ciAltBinding;
+          production = builtins.toJSON common.ownProjection.launch;
         } ''
           set -eu
           export PYTHONDONTWRITEBYTECODE=1
@@ -897,8 +898,9 @@
           import json, os, pack
           p, b = json.loads(os.environ["projection"]), json.loads(os.environ["binding"])
           launch = pack.noctty_launch(p["launch"])
-          own = pack.own_resume(p["ownResume"], launch)
-          assert (launch["session"], launch["container"]) == (b["session"], b["container"]), launch
+          own = pack.own_resume(p["ownResume"])
+          # The Noctty entry (VersaPro's native dev) is the production one for every own Binding.
+          assert launch == json.loads(os.environ["production"]), launch
           assert own == {"expectHost": b["expectHost"], "container": b["container"], "hostPort": b["hostPort"],
                          "image": b["image"], "session": b["session"],
                          "volumes": [{"name": b["volume"], "destination": "/home/dev"},

@@ -45,11 +45,11 @@ function Win51([string[]]$Arguments) {
 }
 function Run([string]$Mode) { Win51 @('-Mode', $Mode) }
 function SelectedNocttyConfigText($Noctty) {
-    # Same production native-path observer and pure renderer; no runtime launch.
+    # Same production native-path observers and pure renderer; no SSH run.
     $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'win.ps1'), [ref]$null, [ref]$null)
-    $definition = $ast.Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'PlatformDirectory' }, $false)
+    $definition = $ast.Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'HostProfile' }, $false)
     . ([scriptblock]::Create($definition.Extent.Text))
-    return Get-NocttyConfigText $Noctty (Join-Path (PlatformDirectory) 'wslc.exe')
+    return Get-NocttyConfigText $Noctty (Join-Path ([Environment]::SystemDirectory) 'OpenSSH\ssh.exe') (Join-Path (HostProfile) '.ssh\windows-client\config')
 }
 # A wrapped child message may gain or lose a space at a line break, so a pattern
 # that fails exactly is compared once more with all whitespace removed.
@@ -331,14 +331,21 @@ Must ((Get-AppAction @() $app) -ceq 'install' -and (Get-AppAction @(@{ name = 'O
 # The bootstrap action has no registration branch. Validate every native candidate
 # before accepting a sufficient version (a later foreign record cannot be hidden by order).
 $bootstrap = $manifest.wingetBootstrap
-$manualText = Get-NocttyConfigText $manifest.noctty 'C:\Program Files\WSL\wslc.exe'
+$manualText = Get-NocttyConfigText $manifest.noctty 'C:\Windows\System32\OpenSSH\ssh.exe' 'C:\Users\a b\.ssh\windows-client\config'
 Must ($manualText -ceq ('font-family = ' + $manifest.noctty.fontFamily + "`n" +
-    'command = direct:"C:\Program Files\WSL\wslc.exe" --session ' + $manifest.noctty.launch.session + ' exec --interactive --tty ' +
-    $manifest.noctty.launch.container + ' /bin/sh -i' + "`nwindow-save-state = never`n")) 'Noctty direct existing OCI shell of the declared target and fresh manual window, quoted native path'
-foreach ($change in @(@{ session = '' }, @{ session = "name`ncommand = cmd" }, @{ container = 'other name' }, @{ shell = '/bin/sh -c cmd' }, @{ windowSaveState = 'always' }, @{ fallback = 'create' })) {
-    $case = @{ session = 'wslc-cli-resta'; container = 'windows-own'; shell = '/bin/sh'; windowSaveState = 'never' }
+    'command = direct:C:\Windows\System32\OpenSSH\ssh.exe -F "C:\Users\a b\.ssh\windows-client\config" -t ' + $manifest.noctty.launch.alias +
+    ' zmx attach ' + $manifest.noctty.launch.session + "`nwindow-save-state = never`n")) 'Noctty direct SSH into the declared zmx session through the owned client slot alone, quoted native paths'
+foreach ($paths in @(@('ssh.exe', 'C:\Users\a\.ssh\windows-client\config'), @('C:\Windows\System32\OpenSSH\ssh.exe', '%USERPROFILE%\.ssh\windows-client\config'),
+        @('C:\Windows\System32\OpenSSH\ssh.exe', "C:\Users\a`n\config"), @('C:\Windows\System32\OpenSSH\ssh.exe', 'C:\Users\a"b\config'))) {
+    $refused = $false
+    try { $null = Get-NocttyConfigText $manifest.noctty $paths[0] $paths[1] } catch { $refused = $_.Exception.Message -like '*absolute native OpenSSH*' }
+    Must $refused 'Noctty refuses a relative, unexpanded, multi-line or quoted OpenSSH or client slot path'
+}
+foreach ($change in @(@{ alias = '' }, @{ alias = "name`ncommand = cmd" }, @{ alias = '-oProxyCommand=cmd' }, @{ session = 'other name' }, @{ session = 'own;sh' },
+        @{ windowSaveState = 'always' }, @{ shell = '/bin/sh' }, @{ container = 'windows-own' })) {
+    $case = @{ alias = 'versapro-dev'; session = 'own'; windowSaveState = 'never' }
     foreach ($key in $change.Keys) { $case[$key] = $change[$key] }
-    Must ($null -ne (Get-NocttyLaunchProblem $case)) 'Noctty selectors refuse injection or startup fallback'
+    Must ($null -ne (Get-NocttyLaunchProblem $case)) 'Noctty selectors refuse injection, another remote command or the retired OCI shell'
 }
 Must ($null -eq (Get-BootstrapProblem $bootstrap) -and $bootstrap.bundle.version -cne $bootstrap.bundle.appVersion) 'distinct locked bundle and app versions'
 $expectedAppInstaller = @{ name = $bootstrap.bundle.name; publisherId = $bootstrap.publisherId; version = $bootstrap.bundle.appVersion }
@@ -863,7 +870,7 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
     $fontDirectory, $fontSubkey = (Join-Path $Scratch 'fonts'), 'Software\Microsoft\Windows NT\CurrentVersion\Fonts'
     $fontKey = 'HKCU\' + $fontSubkey
     $nocttyDirectory = Join-Path $Scratch ('Programs\noctty-' + $manifest.noctty.version)
-    $nocttyConfig, $nocttyConfigText = (Join-Path $Scratch 'noctty\config.ghostty'), (Get-NocttyConfigText $manifest.noctty (Join-Path (PlatformDirectory) 'wslc.exe'))
+    $nocttyConfig, $nocttyConfigText = (Join-Path $Scratch 'noctty\config.ghostty'), (Get-NocttyConfigText $manifest.noctty (Join-Path ([Environment]::SystemDirectory) 'OpenSSH\ssh.exe') (Join-Path (HostProfile) '.ssh\windows-client\config'))
     $clsid = '{' + [guid]::NewGuid().ToString().ToUpperInvariant() + '}'
     $nocttyRegistration = Get-NocttyRegistration @(@{ key = "Software\Classes\CLSID\$clsid\LocalServer32"; name = ''; data = 'proof' }) $nocttyDirectory $manifest.noctty.files
     $script:ledgerRecords, $script:nextSeq, $script:recordsWritten, $script:copied, $script:changed, $script:removed = @(), 1, 0, 0, 0, 0
