@@ -651,6 +651,9 @@
         rent-base-image-stub = (mkRentPair { tag = "base-stub"; tunnel = rentTunnelStub; }).image;
         rent-core = rentPair.core;
         rent-tool-profile = rentPair.profile;
+        # Built from an exact source commit and invoked as root inside the B-only OCI.
+        # The command is not in the image, so later Tool pins leave B unchanged.
+        rent-tool-apply = import ./oci/rent/tool-apply.nix { inherit pkgs; };
         rent-tool-profile-next = (mkRentPair { extra = [ pkgs.hello ]; }).profile;
         # CI only, never published: the published definition with the tunnel stub, for local SSH/state/#8 proofs.
         rent-image-stub = mkRent { profile = rentProfile; tag = "stub"; tunnel = rentTunnelStub; };

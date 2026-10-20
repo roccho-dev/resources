@@ -3,11 +3,13 @@
 # CI alone owns the quiet window. Target version/admission, real credentials and WSLC are outside this proof.
 # D is CI-only: the Target is one file of the pinned envs host-binding; B and T are this commit's builds.
 set -Eeuo pipefail
-[ "$#" = 5 ] || { echo 'usage: native-proof.sh BASE_STUB_ARCHIVE T0_STORE_PATH T1_STORE_PATH HOST_BINDINGS_DIR TARGET_REF' >&2; exit 2; }
-archive=$1 t0=$2 t1=$3 hb=$4 target=$5
+[ "$#" = 6 ] || { echo 'usage: native-proof.sh BASE_STUB_ARCHIVE T0_STORE_PATH T1_STORE_PATH HOST_BINDINGS_DIR TARGET_REF TOOL_APPLY' >&2; exit 2; }
+archive=$1 t0=$2 t1=$3 hb=$4 target=$5 apply=$6
 [ -d "$hb" ] && [ ! -L "$hb" ] || { echo 'missing pinned host-binding directory' >&2; exit 2; }
 [[ $t0 =~ ^/nix/store/[0-9a-z]{32}-[^/]+$ && $t1 =~ ^/nix/store/[0-9a-z]{32}-[^/]+$ ]] &&
   [ "$t0" != "$t1" ] || { echo 'expected two distinct immutable Nix Tool closures' >&2; exit 2; }
+[[ $apply =~ ^/nix/store/[0-9a-z]{32}-rent-tool-apply$ ]] &&
+  [ -x "$apply/bin/rent-tool-apply" ] || { echo 'expected immutable ToolApply command' >&2; exit 2; }
 p="rent-native-proof-$$"
 c="$p-container" repos="$p-repos" state="$p-state" nixvol="$p-nix"
 evidence=$(mktemp -d)
@@ -83,9 +85,9 @@ bound_read=$(python3 oci/rent/proposed-binding-proof.py /nonexistent-public-sour
 [[ $bound_read == *'"selection": "ABSENT"'* && $bound_read == *'"effect": "FORBIDDEN"'* ]] ||
   fail 'readonly observation was promoted to an effect'
 # Transport the exact pre-built T closures, not an image rebuild or an implicit latest fetch.
-nix-store --export $(nix-store --query --requisites "$t0" "$t1") |
+nix-store --export $(nix-store --query --requisites "$t0" "$t1" "$apply") |
   docker exec -i "$c" /bin/nix-store --import > "$evidence/import"
-for t in "$t0" "$t1"; do
+for t in "$t0" "$t1" "$apply"; do
   docker exec "$c" /bin/nix-store --check-validity "$t"
 done
 # The narHash of a T as this disposable Target's own store reports it.
@@ -278,7 +280,26 @@ grep -qF '/bin/codex -c' <<< "$observed" || fail 'active app-parent fixture did 
 if native_set "$t1"; then fail 'Tool switched while an app was still active'; fi
 selection "$t0"
 sleep 5
-native_set "$t1"
+version=$("$t1/bin/codex" --version)
+[[ $version =~ ^codex-cli\ ([0-9]+\.[0-9]+\.[0-9]+)$ ]] || fail 'T1 Codex version unreadable'
+codex_version=${BASH_REMATCH[1]}
+sri1=$(docker exec "$c" /bin/nix path-info --json "$t1" | jq -er 'if type == "array" then .[0].narHash else .[].narHash end')
+if docker exec -u 1000:1000 "$c" "$apply/bin/rent-tool-apply" "$t0" "$t1" "$sri1" "$codex_version"; then
+  fail 'dev could invoke root ToolApply'
+fi
+if docker exec "$c" "$apply/bin/rent-tool-apply" "$t0" "$t1" "sha256-$(printf 'A%.0s' {1..43})=" "$codex_version"; then
+  fail 'ToolApply accepted a wrong NAR hash'
+fi
+selection "$t0"
+docker exec -d "$c" /bin/bash -c 'exec -a /bin/codex /bin/bash -c "sleep 4; :"'
+sleep 0.2
+if docker exec "$c" "$apply/bin/rent-tool-apply" "$t0" "$t1" "$sri1" "$codex_version"; then
+  fail 'ToolApply selected while Codex was active'
+fi
+selection "$t0"
+sleep 5
+docker exec "$c" "$apply/bin/rent-tool-apply" "$t0" "$t1" "$sri1" "$codex_version" |
+  grep -qF "store=$t1 codex=$codex_version" || fail 'ToolApply did not acknowledge exact T1'
 selection "$t1"
 case "$(observe)" in
   "selection=SELECTED generation=rent-dev-2-link store=$t1 proof=geometry-only") ;;
