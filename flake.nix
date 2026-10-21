@@ -21,17 +21,6 @@
       ownOwner = "roccho-dev";
       # Explicit nonsecret envs input, for the CI binding inputs only; no build output reads a binding.
       bindingRoot = "${host-bindings}/contracts/host-bindings";
-      # CI only, never published or applied: another declared own target. Every site value, the credential owner
-      # included, differs from the G6I3 sample; the role and the image publisher are the own role's invariants.
-      ciAltBinding = {
-        role = "own"; site = "ALTSITE"; expectHost = "ALTHOST"; owner = "alt-owner"; session = "wslc-cli-alt";
-        sshAlias = "alt-own"; container = "alt-own"; hostPort = 2224;
-        volume = "alt-own-home"; workVolume = "alt-own-work"; nixVolume = "alt-own-nix";
-        publicKeyFile = "%USERPROFILE%\\.ssh\\id_alt_wslc.pub"; privateKeyFile = "/work/repos/.auth/ssh/alt-own/id_ed25519";
-        knownHostsFile = "%USERPROFILE%\\.ssh\\known_hosts_alt"; windowsIdentityFile = "%USERPROFILE%\\.ssh\\id_alt";
-        image = "ghcr.io/roccho-dev/windows-own@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        imageFrom = "CI-only alternate target fixture";
-      };
       # B receives only core/service inputs, never the current T or its app pins.
       ownFor = { core, tag }: import ./oci/own/nix.nix {
         inherit pkgs core tag mountLib;
@@ -661,11 +650,9 @@
           tag = "next";
           tunnel = rentTunnelStub;
         };
-        # CI only, never published: the same principal routing and bind under the alternate target's helper name,
-        # without an image; and that target's Binding as JSON for the own Windows script's strict reader.
-        ci-alt-owner-gh = let alt = import ./profile/gh.nix { inherit pkgs; inherit (ciAltBinding) owner; }; in
+        # CI only, never published: the same principal routing and bind under another helper name, without an image.
+        ci-alt-owner-gh = let alt = import ./profile/gh.nix { inherit pkgs; owner = "alt-owner"; }; in
           pkgs.buildEnv { name = "ci-alt-owner-gh"; paths = [ alt.wrapper alt.helper ]; pathsToLink = [ "/bin" ]; };
-        ci-alt-own-binding = pkgs.writeText "ci-alt-own-binding.json" (builtins.toJSON ciAltBinding);
         git-state-backend = gitState.backend;
         dev-profile = dev.profile;
         dev-image = dev.image;
