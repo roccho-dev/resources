@@ -2028,10 +2028,18 @@ static class Child { static int Main(string[] args) {
         [IO.File]::Delete($control)
     }
     $guardTree=Join-Path $Scratch ('Programs\windows-host-'+('d'*40))
+    # Real CIM action objects, created and never registered. A foreign Exec action naming the tree is a reference; a COM
+    # handler action has no Execute (Windows' own NGEN and AppListBackup Tasks on G6I3) and must neither count nor break the scan.
+    $execAction=New-ScheduledTaskAction -Execute 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -WorkingDirectory $guardTree
+    $comAction=New-CimInstance -Namespace 'Root/Microsoft/Windows/TaskScheduler' -ClassName 'MSFT_TaskComHandlerAction' -ClientOnly -Property @{ClassId='{00000000-0000-0000-0000-000000000000}';Data=''}
     & {
-        function Get-ScheduledTask { @{TaskPath='\';TaskName='foreign';Actions=@(@{Execute='C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe';Arguments='';WorkingDirectory=$guardTree})} }
+        function Get-ScheduledTask { @{TaskPath='\Microsoft\Windows\';TaskName='com-handler';Actions=@($comAction)}; @{TaskPath='\';TaskName='foreign';Actions=@($execAction)} }
         Refused { HostTreeReferences $guardTree } '*native Task or SSH reference*'
+        function Get-ScheduledTask { @{TaskPath='\Microsoft\Windows\';TaskName='com-handler';Actions=@($comAction)} }
+        $null=HostTreeReferences $guardTree
     }
+    # The actual scan over this runner's own Task inventory (Windows' COM handler Tasks included) finds no reference.
+    $null=HostTreeReferences $guardTree
     function HostTreeReferences { } # no foreign task/process on these disposable fixture trees
     $null=HostRemove
     Must ((HostHash ([IO.File]::ReadAllBytes($master))) -ceq (HostHash $original) -and -not (Test-Path -LiteralPath $fragment) -and
