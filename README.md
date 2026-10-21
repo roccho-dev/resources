@@ -24,3 +24,105 @@ resources/
 `packages.x86_64-linux.own-semlint-versa` exposes only `ops-semlint-owner`. Its compile-time binding uses the existing own identity and the existing JEV ciphertext from envs, checks currentness and recipient through the shared launcher, builds the exact Ops `semlint-owner` package before decryption, and passes stdin to that fixed entry under a clean child environment. The only arguments are exact accepted `--envs-sha` and `--ops-sha`; no key, target or program selector is accepted.
 
 This standalone output is not added to the default own profile, Pi, Core or Base. The compiled-binding check is not live-key validity, provider admission, G1/G2 or automatic return evidence. Real use requires a separate finite source/target/input admission; actual store, operator and provider costs remain unknown until measured.
+## Independent rent Base and Tool updates
+
+The existing Nix outputs have separate responsibilities: `rent-base-image` supplies the OCI runtime,
+while `rent-tool-profile` supplies a reusable Linux Nix Tool generation. Build the latter directly with
+`nix build github:roccho-dev/resources/<exact-source>#rent-tool-profile`; OCI construction is not an input.
+Each output has one definition. Native reuse requires the compatible Core and existing authentication contract.
+
+`resources` produces candidates; the existing envs host-binding selects the adopted Base and Tool;
+the Target observes and applies them. A Tool selection is not a new desired-state manifest or proof of application readiness.
+See [#61](https://github.com/roccho-dev/resources/issues/61),
+[#60](https://github.com/roccho-dev/resources/issues/60),
+[#52](https://github.com/roccho-dev/resources/issues/52), and the existing
+[authentication contract](docs/own-completion.md#7-ツールprofile更新分離issue-85).
+
+The diagram is the agreed target structure, not evidence of a live envs binding change or host adoption.
+Core-to-Tool denotes the shared helper reference and compatibility contract, not a second copy of Core.
+The same Tool can be reused with a compatible Core outside OCI; `rent-tool-apply` remains the OCI-specific adapter.
+
+```mermaid
+flowchart TB
+  subgraph source["📝 resources：Nix 定義の正本"]
+    CORE["🔐 共通 Core<br/>Nix・Git/GH・認証 helper"]
+    TOOL["🧰 Tool profile<br/>アプリ・依存・launcher"]
+    SHELL["📦 OCI 外郭<br/>起動・SSH・トンネル"]
+    CORE -->|共通定義を参照| SHELL
+    CORE -->|同一 helper の互換契約| TOOL
+  end
+
+  subgraph build["🏗️ 独立したビルド成果物"]
+    B["📦 rent-base-image"]
+    T["❄️ rent-tool-profile"]
+    SHELL --> B
+    TOOL --> T
+  end
+
+  subgraph adoption["📌 envs：既存 host-binding"]
+    DB["外郭の採用版"]
+    DT["Tool の採用版"]
+    B --> DB
+    T --> DT
+  end
+
+  subgraph oci["🐧 OCI：外郭と中身を実行時に合成"]
+    RUNTIME["⚙️ 外郭・Core"]
+    PROFILE["🔗 選択中の Tool 世代"]
+    APP["🤖 app-server・各アプリ"]
+    DB --> RUNTIME
+    DT --> PROFILE
+    RUNTIME -->|汎用 profile/bin 経由| APP
+    PROFILE --> APP
+  end
+
+  subgraph volumes["💾 永続ボリューム"]
+    NIX["❄️ /nix<br/>store・DB・世代・GC roots"]
+    STATE["🔑 認証・設定・会話履歴"]
+    WORK["📂 リポジトリ・作業"]
+    PROFILE --> NIX
+    APP --> STATE
+    APP --> WORK
+  end
+
+  subgraph reuse["♻️ OCI 外での Nix 利用"]
+    NATIVE["💻 互換 Core ＋ 同じ Tool 成果物"]
+    CORE --> NATIVE
+    T --> NATIVE
+  end
+
+  subgraph client["📱 接続元"]
+    CHAT["💬 ChatGPT App"]
+    CHAT <-->|SSH 経由| APP
+  end
+```
+
+`oci/rent/win.ps1 -Step ToolApply` addresses the running B-only **`-Container`**.
+After Stage, pass the adopted candidate name as `-Container`; `-Candidate` is unused by ToolApply.
+`-Image` identifies its independently adopted Base; `-ToolSource` and `rent-tool.json` identify the Tool.
+No paired Base release, retained old OCI, OCI restart or logon-task change is needed for this operation.
+Core/helper changes remain explicit compatibility changes; this operation does not authorize changing the authentication contract.
+The existing root updater still validates the exact released closure, prior generation, fixed Core helper and quiet applications.
+The external controller must prevent new launches throughout selection; a process scan alone does not establish that interval.
+Legacy combined-image installations need their one-time Base migration before using this entry.
+
+```mermaid
+flowchart TD
+  subgraph base["📦 Base update: existing Stage"]
+    b1["Build and verify the adopted Base"] --> b2["Seed and switch the OCI"]
+    b2 --> b3["Read back retained compatible Tool and state"]
+  end
+  subgraph tool["❄️ Tool update: ToolApply"]
+    t1["Verify exact Tool release and running Base"] --> t2["Realize Tool with Nix"]
+    t2 --> t3["Externally establish quiet interval"]
+    t3 --> t4["Validate and select the profile generation"]
+    t4 --> t5["Read back Tool; OCI ID and start time unchanged"]
+    t5 --> t6["Reconnect apps; verify live version, models and required subagent"]
+    t4 -. Uncertain result .-> unknown["🔎 Inspect actual state before further effects"]
+  end
+```
+
+Selection success reports only the selected Tool. Application readiness needs a fresh connection from the normal profile path,
+with temporary PATH overrides removed. Tool recovery uses an explicitly authorized prior Tool selection after checking state-format
+compatibility; it never restores work data or automatically starts the legacy OCI. Base migration recovery remains owned by Stage/Revert.
+The current CI still validates and publishes the combined set of jobs; these independent Nix outputs do not imply independent CI pipelines.
