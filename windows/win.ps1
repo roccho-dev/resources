@@ -1,7 +1,7 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('Validate', 'Test', 'Apply', 'Restore', 'RestoreTest', 'Uninstall', 'RentSsh', 'RentSshTest', 'RentAccess', 'OwnSsh', 'OwnSshTest', 'QuickHttp', 'OwnLogon', 'OwnLogonTest', 'HostRemove', 'OwnResume', 'OwnResumeTest', 'PlatformRestore', 'PlatformTest', 'ClientSsh', 'ClientSshTest')][string]$Mode = 'Validate',
+    [ValidateSet('Validate', 'Test', 'Apply', 'Restore', 'RestoreTest', 'Uninstall', 'RentSsh', 'RentSshTest', 'RentAccess', 'OwnSsh', 'OwnSshTest', 'QuickHttp', 'OwnLogon', 'OwnLogonTest', 'HostRemove', 'OwnRemove', 'OwnResume', 'OwnResumeTest', 'PlatformRestore', 'PlatformTest', 'ClientSsh', 'ClientSshTest')][string]$Mode = 'Validate',
     # ClientSsh/ClientSshTest only: an explicit public SSH Host fragment and its host key pins (opt-in; never discovered).
     [string]$ClientConfig,
     [string]$ClientKnownHosts,
@@ -1313,11 +1313,15 @@ function UndoHostEffect($Plan) {
     WriteRecord 'undone' $effect (ObserveHostEffect $effect)
     $script:removed++
 }
-function HostRemove {
+# -Own (Mode OwnRemove): only the own logon Task and the windows-host runtime trees; every other host effect (the rent
+# alias, client and Access slots, the master prefix, the pinned client) is left as it is.
+function HostRemove([switch]$Own) {
     $plans = @()
     foreach ($id in @(LedgerIds)) {
         $records = @(RecordsOf $id)
         if (-not (IsHostEffect $records[0])) { continue }
+        if ($Own -and -not ($records[0].kind -ceq 'scheduled-task' -or
+            ($records[0].kind -ceq 'tree-extracted' -and [IO.Path]::GetFileName($records[0].target).StartsWith('windows-host-')))) { continue }
         $open = @(OpenAttempt $id)
         if ($open.Count) { $plans += HostUndoPlan $open }
     }
@@ -3828,7 +3832,7 @@ function Uninstall {
 
 $script:runIdentity = RunIdentity
 try {
-    if ($Mode -cin @('RentSsh','RentSshTest','RentAccess','OwnSsh','OwnSshTest','OwnLogon','OwnLogonTest','HostRemove','QuickHttp','ClientSsh','ClientSshTest')) {
+    if ($Mode -cin @('RentSsh','RentSshTest','RentAccess','OwnSsh','OwnSshTest','OwnLogon','OwnLogonTest','HostRemove','OwnRemove','QuickHttp','ClientSsh','ClientSshTest')) {
         $null = HostCaller
         if ($Mode -ceq 'QuickHttp') { QuickHttp; return }
         $test = $Mode.EndsWith('Test')
@@ -3845,6 +3849,7 @@ try {
             'OwnLogon' { HostLogon }
             'OwnLogonTest' { HostLogon -Test }
             'HostRemove' { HostRemove }
+            'OwnRemove' { HostRemove -Own }
         }
         $answer | ConvertTo-Json -Depth 8 -Compress
         return
