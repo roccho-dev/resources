@@ -2170,6 +2170,34 @@ static class Child { static int Main(string[] args) {
     [IO.File]::Move((Join-Path $tree.target 'package-view.ps1'),(Join-Path $tree.target 'held-package-view.ps1'))
     SubsetRefused 'OwnResumeTest' '*Bundle content mismatch*'
     [IO.File]::Move((Join-Path $tree.target 'held-package-view.ps1'),(Join-Path $tree.target 'package-view.ps1'))
+    # OwnRemove (I3): beside the owned rent alias, its pinned client and launcher, the Access slot, the client slot and
+    # the master prefix, only the own logon Task and the windows-host trees are planned and undone. A Disabled Task and
+    # a changed tree are refused as drift with nothing written; no exception is made for either.
+    $null=HostSsh; $null=PlaceRentAccess $value; $null=HostClientSsh
+    $ownTrees=@($tree) + @('5','6' | ForEach-Object { HostTreeEffect (Join-Path $Scratch ('Programs\windows-host-'+($_*40))) $runtimeFiles })
+    foreach ($t in $ownTrees[1..2]) { InstallHostTree $t $sources }
+    $task=OwnTaskEffect $tree.target $script:runIdentity.sid
+    $script:failure=''; ConvergeOwnTask $task
+    $ownIds=@($task.id) + @($ownTrees | ForEach-Object { $_.id })
+    $kept=@(LedgerIds | Where-Object { (IsHostEffect @(RecordsOf $_)[0]) -and $ownIds -cnotcontains $_ -and @(OpenAttempt $_).Count })
+    Must ($kept.Count -ge 5) 'the rent, client, Access and prefix effects are owned beside the own scope'
+    function KeptFiles { @(Get-ChildItem -LiteralPath (Join-Path $profile '.ssh'),(Join-Path $Scratch 'Programs') -Recurse -Force -File |
+        Where-Object { $_.FullName -notlike '*\windows-host-*' } | Sort-Object FullName | ForEach-Object { "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" }) -join "`n" }
+    $before=KeptFiles; $mark=$script:nextSeq
+    $disabled=OwnTaskEffect $tree.target $script:runIdentity.sid; $disabled.desired.descriptor.settings.Enabled='false'
+    $script:fakeTask=@{exists=$true;descriptor=$disabled.desired.descriptor;running=$false}
+    Refused { HostRemove -Own } '*Host effect differs or is indeterminate*'
+    $script:fakeTask=@{exists=$true;descriptor=$task.desired.descriptor;running=$false}
+    [IO.File]::WriteAllText((Join-Path $ownTrees[2].target 'extra.txt'),'x')
+    Refused { HostRemove -Own } '*foreign or changed files*'
+    [IO.File]::Delete((Join-Path $ownTrees[2].target 'extra.txt'))
+    Must ($script:nextSeq -eq $mark -and $script:fakeTask.exists -and -not @($ownTrees | Where-Object { -not (Test-Path -LiteralPath $_.target) }).Count) 'own-only removal refuses a Disabled Task and a changed tree, writing nothing'
+    $null=HostRemove -Own
+    $written=@($script:ledgerRecords | Where-Object { $_.seq -ge $mark })
+    Must ($written.Count -eq 4 -and -not @($written | Where-Object { $_.phase -cne 'undone' -or $ownIds -cnotcontains $_.id }).Count -and
+        -not $script:fakeTask.exists -and -not @($ownTrees | Where-Object { Test-Path -LiteralPath $_.target }).Count -and
+        -not @($kept | Where-Object { -not @(OpenAttempt $_).Count }).Count -and (KeptFiles) -ceq $before) 'own-only removal undoes only the Task and the three windows-host trees'
+    InstallHostTree $tree $sources
 
     if ($NativeTask) {
         # Restore the actual native observer/register functions after fault fixtures.

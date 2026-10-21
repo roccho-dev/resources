@@ -498,6 +498,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\win.ps1 -Mode OwnLogon
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\win.ps1 -Mode OwnLogonTest
 # Explicit scoped recovery/removal; ordinary Uninstall holds these host effects.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\win.ps1 -Mode HostRemove
+# Own only (retiring windows-own): the own logon Task and the windows-host trees; rent, client, Access and prefix stay.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\win.ps1 -Mode OwnRemove
 # Approved loopback origin must already serve HTTP. Foreground temporary public URL.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\win.ps1 -Mode QuickHttp -Origin http://127.0.0.1:8080/
 ```
