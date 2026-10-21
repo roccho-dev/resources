@@ -55,7 +55,8 @@ param(
     # the rent target's own age identity file. Stage places the tunnel token from them after the kept rent stops.
     [string] $PlacementDistribution,
     [string] $PlacementIdentity,
-    # ToolApply only: exact released source/Tool evidence, after Stage has adopted the B-only candidate.
+    # ToolApply only: exact released Tool evidence for the running B-only Container.
+    # ToolSource is independent of the source that produced Image; the root updater checks Core compatibility.
     [string] $ToolSource,
     [string] $ToolReleaseDirectory,
     [string] $ToolBefore,
@@ -78,10 +79,12 @@ $Placement = $PlacementShell
 
 # Exactly these three distinct named volumes; never the old home volume.
 $Mounts = [ordered]@{ '/work/repos' = $ReposVolume; '/var/lib/rent' = $StateVolume; '/nix' = $NixVolume }
-if (@($Mounts.Values) -ccontains $OldHomeVolume) { throw "The old home volume $OldHomeVolume must not be repos, state or nix." }
 if (@($Mounts.Values | Sort-Object -Unique -CaseSensitive).Count -ne $Mounts.Count) { throw 'The repos, state and nix volumes must be distinct.' }
-if ($OldContainer -ceq $Container) { throw "The old container $OldContainer must not be $Container." }
-if ($Candidate -ceq $Container -or $Candidate -ceq $OldContainer) { throw "The candidate $Candidate must be a new name." }
+if ($Step -ne 'ToolApply') {
+    if (@($Mounts.Values) -ccontains $OldHomeVolume) { throw "The old home volume $OldHomeVolume must not be repos, state or nix." }
+    if ($OldContainer -ceq $Container) { throw "The old container $OldContainer must not be $Container." }
+    if ($Candidate -ceq $Container -or $Candidate -ceq $OldContainer) { throw "The candidate $Candidate must be a new name." }
+}
 # The one logon task; LogonTask repoints it, so a logon never starts a second rent on the same volumes.
 $TaskName = 'windows-rent-oci-logon'
 
@@ -371,20 +374,17 @@ if ($Step -eq 'ToolApply') {
         throw 'ToolApply needs exact reviewed release SHA/directory, prior store path and Codex version.'
     }
     $ToolFile = Join-Path $ToolReleaseDirectory 'rent-tool.json'
-    $BaseFile = Join-Path $ToolReleaseDirectory 'rent-base-image.json'
     $ToolEvidence = Get-Content -LiteralPath $ToolFile -Raw | ConvertFrom-Json
-    $BaseEvidence = Get-Content -LiteralPath $BaseFile -Raw | ConvertFrom-Json
     $ToolKeys = @($ToolEvidence.PSObject.Properties.Name | Sort-Object -CaseSensitive) -join ','
-    $BaseKeys = @($BaseEvidence.PSObject.Properties.Name | Sort-Object -CaseSensitive) -join ','
-    if ($ToolKeys -cne 'kind,narHash,nixpkgs,output,run,source,storePath' -or $BaseKeys -cne 'image,kind,source' -or
-        $ToolEvidence.kind -cne 'windows.rentTool.v1' -or $BaseEvidence.kind -cne 'windows.rentBaseImage.v1' -or
-        $ToolEvidence.source -cne $ToolSource -or $BaseEvidence.source -cne $ToolSource -or
+    if ($ToolKeys -cne 'kind,narHash,nixpkgs,output,run,source,storePath' -or
+        $ToolEvidence.kind -cne 'windows.rentTool.v1' -or $ToolEvidence.source -cne $ToolSource -or
         $ToolEvidence.output -cne 'packages.x86_64-linux.rent-tool-profile' -or
         $ToolEvidence.storePath -cnotmatch '^/nix/store/[0-9a-z]{32}-rent-tool-profile$' -or
         $ToolEvidence.narHash -cnotmatch '^sha256-[A-Za-z0-9+/]{43}=$' -or
         $ToolEvidence.nixpkgs -cnotmatch '^[0-9a-f]{40}$' -or
-        $ToolEvidence.run -cnotmatch '^https://github[.]com/roccho-dev/resources/actions/runs/[0-9]+$' -or
-        $BaseEvidence.image -cne $Image) { throw 'Tool release descriptors differ from the reviewed source or exact B image.' }
+        $ToolEvidence.run -cnotmatch '^https://github[.]com/roccho-dev/resources/actions/runs/[0-9]+$') {
+        throw 'Tool release descriptor differs from the reviewed source.'
+    }
     $ToolStore = [string] $ToolEvidence.storePath
     $ToolNar = [string] $ToolEvidence.narHash
     $ApplyStore = '/nix/store/iw6vk514p89pll5j3li7zxswdqfqw70g-rent-tool-apply'
@@ -431,7 +431,7 @@ if ($Step -eq 'Plan') {
         migrateSourceInspect = @($Wslc, 'inspect', $OldContainer)
         migrateContainerList = @($Wslc) + $ListArgs
         migrate = @($Wslc) + $MigrateArgs
-        toolApply = 'Use -Step ToolApply with reviewed -ToolSource, -ToolReleaseDirectory, -ToolBefore and -ToolVersion; it validates paired descriptors before dry-run, then checks the running B candidate and selects only the frozen root updater and exact Tool closure, restarts the same candidate, and reverts to the kept old OCI on a known restart failure.'
+        toolApply = 'Use -Step ToolApply on the running -Container with its independently selected -Image and reviewed -ToolSource, -ToolReleaseDirectory, -ToolBefore and -ToolVersion. It validates rent-tool.json and the exact root updater, then selects the compatible Tool during an externally controlled quiet interval. It never restarts or replaces the OCI. Reconnect and verify the target applications separately.'
     } | ConvertTo-Json -Depth 3
     exit 0
 }
@@ -439,9 +439,9 @@ if ($Step -eq 'Plan') {
 Write-Host "$Step on $env:COMPUTERNAME / $Container / TCP $Port"
 if (-not $Apply) {
     if ($Step -eq 'ToolApply') {
-        [ordered]@{ source = $ToolSource; base = $Image; before = $ToolBefore; desired = $ToolStore;
+        [ordered]@{ container = $Container; source = $ToolSource; base = $Image; before = $ToolBefore; desired = $ToolStore;
             narHash = $ToolNar; codex = $ToolVersion; updater = $ApplyStore; updaterNar = $ApplyNar;
-            effect = 'select Tool, stop/start same B candidate, fresh readiness, readback; known restart failure reverts runtime to kept old OCI' } |
+            effect = 'select compatible Tool and read back the selected generation; OCI identity/start time must stay unchanged; application readiness requires separate reconnect verification' } |
             ConvertTo-Json -Depth 3
     }
     Write-Host 'Dry run. Add -Apply for this one step.'
@@ -762,19 +762,16 @@ if ($Step -in @('Prepare', 'Start')) {
 
 if ($Step -eq 'ToolApply') {
     # The reviewed root updater is frozen independently of the variable Tool source.
-    # Compare both local descriptors byte-for-byte with the published exact-source release before any Nix build.
+    # Compare the Tool descriptor with its exact-source release. The running Base is selected independently.
     $ReleaseTemp = Join-Path ([System.IO.Path]::GetTempPath()) "rent-tool-release-$PID"
     New-Item -ItemType Directory -Path $ReleaseTemp -ErrorAction Stop | Out-Null
     try {
-        foreach ($Name in @('rent-tool.json', 'rent-base-image.json')) {
-            $Url = "https://github.com/roccho-dev/resources/releases/download/windows-$ToolSource/$Name"
-            $Published = Join-Path $ReleaseTemp $Name
-            Invoke-WebRequest -Uri $Url -OutFile $Published -MaximumRedirection 5 -ErrorAction Stop
-            $Local = Join-Path $ToolReleaseDirectory $Name
-            if ((Get-FileHash -LiteralPath $Local -Algorithm SHA256).Hash -cne
-                (Get-FileHash -LiteralPath $Published -Algorithm SHA256).Hash) {
-                throw "Local $Name differs from the exact-source GitHub release."
-            }
+        $Url = "https://github.com/roccho-dev/resources/releases/download/windows-$ToolSource/rent-tool.json"
+        $Published = Join-Path $ReleaseTemp 'rent-tool.json'
+        Invoke-WebRequest -Uri $Url -OutFile $Published -MaximumRedirection 5 -ErrorAction Stop
+        if ((Get-FileHash -LiteralPath $ToolFile -Algorithm SHA256).Hash -cne
+            (Get-FileHash -LiteralPath $Published -Algorithm SHA256).Hash) {
+            throw 'Local rent-tool.json differs from the exact-source GitHub release.'
         }
         $RunId = [regex]::Match([string] $ToolEvidence.run, '/runs/([0-9]+)$').Groups[1].Value
         $Run = Invoke-RestMethod -Uri "https://api.github.com/repos/roccho-dev/resources/actions/runs/$RunId" -ErrorAction Stop
@@ -787,26 +784,26 @@ if ($Step -eq 'ToolApply') {
     $HostLock = [System.IO.File]::Open($HostLockPath, [System.IO.FileMode]::OpenOrCreate,
         [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
     try {
-    $Old = Get-Named $Container
-    $Current = Get-Named $Candidate
-    if (-not (Test-Stopped $Old) -or -not (Test-Running $Current)) { throw 'ToolApply needs the kept old rent stopped and the B candidate running.' }
-    if (-not ((Get-Images $Current) -ccontains $Image)) { throw 'Candidate is not the exact B image digest.' }
-    if ((Get-TaskTarget) -cne $Candidate) { throw 'Logon task does not target the B candidate.' }
+    $Current = Get-Named $Container
+    if (-not (Test-Running $Current)) { throw 'ToolApply needs the selected B-only container running.' }
+    if (-not ((Get-Images $Current) -ccontains $Image)) { throw 'Container is not the exact B image digest.' }
+    if ((Get-TaskTarget) -cne $Container) { throw 'Logon task does not target the B container.' }
     $Id = [string] $Current.Id
-    if ($Id -cnotmatch '^[0-9a-f]{64}$') { throw 'Candidate full ID is unreadable.' }
+    if ($Id -cnotmatch '^[0-9a-f]{64}$') { throw 'Container full ID is unreadable.' }
     $Started = [string] $Current.State.StartedAt
+    if ([string]::IsNullOrWhiteSpace($Started)) { throw 'Container start time is unreadable.' }
     $Table = Get-MountTable $Current
-    if (-not $Table) { throw 'Candidate mount table is unreadable.' }
+    if (-not $Table) { throw 'Container mount table is unreadable.' }
     foreach ($Point in $Mounts.Keys) {
         $Rows = @($Table | Where-Object { $_.Point -ceq $Point -and $_.Root.EndsWith("/volumes/$($Mounts[$Point])/_data", [StringComparison]::Ordinal) -and ",$($_.Options)," -clike '*,rw,*' })
-        if ($Rows.Count -ne 1) { throw "Candidate does not have exact writable $Point volume." }
+        if ($Rows.Count -ne 1) { throw "Container does not have exact writable $Point volume." }
         Assert-Volume $Mounts[$Point]
     }
     $script:Anchors = Get-Anchors $Current
-    if (-not $script:Anchors) { throw 'Candidate volume anchors are unreadable.' }
-    Assert-NoOtherWriter $Candidate 'applying a Tool' @($NixVolume)
+    if (-not $script:Anchors) { throw 'Container volume anchors are unreadable.' }
+    Assert-NoOtherWriter $Container 'applying a Tool' @($NixVolume)
     $Uid = @(& $Wslc exec $Id /bin/id -u)
-    if ($LASTEXITCODE -ne 0 -or ($Uid -join "`n").Trim() -cne '0') { throw 'WSLC exec is not root in the exact B candidate.' }
+    if ($LASTEXITCODE -ne 0 -or ($Uid -join "`n").Trim() -cne '0') { throw 'WSLC exec is not root in the exact B container.' }
     $Before = @(& $Wslc exec $Id /bin/readlink -e /nix/var/nix/profiles/rent-dev)
     if ($LASTEXITCODE -ne 0 -or ($Before -join "`n").Trim() -cne $ToolBefore) { throw 'Selected Tool differs from the expected prior store.' }
 
@@ -830,20 +827,21 @@ if ($Step -eq 'ToolApply') {
         $ApplyInfo[$ApplyStore].narHash -cne $ApplyNar) {
         throw 'Root updater NAR differs from reviewed ToolApply bytes; no selector change was sent.'
     }
-    $Again = Get-Named $Candidate
+    $Again = Get-Named $Container
     if (-not (Test-Running $Again) -or [string] $Again.Id -cne $Id -or [string] $Again.State.StartedAt -cne $Started -or
-        -not ((Get-Images $Again) -ccontains $Image) -or (Get-TaskTarget) -cne $Candidate) {
-        throw 'Candidate changed during Tool build; no selector change was sent.'
+        -not ((Get-Images $Again) -ccontains $Image) -or (Get-TaskTarget) -cne $Container) {
+        throw 'Container changed during Tool build; no selector change was sent.'
     }
     $Read = @(& $Wslc exec $Id /bin/readlink -e /nix/var/nix/profiles/rent-dev)
     if ($LASTEXITCODE -ne 0 -or ($Read -join "`n").Trim() -cne $ToolBefore) { throw 'Prior Tool changed during build; no selector change was sent.' }
-    Assert-NoOtherWriter $Candidate 'selecting a Tool' @($NixVolume)
+    Assert-NoOtherWriter $Container 'selecting a Tool' @($NixVolume)
 
     # From this command onward an interrupted acknowledgement is UNKNOWN; no blind retry or automatic rollback.
     $ApplyPath = ([string] $ApplyOut[0]).Trim() + '/bin/rent-tool-apply'
+    try {
     $Selection = @(& $Wslc exec $Id $ApplyPath $ToolBefore $ToolStore $ToolNar $ToolVersion)
     if ($LASTEXITCODE -ne 0) {
-        throw "ToolApply UNKNOWN: selector command exit $LASTEXITCODE; inspect this exact candidate and generation before recovery."
+        throw "ToolApply UNKNOWN: selector command exit $LASTEXITCODE; inspect this exact container and generation before recovery."
     }
     $SelectionLine = ([string] ($Selection | Select-Object -Last 1)).Trim()
     if ($Selection.Count -ne 1 -or $SelectionLine -cnotmatch "^selection=SELECTED generation=rent-dev-[1-9][0-9]*-link store=$([regex]::Escape($ToolStore)) codex=$([regex]::Escape($ToolVersion))$") {
@@ -857,47 +855,22 @@ if ($Step -eq 'ToolApply') {
         throw 'ToolApply UNKNOWN: immediate selected Tool or default Codex readback differs; do not retry.'
     }
 
-    # A stop/start is checked against the full ID and the selected generation. A known failure returns to the kept rent.
-    $PriorLogs = @(& $Wslc logs $Candidate 2>$null)
-    if ($LASTEXITCODE -ne 0) {
-        throw 'ToolApply UNKNOWN: Tool was selected but the restart log cursor is unreadable; inspect the selected generation before recovery.'
+    # Selection is a Tool-only effect: the OCI must retain its identity, start time and adopted Base.
+    # The caller owns the quiet interval and separately reconnects applications from the new profile.
+    $AfterGeneration = @(& $Wslc exec $Id /bin/readlink /nix/var/nix/profiles/rent-dev)
+    if ($LASTEXITCODE -ne 0 -or ($AfterGeneration -join "`n").Trim() -cne $SelectedGeneration) {
+        throw 'ToolApply UNKNOWN: selected generation readback differs; inspect before recovery.'
     }
-    $Failure = $null
-    try {
-        & $Wslc stop $Candidate | Out-Host
-        $Stopped = Get-Named $Candidate
-        if (-not (Test-Stopped $Stopped) -or [string] $Stopped.Id -cne $Id) { throw 'Candidate is not provably stopped after WSLC stop.' }
-        & $Wslc start $Candidate | Out-Host
-        if ($LASTEXITCODE -ne 0 -or -not (Wait-Ready $Candidate $PriorLogs.Count $Started)) { throw 'Candidate did not regain fresh readiness.' }
-        $Restarted = Get-Named $Candidate
-        if (-not (Test-Running $Restarted) -or [string] $Restarted.Id -cne $Id -or [string] $Restarted.State.StartedAt -ceq $Started -or
-            -not ((Get-Images $Restarted) -ccontains $Image) -or
-            (Get-TaskTarget) -cne $Candidate) { throw 'Restarted candidate identity or task differs.' }
-        $After = @(& $Wslc exec $Id /bin/readlink /nix/var/nix/profiles/rent-dev)
-        $AfterCode = $LASTEXITCODE
-        $AfterStore = @(& $Wslc exec $Id /bin/readlink -e /nix/var/nix/profiles/rent-dev)
-        $AfterStoreCode = $LASTEXITCODE
-        $AfterVersion = @(& $Wslc exec $Id /bin/codex --version)
-        if ($AfterCode -ne 0 -or $AfterStoreCode -ne 0 -or $LASTEXITCODE -ne 0 -or ($After -join "`n").Trim() -cne $SelectedGeneration -or
-            ($AfterStore -join "`n").Trim() -cne $ToolStore -or ($AfterVersion -join "`n").Trim() -cne "codex-cli $ToolVersion") {
-            throw 'Restarted selected generation or default Codex differs.'
-        }
-    } catch { $Failure = $_.Exception.Message }
-    if ($Failure) {
-        $Known = Get-Named $Candidate
-        if (-not $Known -or [string] $Known.Id -cne $Id -or (-not (Test-Running $Known) -and -not (Test-Stopped $Known))) {
-            throw "ToolApply UNKNOWN after restart: $Failure; candidate state is unreadable, so no automatic recovery."
-        }
-        $Steps = [System.Collections.Generic.List[string]]::new()
-        try { $Ok = Invoke-Revert $Old $Steps $false } catch { $Ok = $false; $Steps.Add("error: $($_.Exception.Message)") }
-        if (-not $Ok) { throw "ToolApply UNKNOWN after restart: $Failure; Revert failed: $($Steps -join '; ')" }
-        $Restored = @(& $Wslc exec ([string] $Old.Id) /bin/readlink -e /nix/var/nix/profiles/rent-dev)
-        if ($LASTEXITCODE -ne 0 -or ($Restored -join "`n").Trim() -cne $ToolBefore) {
-            throw "ToolApply UNKNOWN after restart: $Failure; old profile restoration not verified."
-        }
-        throw "ToolApply failed after restart; old OCI restored: $Failure | $($Steps -join '; ')"
+    $After = Get-Named $Container
+    if (-not (Test-Running $After) -or [string] $After.Id -cne $Id -or
+        [string] $After.State.StartedAt -cne $Started -or
+        -not ((Get-Images $After) -ccontains $Image) -or (Get-TaskTarget) -cne $Container) {
+        throw 'ToolApply UNKNOWN: container identity, start time, Base or task changed after selection; inspect before recovery.'
     }
-    Write-Output "ToolApply succeeded: candidate=$Id generation=$SelectedGeneration store=$ToolStore codex=$ToolVersion"
+    } catch {
+        throw "ToolApply UNKNOWN after selector invocation: $($_.Exception.Message); inspect this exact container and generation before recovery."
+    }
+    Write-Output "ToolApply selection succeeded: container=$Id generation=$SelectedGeneration store=$ToolStore codex=$ToolVersion; application readiness not checked"
     exit 0
     } finally { $HostLock.Dispose() }
 }
