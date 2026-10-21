@@ -74,17 +74,15 @@ jobs:
           echo "launcher_only=$launcher_only" >> "$GITHUB_OUTPUT"
           echo "own_tool_only=$own_tool_only" >> "$GITHUB_OUTPUT"
 
+  # own's T proof and B build/test only; the own image is no longer published (#61 I3).
   own:
     needs: scope
     if: needs.scope.outputs.launcher_only != 'true'
     permissions:
       contents: read
-      packages: write
     uses: ./.github/workflows/own-image.yml
     with:
-      publish: ${{ github.repository == 'roccho-dev/resources' && ((github.event_name == 'push' && github.ref == 'refs/heads/proposals') || (github.event_name == 'workflow_dispatch' && inputs.publish)) && needs.scope.outputs.own_tool_only != 'true' }}
       tool_only: ${{ needs.scope.outputs.own_tool_only == 'true' }}
-    secrets: inherit
 
   rent:
     needs: scope
@@ -210,8 +208,8 @@ jobs:
 
   # One Release per source: the proved Windows distribution and rent-image.json, the rent image this same run
   # tested and pushed (by registry digest), so a consumer binds both to the source and runs the image by digest.
-  # rent's B-only image and T are described as own's are: rent-base-image.json (the form of own-image.json) and
-  # rent-tool.json (the form of own-tool.json). rent-image.json keeps naming the combined image its consumers run.
+  # rent's B-only image and T are described by rent-base-image.json and rent-tool.json (the form of own-tool.json).
+  # rent-image.json keeps naming the combined image its consumers run. own's T is own-tool.json; no own image is published.
   publish:
     needs: [scope, build, windows, rent, own, dev]
     if: needs.scope.outputs.launcher_only != 'true' && github.repository == 'roccho-dev/resources' && ((github.event_name == 'push' && github.ref == 'refs/heads/proposals') || (github.event_name == 'workflow_dispatch' && inputs.publish))
@@ -237,7 +235,6 @@ jobs:
           EXPECTED_SHA256: ${{ needs.build.outputs.checksum }}
           RENT_IMAGE: ${{ needs.rent.outputs.image }}
           RENT_BASE_IMAGE: ${{ needs.rent.outputs.base_image }}
-          OWN_TOOL_ONLY: ${{ needs.scope.outputs.own_tool_only }}
         run: |
           set -euo pipefail
           test "$SOURCE" = "$GITHUB_SHA"
@@ -258,18 +255,9 @@ jobs:
           jq -e --arg source "$SOURCE" '.kind == "windows.ownTool.v1" and .source == $source' own-tool.json > /dev/null
           jq -e --arg source "$SOURCE" '.kind == "windows.rentTool.v1" and .source == $source' rent-tool.json > /dev/null
           assets=(windows-dist.zip windows-dist.zip.sha256 rent-image.json rent-base-image.json rent-tool.json own-tool.json)
-          if [ "$OWN_TOOL_ONLY" != true ]; then
-            own="ghcr.io/roccho-dev/windows-own:sha-$SOURCE"
-            docker pull "$own"
-            own_digest=$(docker image inspect "$own" --format '{{range .RepoDigests}}{{println .}}{{end}}')
-            [[ $own_digest =~ ^ghcr\.io/roccho-dev/windows-own@sha256:[0-9a-f]{64}$ ]] || { echo 'RED: no single public own digest' >&2; exit 1; }
-            jq -n --arg source "$SOURCE" --arg image "$own_digest" \
-              '{kind: "windows.ownImage.v1", source: $source, image: $image}' > own-image.json
-            assets+=(own-image.json)
-          fi
           gh release create "windows-$SOURCE" "${assets[@]}" \
             --target "$SOURCE" --title "Windows $SOURCE" --latest=false \
-            --notes "Exact tested artifacts for source $SOURCE; image descriptors use public registry digests. A tool-only update retains its previously selected own base image. Existing Host/consumer/schedule/state selections are unchanged. Real-host UX, WSLC and Cloudflare acceptance are not claimed."
+            --notes "Exact tested artifacts for source $SOURCE; image descriptors use public registry digests. Existing Host/consumer/schedule/state selections are unchanged. Real-host UX, WSLC and Cloudflare acceptance are not claimed."
           # Native release readback: compare the downloaded bytes, not just HTTP success.
           gh release download "windows-$SOURCE" --dir "$RUNNER_TEMP/provider-release"
           for asset in "${assets[@]}"; do cmp "$asset" "$RUNNER_TEMP/provider-release/$asset"; done

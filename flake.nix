@@ -617,7 +617,6 @@
       lib.${system}.mkOwn = mkOwn;
       packages.${system} = {
         binding-inputs = pkgs.linkFarm "host-binding-inputs" [
-          { name = "own.json"; path = "${bindingRoot}/own/G6I3.json"; }
           { name = "dev.json"; path = "${bindingRoot}/dev/G6I3.json"; }
         ];
         own-image = own.image;
