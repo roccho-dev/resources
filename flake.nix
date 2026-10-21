@@ -16,12 +16,12 @@
       gitState = import ./extensions/git-state/nix.nix { inherit pkgs; };
       githubRoot = import ./extensions/github/nix.nix { inherit pkgs; backend = gitState.backend; };
       ownSpec = builtins.fromJSON (builtins.readFile ./oci/own/spec.json);
-      # The target's declared owner names own's stable gh helper (rent keeps the default); each repository's principal
-      # is the one its own binding declares (profile/gh.nix).
+      # The owner only names own's stable gh helper; it selects no namespace, principal or slot (each repository's
+      # principal is the one its own binding declares, profile/gh.nix), so the build reads it from no binding.
+      ownOwner = "roccho-dev";
       # Explicit nonsecret envs input; the Windows library has no target-specific default.
       bindingRoot = "${host-bindings}/contracts/host-bindings";
       ownBinding = builtins.fromJSON (builtins.readFile "${bindingRoot}/own/G6I3.json");
-      ownOwner = ownBinding.owner;
       # CI only, never published or applied: another declared own target. Every site value, the credential owner
       # included, differs from the G6I3 sample; the role and the image publisher are the own role's invariants.
       ciAltBinding = {
