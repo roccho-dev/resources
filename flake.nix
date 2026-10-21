@@ -19,9 +19,8 @@
       # The owner only names own's stable gh helper; it selects no namespace, principal or slot (each repository's
       # principal is the one its own binding declares, profile/gh.nix), so the build reads it from no binding.
       ownOwner = "roccho-dev";
-      # Explicit nonsecret envs input; the Windows library has no target-specific default.
+      # Explicit nonsecret envs input, for the CI binding inputs only; no build output reads a binding.
       bindingRoot = "${host-bindings}/contracts/host-bindings";
-      ownBinding = builtins.fromJSON (builtins.readFile "${bindingRoot}/own/G6I3.json");
       # CI only, never published or applied: another declared own target. Every site value, the credential owner
       # included, differs from the G6I3 sample; the role and the image publisher are the own role's invariants.
       ciAltBinding = {
@@ -33,7 +32,6 @@
         image = "ghcr.io/roccho-dev/windows-own@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         imageFrom = "CI-only alternate target fixture";
       };
-      ciAlt = import ./windows/nix.nix { inherit pkgs; source = "uncommitted"; ownBinding = ciAltBinding; };
       # B receives only core/service inputs, never the current T or its app pins.
       ownFor = { core, tag }: import ./oci/own/nix.nix {
         inherit pkgs core tag mountLib;
@@ -78,7 +76,7 @@
       versaOwnBase = mkOwn { piTarget = versaOwnPiTarget; };
       versaTypeLLMOwn = mkOwn { extra = [ versaTypeLLM ]; piTarget = versaOwnPiTarget; };
       common = import ./windows/nix.nix {
-        inherit pkgs ownBinding;
+        inherit pkgs;
         source = self.rev or "uncommitted";
       };
       ownConfig = own.config;
@@ -885,37 +883,6 @@
         windows-dist = common.check;
         git-state-finite-poc = gitState.fixture;
         github-root-source = githubRoot.check;
-        # The alternate Binding through the production projection (windows/nix.nix) and the existing pack.py
-        # validators: its own values only, none of the sample's, and no distribution or image is built.
-        own-alt-binding = pkgs.runCommand "own-alt-binding-check" {
-          nativeBuildInputs = [ ciAlt.python ];
-          projection = builtins.toJSON ciAlt.ownProjection;
-          binding = builtins.toJSON ciAltBinding;
-          production = builtins.toJSON common.ownProjection.launch;
-        } ''
-          set -eu
-          export PYTHONDONTWRITEBYTECODE=1
-          python - <<'EOF'
-          import sys
-          sys.path[:0] = ["${./windows}", "${./profile}"]
-          import json, os, pack
-          p, b = json.loads(os.environ["projection"]), json.loads(os.environ["binding"])
-          launch = pack.noctty_launch(p["launch"])
-          own = pack.own_resume(p["ownResume"])
-          # The Noctty entry (VersaPro's native dev) is the production one for every own Binding.
-          assert launch == json.loads(os.environ["production"]), launch
-          assert own == {"expectHost": b["expectHost"], "container": b["container"], "hostPort": b["hostPort"],
-                         "image": b["image"], "session": b["session"],
-                         "volumes": [{"name": b["volume"], "destination": "/home/dev"},
-                                     {"name": b["workVolume"], "destination": "/work/repos"},
-                                     {"name": b["nixVolume"], "destination": "/nix"}],
-                         "ssh": {"alias": b["sshAlias"], "identity": ".ssh/id_alt", "knownHosts": ".ssh/known_hosts_alt"}}, own
-          text = json.dumps(p)
-          for sample in ("G6I3", "wslc-cli-resta", "g6i3-own", "windows_own", "windows-own-"):
-              assert sample not in text, sample
-          EOF
-          touch $out
-        '';
         # Fails when the own image or its scripts disagree with oci/own/spec.json.
         own-spec = pkgs.runCommand "own-spec-check" {
           nativeBuildInputs = [ pkgs.jq ];

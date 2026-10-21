@@ -36,64 +36,6 @@ REGISTRATION = [
 
 
 class CompilerTests(unittest.TestCase):
-    OWN = {"expectHost": "G6I3", "container": "windows-own", "hostPort": 2223,
-           "image": "ghcr.io/roccho-dev/windows-own@sha256:" + "6" * 64,
-           "session": "wslc-cli-resta", "volumes": [
-               {"name": "windows-own-home", "destination": "/home/dev"},
-               {"name": "windows-own-work", "destination": "/work/repos"},
-               {"name": "windows-own-nix", "destination": "/nix"}],
-           "ssh": {"alias": "g6i3-own", "identity": ".ssh/id_ed25519_windows_own",
-                   "knownHosts": ".ssh/known_hosts_windows_own"}}
-
-    # Another declared own target: every site value differs from the G6I3 sample.
-    ALT = dict(OWN, expectHost="ALTHOST", container="alt-own", hostPort=2224, session="wslc-cli-alt",
-               ssh={"alias": "alt-own", "identity": ".ssh/id_alt", "knownHosts": ".ssh/known_hosts_alt"})
-
-    def test_resume_projection_and_installed_subset(self):
-        self.assertEqual(pack.own_resume(self.OWN), self.OWN)
-        ssh = self.OWN["ssh"]
-        for change in ({"expectHost": "bad host"}, {"expectHost": ""}, {"hostPort": True}, {"hostPort": 80},
-                       {"image": "latest"}, {"image": "ghcr.io/other/windows-own@sha256:" + "6" * 64},
-                       {"volumes": self.OWN["volumes"][:1]}, {"session": "other"}, {"container": "Other Own"},
-                       {"ssh": {"identity": "/work/repos/private"}}, {"ssh": dict(ssh, alias="Bad Alias")},
-                       {"ssh": dict(ssh, identity="/work/repos/private")}, {"ssh": dict(ssh, knownHosts=".ssh/..")},
-                       {"ssh": dict(ssh, identity=ssh["knownHosts"])}, {"ssh": dict(ssh, extra="x")}):
-            with self.subTest(change=change), self.assertRaises(ValueError):
-                pack.own_resume(dict(self.OWN, **change))
-        # The alternate target is accepted on its own values; the Noctty launch no longer names any own target.
-        self.assertEqual(pack.own_resume(self.ALT), self.ALT)
-        fonts = self.payload()
-        noctty, cloudflared, choices, scripts = self.inputs()
-        selected = json.loads(choices.read_text())
-        selected["ownResume"] = self.OWN
-        choices.write_text(json.dumps(selected))
-        pack.distribution(fonts, noctty, cloudflared, choices, scripts, "a" * 40, self.root / "resume")
-        with zipfile.ZipFile(self.root / "resume/windows-dist.zip") as z:
-            manifest = json.loads(z.read("manifest.json"))
-            runtime = json.loads(z.read("host-runtime/manifest.json"))
-            self.assertEqual(runtime["contract"], self.OWN)
-            self.assertEqual(set(runtime["files"]), {"win.ps1", "handoff-evaluate.ps1", "package-view.ps1"})
-            self.assertEqual(set(manifest["ownResume"]["files"]), set(runtime["files"]) | {"manifest.json"})
-            for name in runtime["files"]:
-                self.assertEqual(z.read("host-runtime/" + name), z.read(name))
-                self.assertEqual(manifest["files"]["host-runtime/" + name], runtime["files"][name])
-            self.assertIn("host-runtime/manifest.json", manifest["files"])
-        # A later accepted image is projected; the old image is not a permanent authority.
-        next_binding = dict(self.OWN, image=self.OWN["image"].replace("6" * 64, "7" * 64))
-        self.assertEqual(pack.own_resume(next_binding)["image"], next_binding["image"])
-        # The whole distribution for the alternate target carries its values only, with no sample fallback.
-        selected["ownResume"] = self.ALT
-        choices.write_text(json.dumps(selected))
-        pack.distribution(fonts, noctty, cloudflared, choices, scripts, "a" * 40, self.root / "alt")
-        with zipfile.ZipFile(self.root / "alt/windows-dist.zip") as z:
-            manifest = json.loads(z.read("manifest.json"))
-            runtime = json.loads(z.read("host-runtime/manifest.json"))
-        self.assertEqual(runtime["contract"], self.ALT)
-        projected = json.dumps([runtime["contract"], manifest["noctty"]["launch"],
-                                {k: v for k, v in manifest["ownResume"].items() if k != "files"}])
-        for sample in ("G6I3", "wslc-cli-resta", "g6i3-own", "windows_own"):
-            self.assertNotIn(sample, projected)
-
     def test_noctty_ssh_session_selection(self):
         launch = {"alias": "versapro-dev", "session": "own", "windowSaveState": "never"}
         self.assertEqual(pack.noctty_launch(launch), launch)

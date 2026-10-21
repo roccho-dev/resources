@@ -374,15 +374,6 @@ headers, including the secret. An invalid credential that Access answers with a
 login redirect makes cloudflared start its own browser login, and a token stored
 by an earlier interactive login could then be used; neither is prevented here.
 
-`OwnSsh` / `OwnSshTest` handle only the existing local **g6i3-own** alias:
-127.0.0.1:2223, dev, `~/.ssh/id_ed25519_windows_own`,
-`~/.ssh/known_hosts_windows_own`, strict key checking. An equivalent existing alias
-is left untouched, including absent optional `IdentitiesOnly`/`UpdateHostKeys`
-settings. A fresh fragment requires an explicitly supplied public host key; the
-OCI Linux private-key path is never used as a Windows identity. The unrelated
-`nixos-vm` alias is preserved. The existing native Windows OpenSSH client is used;
-if it is missing the adapter refuses, rather than adding another distribution.
-
 **Client aliases (opt-in).** `ClientSsh` / `ClientSshTest` place an explicitly
 supplied public SSH declaration where Codex App can find it. Codex App reads only
 `~/.ssh/config` and its Includes. Nothing here discovers or generates aliases or keys:
@@ -435,8 +426,8 @@ when both slots are exact, the three-path line is owned and
 `ssh -F ~/.ssh/config -G` resolves every alias to the declared endpoint, key,
 pins slot and strict batch settings.
 
-Without `ClientSsh`, `RentSsh` / `OwnSsh` still write the two-path line. On a
-moved master they keep the three-path line. `HostRemove` undoes the client slot with
+Without `ClientSsh`, `RentSsh` still writes the two-path line. On a
+moved master it keeps the three-path line. `HostRemove` undoes the client slot with
 the other host effects and returns the exact prior master.
 
 Installed versions from before this mode do not accept the three-path line, and not
@@ -456,88 +447,22 @@ reads the generated fragment directly, with `~/` mapped to that profile. Resolut
 through the real master's relative Include is proved only on the real home, at
 adoption.
 
-### G6I3 host recovery (#8 / #14)
+### G6I3 host scope (#8 / #14; windows-own retired by #61 I3)
 
-This slice reuses the seven common source files and the single CI distribution.
-The remote owner continues to write `oci/own/spec.json` and
-`oci/own/bindings/G6I3.json`. Nix reads only their needed nonsecret host/container,
-image, port and three-volume fields into the artifact. It does not require Xpra
-fields or write another binding. A later accepted remote binding produces a fresh
-artifact; the legacy home-only container is never accepted for logon activation.
-
-```text
-repo
-  windows/{nix.nix,pack.py,test_pack.py,handoff-evaluate.ps1,win.ps1,proof.ps1,README.md}
-  oci/own/{spec.json,bindings/G6I3.json}                 read-only build inputs
-CI windows-dist.zip                                     same release checksum
-  existing root scripts / manifest / fonts / payload
-  host-runtime/
-    win.ps1                                             same production script
-    handoff-evaluate.ps1                                 same pure evaluator
-    package-view.ps1                                    same context reader
-    manifest.json                                      generated subset/contract
-installed %LOCALAPPDATA%\Programs\windows-host-<source40> exactly these four files
-native Task windows-own-logon-<current SID>
-  Limited / InteractiveToken / this user's Logon + 30s / one finite action
-  powershell.exe -NoProfile -NonInteractive -File "<stable>\win.ps1" -Mode OwnResume
-```
-
-The full artifact inventories all four runtime files, including its generated
-manifest. The subset inventories the three identical scripts, permits only
-`OwnResume` / `OwnResumeTest` and rejects extra/missing/case-mismatched files before
-host operations. Its installed four-file snapshot must match a committed owned
-tree, including the contract manifest. No fonts/Noctty payload is duplicated, and
-no task depends on a worktree or download directory. This integrity check is not
-a signature or a second trust root.
+The own logon Task, its four-file `host-runtime` subset and the `OwnResume`, `OwnLogon`, `OwnSsh` and `OwnRemove`
+modes are retired (#61 I3), and the distribution reads no own target Binding. Records that an earlier distribution
+committed stay host effects: the Task `windows-own-logon-<current SID>` and the
+`%LOCALAPPDATA%\Programs\windows-host-<source40>` trees. `HostRemove` still validates, observes and undoes them with
+the other host effects. A running or changed Task (a Disabled one included) is refused and retained, and a Task
+already removed by hand is closed as undone. The scoped host modes no longer read a declared host name; they still
+refuse SYSTEM, an administrator and a packaged-app context.
 
 ```powershell
-# Read-only: cold storage is reported, never opened by Test.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\win.ps1 -Mode OwnResumeTest
-# Enable only after accepted remote adoption, Running target and strict local SSH.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\win.ps1 -Mode OwnLogon
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\win.ps1 -Mode OwnLogonTest
 # Explicit scoped recovery/removal; ordinary Uninstall holds these host effects.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\win.ps1 -Mode HostRemove
-# Own only (retiring windows-own): the own logon Task and the windows-host trees; rent, client, Access and prefix stay.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\win.ps1 -Mode OwnRemove
 # Approved loopback origin must already serve HTTP. Foreground temporary public URL.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\win.ps1 -Mode QuickHttp -Origin http://127.0.0.1:8080/
 ```
-
-`OwnResume` requires the real G6I3 normal user's existing default
-`%LOCALAPPDATA%\wslc\sessions\wslc-cli-resta\storage.vhdx`, no custom WSLC settings,
-native WSLC3 and existing Windows SSH identity/known-host files. With no live named
-session it uses the supported native default resolution to reopen that already
-guarded storage; missing storage is never created. Starting its Docker daemon may
-activate other stored restart policies; the adapter never directly starts another
-container. It inspects the exact existing `windows-own` image, three named writable
-volumes and loopback SSH port using the native WSLC schema. It starts an exited
-target at most once, by freshly inspected ID, then checks Running and strict local
-SSH. Replacement, transient state, exit/start failure or any mismatch is reported;
-there is no pull/create/replace/retry, legacy X100 repair, bridge change or volume
-cleanup. Recreated accepted targets are guarded by binding, not an obsolete ID.
-
-Any preexisting unowned Task, even an equivalent one, refuses activation before
-runtime writes. Task updates stage and verify the new runtime first. Write-ahead task records bind
-each version to the immediately committed old descriptor while keeping the initial
-absent baseline. Failed native registration is reobserved: exact old remains
-pending, exact new is recorded with failure still reported, unknown holds both
-runtimes. Retry uses the same pending transition. Obsolete runtimes go only after
-a confirmed switch, with no native Task/SSH reference or running process. Scoped
-undo deletes only an exact owned descriptor and returns to original absence;
-it never resurrects an obsolete action. Shared SSH master bytes return before their
-owned backup is removed. Changed/missing backups, foreign state and unknown native
-outcomes are retained, not reported as cleanup success.
-
-Task files are copied as new default-stream bytes; source Zone.Identifier is not
-carried and installed alternate streams refuse activation. Task policy checks
-the actual Windows PowerShell 5.1 executable's
-MachinePolicy/UserPolicy/CurrentUser/LocalMachine, ignoring a bootstrap process's
-Bypass. Restricted/AllSigned/unknown policy refuses; no policy or registry changes
-are made. The maintainer's RemoteSigned policy is compatible, but a default
-Restricted clean OS is not thereby proven recoverable. Task descriptor registration
-does not prove execution, cold VM recovery or invisible UI; Noctty delegation may
-show a console window. Actual logon/reboot/UX remains a host acceptance gate.
 
 Quick uses pinned **2026.6.1** with exactly
 `tunnel --config= --no-autoupdate --url <explicit loopback HTTP origin>`. Empty
@@ -552,9 +477,8 @@ public Quick endpoint has been established by this slice.
 
 | Gate | CI evidence | Live acceptance / owner |
 | --- | --- | --- |
-| Artifact / four-file runtime | compiler subset/inventory; native early refusals; default-stream copy | trusted exact CI archive before application |
-| Task lifecycle | production old/new/unknown failure, version chain, undo; disposable native descriptor register/export/remove | final remote adoption, real logon/reboot, cold WSLC behavior and console UX |
-| SSH configuration | native generated-fragment parsing; production prefix backup/interruption/drift/undo; existing local alias compatibility | real-home relative Include integration; local g6i3-own strict SSH and Codex after logon; host→rent Access permitted/denied behavior |
+| Retired own Task records | an earlier distribution's committed record through the production ledger: running or Disabled refused with no write, exact undo, a hand-removed Task closed as undone; disposable native descriptor register/export/remove | G6I3 removal by the distribution before the retirement (#61 I3 ⑤) |
+| SSH configuration | native generated-fragment parsing; production prefix backup/interruption/drift/undo | real-home relative Include integration; host→rent Access permitted/denied behavior |
 | Client aliases (`ClientSsh`) | synthetic fragment/pins through the production ledger in PowerShell 7 and 5.1: input (incl. cyclic jump)/collision/drift/backup refusals with no record or write; two-to-three-path move over the original bytes, from no owned line and from an owner-created master; repeat and legacy `RentSsh` no-ops; read-only Test; interrupted moves completed by rerun; `HostRemove` to the exact prior master or absence; real Windows OpenSSH `-G` of the generated slot (not through the master Include) | normative exclusion of pre-`ClientSsh` `OwnLogon`/`HostRemove`/`RentSsh`/`OwnSsh`; real-home master Include resolution at adoption; strict SSH and Codex App use of the declared aliases |
 | Access client slot and launcher | synthetic owner-only slot through the ledger in PowerShell 7 and 5.1 (create, repeat, scoped-undo rotation, three interruptions, foreign/same-length/ACL/temp refusal); launcher with a native test child: byte-exact duplex, EOF, separate stderr, exit code, exact argv and `TUNNEL_*`, no value in command lines; real OpenSSH `-T`/`-tt` reach it with bytes both ways; real pinned client starts from it without printing values; an isolated debug control shows the values become request headers | envs' real placement; provider acceptance and service-only denial; no-browser on rejection; stored-token fallback; packaged Windows Codex reading the alias, slot and ledger |
 | Quick | fixed argv and environment/origin negatives; no publication | approved existing HTTP response and actual temporary public response |
