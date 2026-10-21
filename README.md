@@ -38,26 +38,63 @@ See [#61](https://github.com/roccho-dev/resources/issues/61),
 [#52](https://github.com/roccho-dev/resources/issues/52), and the existing
 [authentication contract](docs/own-completion.md#7-ツールprofile更新分離issue-85).
 
+The diagram is the agreed target structure, not evidence of a live envs binding change or host adoption.
+Core-to-Tool denotes the shared helper reference and compatibility contract, not a second copy of Core.
+The same Tool can be reused with a compatible Core outside OCI; `rent-tool-apply` remains the OCI-specific adapter.
+
 ```mermaid
-flowchart LR
-  subgraph producer["🏗️ resources: Nix definitions"]
-    b["📦 rent-base-image"]
-    t["❄️ rent-tool-profile"]
+flowchart TB
+  subgraph source["📝 resources：Nix 定義の正本"]
+    CORE["🔐 共通 Core<br/>Nix・Git/GH・認証 helper"]
+    TOOL["🧰 Tool profile<br/>アプリ・依存・launcher"]
+    SHELL["📦 OCI 外郭<br/>起動・SSH・トンネル"]
+    CORE -->|共通定義を参照| SHELL
+    CORE -->|同一 helper の互換契約| TOOL
   end
-  subgraph adoption["📌 envs: existing host-binding"]
-    d["Independent Base and Tool selections"]
+
+  subgraph build["🏗️ 独立したビルド成果物"]
+    B["📦 rent-base-image"]
+    T["❄️ rent-tool-profile"]
+    SHELL --> B
+    TOOL --> T
   end
-  subgraph target["🐧 Target"]
-    runtime["OCI runtime and Core"]
-    profile["Selected Nix Tool generation"]
-    state["💾 Existing auth, sessions and work"]
+
+  subgraph adoption["📌 envs：既存 host-binding"]
+    DB["外郭の採用版"]
+    DT["Tool の採用版"]
+    B --> DB
+    T --> DT
   end
-  b --> d
-  t --> d
-  d --> runtime
-  d --> profile
-  runtime -->|compatible Core/helper| profile
-  profile --> state
+
+  subgraph oci["🐧 OCI：外郭と中身を実行時に合成"]
+    RUNTIME["⚙️ 外郭・Core"]
+    PROFILE["🔗 選択中の Tool 世代"]
+    APP["🤖 app-server・各アプリ"]
+    DB --> RUNTIME
+    DT --> PROFILE
+    RUNTIME -->|汎用 profile/bin 経由| APP
+    PROFILE --> APP
+  end
+
+  subgraph volumes["💾 永続ボリューム"]
+    NIX["❄️ /nix<br/>store・DB・世代・GC roots"]
+    STATE["🔑 認証・設定・会話履歴"]
+    WORK["📂 リポジトリ・作業"]
+    PROFILE --> NIX
+    APP --> STATE
+    APP --> WORK
+  end
+
+  subgraph reuse["♻️ OCI 外での Nix 利用"]
+    NATIVE["💻 互換 Core ＋ 同じ Tool 成果物"]
+    CORE --> NATIVE
+    T --> NATIVE
+  end
+
+  subgraph client["📱 接続元"]
+    CHAT["💬 ChatGPT App"]
+    CHAT <-->|SSH 経由| APP
+  end
 ```
 
 `oci/rent/win.ps1 -Step ToolApply` addresses the running B-only **`-Container`**.
