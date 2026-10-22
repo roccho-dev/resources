@@ -631,6 +631,47 @@ function ConvertTo-FileMap($Files) {
 }
 
 # The first problem with one state of $Kind, or $null when it is well formed.
+# A declared fileless directory closure only: unknown/reparse observations are
+# never accepted as declarations. Existing records omit this list (empty).
+function Get-EmptyDirectoryProblem($Files, $Directories) {
+    $files = ConvertTo-FileMap $Files
+    if ($null -eq $files) { return 'Invalid file inventory.' }
+    if (-not @($Directories | Where-Object { $null -ne $_ }).Count) { return $null }
+    $seen, $spellings, $parents = @{}, @{}, @{}
+    foreach ($name in $files.Keys) {
+        $parts = $name.Split('/')
+        for ($i = 1; $i -le $parts.Count; $i++) {
+            $prefix = $parts[0..($i - 1)] -join '/'
+            if ($spellings.ContainsKey($prefix) -and $spellings[$prefix] -cne $prefix) { return 'File parent case collision.' }
+            $spellings[$prefix] = $prefix
+            if ($i -lt $parts.Count) { $parents[$prefix] = $true }
+        }
+    }
+    foreach ($entry in @($Directories | Where-Object { $null -ne $_ })) {
+        if ($entry -isnot [string] -or -not $entry.EndsWith('/') -or -not (Test-RelativePath $entry.Substring(0,$entry.Length-1))) { return 'Unsafe empty directory.' }
+        $name = $entry.Substring(0,$entry.Length-1)
+        if ($seen.ContainsKey($name)) { return 'Empty directory repeats ignoring case.' }
+        foreach ($file in $files.Keys) {
+            if ($name -ieq $file -or $name.StartsWith($file+'/',[StringComparison]::OrdinalIgnoreCase) -or $file.StartsWith($name+'/',[StringComparison]::OrdinalIgnoreCase)) { return 'Empty directory overlaps a file.' }
+        }
+        $seen[$name] = $true
+        $parts = $name.Split('/')
+        for ($i = 1; $i -le $parts.Count; $i++) {
+            $prefix = $parts[0..($i-1)] -join '/'
+            if ($spellings.ContainsKey($prefix) -and $spellings[$prefix] -cne $prefix) { return 'Empty directory parent case collision.' }
+            $spellings[$prefix] = $prefix
+        }
+    }
+    foreach ($name in $seen.Keys) {
+        $parts = $name.Split('/')
+        for ($i = 1; $i -lt $parts.Count; $i++) {
+            $parent = $parts[0..($i-1)] -join '/'
+            if (-not $parents.ContainsKey($parent) -and -not $seen.ContainsKey($parent)) { return 'Empty directory closure is incomplete.' }
+        }
+    }
+    return $null
+}
+
 function Get-EffectStateProblem([string]$Kind, $State, [string]$Role) {
     $exists = Get-Field $State 'exists'
     if ($exists -isnot [bool]) { return "$Role.exists is not a boolean." }
@@ -648,6 +689,7 @@ function Get-EffectStateProblem([string]$Kind, $State, [string]$Role) {
         }
         'tree-extracted' {
             if ($null -eq (ConvertTo-FileMap (Get-Field $State 'files'))) { return "$Role.files is not a safe path -> sha256 map." }
+            if ($Role -ceq 'desired') { $problem = Get-EmptyDirectoryProblem (Get-Field $State 'files') (Get-Field $State 'other'); if ($problem) { return $problem } }
             if (@(Get-Field $State 'other' | Where-Object { $null -ne $_ -and $_ -isnot [string] }).Count) { return "$Role.other is not a list of paths." }
         }
         'registry-key-created' { }
@@ -818,7 +860,6 @@ function Get-EffectRecordProblem($Record) {
     if ($kind -eq 'tree-extracted' -and (ConvertTo-FileMap (Get-Field $desired 'files')).Count -eq 0) {
         return 'desired.files is empty.'
     }
-    if ($kind -eq 'tree-extracted' -and @(Get-Field $desired 'other' | Where-Object { $null -ne $_ }).Count) { return 'desired.other is not empty.' }
     $observed = $fields.observed
     if ($phase -ceq 'intent') {
         if ($null -ne $observed) { return 'an intent has no observed state.' }
@@ -1023,12 +1064,21 @@ function Get-UndoSteps($Record) {
 function Get-TreeUndoSteps($Record, $Current) {
     $target = [string](Get-Field $Record 'target')
     $files = ConvertTo-FileMap (Get-Field (Get-Field $Record 'desired') 'files')
+    if (Get-EmptyDirectoryProblem $files (Get-Field (Get-Field $Record 'desired') 'other')) { return $null }
     $present = if ($null -eq $Current) { $files } else { ConvertTo-FileMap (Get-Field $Current 'files') }
     if ($null -eq $files -or $null -eq $present -or ($null -ne $Current -and (Get-Field $Current 'exists') -ne $true)) { return $null }
     $implied, $directories = @{}, @{}
     foreach ($relative in $files.Keys) {
         $parts = $relative.Split('/')
         for ($i = 1; $i -lt $parts.Count; $i++) { $implied[$parts[0..($i - 1)] -join '\'] = $true }
+    }
+    foreach ($entry in @(Get-Field (Get-Field $Record 'desired') 'other' | Where-Object { $null -ne $_ })) {
+        $parts = $entry.TrimEnd('/').Split('/')
+        for ($i = 1; $i -le $parts.Count; $i++) {
+            $directory = $parts[0..($i-1)] -join '\'
+            $implied[$directory] = $true
+            if ($null -eq $Current) { $directories[$directory] = $true }
+        }
     }
     foreach ($relative in $present.Keys) {
         if (-not $files.ContainsKey($relative) -or $present[$relative] -ne $files[$relative]) { return $null }
@@ -1141,10 +1191,16 @@ function Get-IntentTempProblem($Record) {
 # trailing '/' of a directory entry, is an inventory file or a directory above one, spelled
 # exactly, with safe segments and no '\'; no two names are equal ignoring case; every
 # inventory file is named.
-function Get-ZipEntryProblem($Names, $Files) {
+function Get-ZipEntryProblem($Names, $Files, $EmptyDirectories = @()) {
     $inventory = ConvertTo-FileMap $Files
     if ($null -eq $inventory -or $inventory.Count -eq 0) { return 'The inventory is invalid.' }
+    $problem = Get-EmptyDirectoryProblem $Files $EmptyDirectories
+    if ($problem) { return $problem }
     $parents, $seen = @(), @{}
+    foreach ($entry in @($EmptyDirectories | Where-Object { $null -ne $_ })) {
+        $parts = $entry.TrimEnd('/').Split('/')
+        for ($i = 1; $i -le $parts.Count; $i++) { $parents += $parts[0..($i-1)] -join '/' }
+    }
     foreach ($file in $inventory.Keys) { $parts = $file.Split('/'); for ($i = 1; $i -lt $parts.Count; $i++) { $parents += $parts[0..($i - 1)] -join '/' } }
     foreach ($entry in @($Names)) {
         if ($entry -isnot [string]) { return 'An entry name is not a string.' }
@@ -1159,6 +1215,10 @@ function Get-ZipEntryProblem($Names, $Files) {
     }
     $missing = @($inventory.Keys | Where-Object { -not $seen.ContainsKey($_) })
     if ($missing.Count) { return "Inventory files the archive lacks: $($missing -join ', ')" }
+    foreach ($entry in @($EmptyDirectories | Where-Object { $null -ne $_ })) {
+        $name = $entry.TrimEnd('/')
+        if (-not @($seen.Keys | Where-Object { $_ -ceq $name -or $_.StartsWith($name+'/',[StringComparison]::Ordinal) }).Count) { return "Inventory directory the archive lacks: $entry" }
+    }
     return $null
 }
 
@@ -1177,11 +1237,17 @@ function Get-StagingCleanupSteps($Record, $Observed) {
         return & $refuse 'No tree intent names this staging directory.'
     }
     $files = ConvertTo-FileMap (Get-Field (Get-Field $Record 'desired') 'files')
+    $problem = Get-EmptyDirectoryProblem $files (Get-Field (Get-Field $Record 'desired') 'other')
+    if ($problem) { return & $refuse $problem }
     if ($null -eq $files -or $files.Count -eq 0) { return & $refuse 'The intent has no valid inventory.' }
     $parents = @{}
     foreach ($name in $files.Keys) {
         $parts = $name.Split('/')
         for ($i = 1; $i -lt $parts.Count; $i++) { $parents[$parts[0..($i - 1)] -join '/'] = $true }
+    }
+    foreach ($entry in @(Get-Field (Get-Field $Record 'desired') 'other' | Where-Object { $null -ne $_ })) {
+        $parts = $entry.TrimEnd('/').Split('/')
+        for ($i = 1; $i -le $parts.Count; $i++) { $parents[$parts[0..($i-1)] -join '/'] = $true }
     }
     $fileSteps, $directories, $unknown, $seen = @(), @(), @(), @{}
     foreach ($entry in @($Observed)) {
@@ -1328,12 +1394,13 @@ function Get-SeedProblem($Package, $BundleFiles) {
 # whether or not tar marked it with one trailing '/'; a marked name that is not such a directory
 # keeps its '/', so it is refused; empty lines (the listing's end) are dropped. Anything else
 # stays as listed and is judged by Get-ZipEntryProblem.
-function ConvertFrom-TarListing($Lines, $Files) {
+function ConvertFrom-TarListing($Lines, $Files, $EmptyDirectories = @()) {
     $inventory = ConvertTo-FileMap $Files
     $parents = @{}
     if ($null -ne $inventory) {
         foreach ($file in $inventory.Keys) { $parts = $file.Split('/'); for ($i = 1; $i -lt $parts.Count; $i++) { $parents[$parts[0..($i - 1)] -join '/'] = $true } }
     }
+    foreach ($entry in @($EmptyDirectories | Where-Object { $null -ne $_ })) { $parents[$entry.TrimEnd('/')] = $true }
     foreach ($line in @($Lines)) {
         $name = ([string]$line).TrimEnd("`r")
         if ($name -eq '') { continue }
@@ -1349,6 +1416,14 @@ function ConvertFrom-TarListing($Lines, $Files) {
 # white space or '"' is quoted, a '"' is escaped, and backslashes before a '"' or the closing
 # quote are doubled. A NUL cannot be passed and stops the run.
 function Get-NocttyLaunchProblem($Launch) {
+    if ((Get-Field $Launch 'mode') -ceq 'local') {
+        $keys = if ($Launch -is [Collections.IDictionary]) { @($Launch.Keys) } else { @($Launch.PSObject.Properties.Name) }
+        if (($keys | Sort-Object) -join ',' -cne 'mode,shell,windowSaveState' -or
+            (Get-Field $Launch 'shell') -cne 'powershell' -or (Get-Field $Launch 'windowSaveState') -cne 'never') {
+            return 'Invalid Noctty local shell selection.'
+        }
+        return $null
+    }
     $keys = if ($Launch -is [Collections.IDictionary]) { @($Launch.Keys) } elseif ($null -ne $Launch) { @($Launch.PSObject.Properties.Name) } else { @() }
     if ($keys.Count -ne 3 -or @($keys | Where-Object { $_ -cnotin @('alias','session','windowSaveState') }).Count) { return 'Noctty launch keys differ.' }
     foreach ($name in 'alias','session') {
@@ -1370,7 +1445,12 @@ function Get-NocttyConfigText($Noctty, [string]$Ssh, [string]$Config) {
     foreach ($path in $Ssh, $Config) {
         if ($path -cnotmatch '^[A-Za-z]:\\' -or $path -match '[\r\n\x00"]') { throw 'Noctty requires absolute native OpenSSH and client slot paths.' }
     }
+    if ((Get-Field $launch 'mode') -ceq 'local') {
+        $system = [IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($Ssh))
+        $arguments = @((Join-Path $system 'WindowsPowerShell\v1.0\powershell.exe'), '-NoLogo')
+    } else {
     $arguments = @($Ssh, '-F', $Config, '-t', $launch.alias, 'zmx', 'attach', $launch.session)
+    }
     return 'font-family = ' + $face + "`ncommand = direct:" + (Join-NativeArguments $arguments) + "`nwindow-save-state = never`n"
 }
 

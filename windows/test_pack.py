@@ -36,6 +36,29 @@ REGISTRATION = [
 
 
 class CompilerTests(unittest.TestCase):
+    def test_noctty_local_selection_is_explicit_and_bounded(self):
+        selected = {"mode": "local", "shell": "powershell", "windowSaveState": "never"}
+        self.assertEqual(pack.noctty_launch(selected), selected)
+        for bad in [dict(selected, shell="cmd"), dict(selected, command="injected"), dict(selected, windowSaveState="default")]:
+            with self.assertRaises(ValueError):
+                pack.noctty_launch(bad)
+
+    def test_local_host_selection_and_pending_reach_the_artifact(self):
+        fonts = self.payload()
+        noctty, cloudflared, choices, scripts = self.inputs()
+        selected = json.loads(choices.read_text())
+        selected["noctty"]["launch"] = {"mode": "local", "shell": "powershell", "windowSaveState": "never"}
+        selected["target"] = {"name": "fixture-host", "unresolved": []}
+        selected["core"] = {"declared": ["Browser"], "selected": [], "pending": [{"product": "Browser"}]}
+        choices.write_text(json.dumps(selected))
+        pack.distribution(fonts, noctty, cloudflared, choices, scripts, "test", self.root / "out")
+        with zipfile.ZipFile(self.root / "out/windows-dist.zip") as z:
+            manifest = json.loads(z.read("manifest.json"))
+            self.assertEqual(manifest["target"], selected["target"])
+            self.assertEqual(manifest["core"], selected["core"])
+            self.assertEqual(manifest["noctty"]["launch"], selected["noctty"]["launch"])
+            self.assertFalse(any(n.startswith("ssh/") for n in z.namelist()))
+
     def test_noctty_ssh_session_selection(self):
         launch = {"alias": "versapro-dev", "session": "own", "windowSaveState": "never"}
         self.assertEqual(pack.noctty_launch(launch), launch)
@@ -297,6 +320,40 @@ class CompilerTests(unittest.TestCase):
             with self.subTest(case=case), self.assertRaises(ValueError):
                 pack.listed_paths(text)
 
+    def test_windows_zip_separators_materialize_the_same_inventory(self):
+        archive = self.root / "windows.zip"
+        with zipfile.ZipFile(archive, "w") as z:
+            z.writestr("app\\nested\\", b"")
+            z.writestr("app\\nested\\fixture.exe", b"MZ fixture")
+        tree = self.root / "windows-tree"
+        pack.extract_windows_zip(archive, tree)
+        listing = "--\n----------\nPath = app\\nested\\\nPath = app\\nested\\fixture.exe\n"
+        inventory = pack.tree_inventory(tree, pack.listed_paths(listing), "app/nested/fixture.exe")
+        self.assertEqual(inventory, {"app/nested/fixture.exe": pack.digest(tree / "app/nested/fixture.exe")})
+        self.assertFalse(any("\\" in p.name for p in tree.rglob("*")))
+
+    def test_windows_zip_rejects_unsafe_names_before_creating_output(self):
+        cases = [["..\\escape"], ["C:\\escape"], ["\\\\server\\share"], ["app\\\\file"],
+                 ["app\\file", "app/file"], ["app/File", "app/file"], ["App/a", "app/b"],
+                 ["app/file:stream"], ["app/NUL"], ["app/file."]]
+        for i, names in enumerate(cases):
+            archive, tree = self.root / f"unsafe-{i}.zip", self.root / f"unsafe-{i}"
+            with zipfile.ZipFile(archive, "w") as z:
+                for name in names:
+                    z.writestr(name, b"fixture")
+            with self.subTest(names=names), self.assertRaises(ValueError):
+                pack.extract_windows_zip(archive, tree)
+            self.assertFalse(tree.exists())
+        link = zipfile.ZipInfo("app/link")
+        link.create_system = 3
+        link.external_attr = 0o120777 << 16
+        archive, tree = self.root / "link.zip", self.root / "link-tree"
+        with zipfile.ZipFile(archive, "w") as z:
+            z.writestr(link, "target")
+        with self.assertRaises(ValueError):
+            pack.extract_windows_zip(archive, tree)
+        self.assertFalse(tree.exists())
+
     def extracted(self):
         tree = self.root / "tree"
         (tree / "bin").mkdir(parents=True)
@@ -317,6 +374,20 @@ class CompilerTests(unittest.TestCase):
         (tree / "bin/empty/deeper").mkdir(parents=True)
         with self.assertRaisesRegex(ValueError, "without files"):
             pack.tree_inventory(tree, ["bin/fixture.exe", "bin/empty/deeper", "readme"], "bin/fixture.exe")
+
+    def test_exact_empty_directory_closure(self):
+        tree = self.extracted()
+        (tree / "empty/nested").mkdir(parents=True)
+        listing = ["bin/fixture.exe", "readme", "empty/nested"]
+        files = pack.tree_inventory(tree, listing, "bin/fixture.exe", allow_empty=True)
+        dirs = ["empty/", "empty/nested/"]
+        self.assertEqual(pack.validate_empty_directories(files, dirs), dirs)
+        raw = {"files": files, "unpackedSize": 16, "emptyDirectories": dirs}
+        self.assertEqual(pack.inventoried([self.lock(inventory=str(self.inventory(raw=raw)))])[0]["emptyDirectories"], dirs)
+        for bad in (["empty/nested/"], ["Empty/", "empty/nested/"], ["bin/"], ["readme/"],
+                    ["empty/", "EMPTY/"], ["../escape/"], ["empty"], ["bin/FIXTURE.exe/sub/"]):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                pack.validate_empty_directories(files, bad)
 
     def test_tree_inventory_rejects_symlink(self):
         tree = self.extracted()
@@ -368,7 +439,7 @@ class CompilerTests(unittest.TestCase):
         scripts = self.root / "scripts"
         scripts.mkdir(exist_ok=True)
         for name in ("win.ps1", "proof.ps1", "handoff-proof.ps1", "handoff-evaluate.ps1",
-                     "package-view.ps1", "ui-font.ahk", "rent-access.ps1", "README.md"):
+                     "package-view.ps1", "ui-font.ahk", "rent-access.ps1", "host-state.ps1", "README.md"):
             (scripts / name).write_text("fixture")
         (scripts / "ssh").mkdir(exist_ok=True)
         for name in ("versapro.config", "versapro.known_hosts"):
@@ -448,14 +519,14 @@ class CompilerTests(unittest.TestCase):
         fonts = self.payload()
         noctty, cloudflared, choices, scripts = self.inputs()
         selected = json.loads(choices.read_text())
-        selected["typography"] = {"desktop": "fixture", "interpreter": "Fixture"}
+        selected["typography"] = {"desktop": "fixture"}
         selected["apps"] = [{**self.APP, "appearance": self.appearance()}]
         choices.write_text(json.dumps(selected))
         pack.distribution(fonts, noctty, cloudflared, choices, scripts, "test", self.root / "out")
         with zipfile.ZipFile(self.root / "out" / "windows-dist.zip") as z:
             manifest = json.loads(z.read("manifest.json"))
             self.assertIn("ui-font.ahk", manifest["files"])
-        self.assertEqual(manifest["typography"], {"face": "Test Font", "interpreter": "Fixture", "script": "ui-font.ahk"})
+        self.assertEqual(manifest["typography"], {"face": "Test Font", "observer": "SystemParametersInfoW"})
         self.assertEqual(manifest["apps"], [{**self.APP, "appearance": {"fonts": {k: '"Test Font"' for k in ("ui", "code", "content")},
                                                                           "defaults": self.appearance()["defaults"]}}])
         # Without either, the manifest says so and win.ps1 converges neither.
@@ -467,19 +538,19 @@ class CompilerTests(unittest.TestCase):
 
     def test_typography_contract(self):
         entries = [{"role": "ui", "family": "IBM Plex Sans JP"}]
-        packages = [{"name": "AutoHotkey"}]
-        self.assertEqual(pack.typography({"desktop": "ui", "interpreter": "AutoHotkey"}, entries, packages),
-                         {"face": "IBM Plex Sans JP", "interpreter": "AutoHotkey", "script": "ui-font.ahk"})
-        self.assertEqual(pack.typography({"desktop": "ui", "interpreter": "AutoHotkey"},
+        packages = []  # Font observation must not install a sixth core product.
+        self.assertEqual(pack.typography({"desktop": "ui"}, entries, packages),
+                         {"face": "IBM Plex Sans JP", "observer": "SystemParametersInfoW"})
+        self.assertEqual(pack.typography({"desktop": "ui"},
                                          [{"role": "ui", "family": "x" * 31}], packages)["face"], "x" * 31)
         bad = {
             "not a dict": ("ui", entries),
-            "extra key": ({"desktop": "ui", "interpreter": "AutoHotkey", "face": "x"}, entries),
-            "unknown role": ({"desktop": "terminal", "interpreter": "AutoHotkey"}, entries),
+            "extra key": ({"desktop": "ui", "face": "x"}, entries),
+            "unknown role": ({"desktop": "terminal"}, entries),
             "unknown interpreter": ({"desktop": "ui", "interpreter": "Python"}, entries),
-            "face too long": ({"desktop": "ui", "interpreter": "AutoHotkey"}, [{"role": "ui", "family": "x" * 32}]),
-            "face beyond the BMP": ({"desktop": "ui", "interpreter": "AutoHotkey"}, [{"role": "ui", "family": "x\U0001F600"}]),
-            "face with a control": ({"desktop": "ui", "interpreter": "AutoHotkey"}, [{"role": "ui", "family": "a\tb"}]),
+            "face too long": ({"desktop": "ui"}, [{"role": "ui", "family": "x" * 32}]),
+            "face beyond the BMP": ({"desktop": "ui"}, [{"role": "ui", "family": "x\U0001F600"}]),
+            "face with a control": ({"desktop": "ui"}, [{"role": "ui", "family": "a\tb"}]),
         }
         for case, (value, fonts) in bad.items():
             with self.subTest(case=case), self.assertRaisesRegex(ValueError, "typography"):
@@ -533,6 +604,11 @@ class CompilerTests(unittest.TestCase):
     def test_store_app_contract(self):
         self.assertEqual(pack.store_apps([self.APP], []), [self.APP])
         self.assertEqual(pack.store_apps(None, []), [])
+        fixed = {**self.APP, "acceptedVersion": "1.2.3.4"}
+        self.assertEqual(pack.store_apps([fixed], []), [fixed])
+        for version in ("1.2", "01.2.3.4", "1.2.3.65536", 1234):
+            with self.subTest(version=version), self.assertRaises(ValueError):
+                pack.store_apps([{**self.APP, "acceptedVersion": version}], [])
         bad = {
             "not a list": self.APP,
             "extra key": [{**self.APP, "version": "1.0"}],

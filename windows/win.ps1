@@ -1,7 +1,7 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('Validate', 'Test', 'Apply', 'Restore', 'RestoreTest', 'Uninstall', 'RentSsh', 'RentSshTest', 'RentAccess', 'QuickHttp', 'HostRemove', 'PlatformRestore', 'PlatformTest', 'ClientSsh', 'ClientSshTest')][string]$Mode = 'Validate',
+    [ValidateSet('Validate', 'Plan', 'Test', 'Apply', 'Restore', 'RestoreTest', 'Uninstall', 'RentSsh', 'RentSshTest', 'RentAccess', 'QuickHttp', 'HostRemove', 'PlatformRestore', 'PlatformTest', 'ClientSsh', 'ClientSshTest')][string]$Mode = 'Validate',
     # ClientSsh/ClientSshTest only: an explicit public SSH Host fragment and its host key pins (opt-in; never discovered).
     [string]$ClientConfig,
     [string]$ClientKnownHosts,
@@ -27,7 +27,11 @@ param(
     # Apply only: write the fonts of the app already present (its preconfiguration), alone: no install, no OS font, no other effect.
     [switch]$AppFonts,
     # Apply only: converge/recover the Noctty configuration alone; no terminal selection, fonts or runtime launch.
-    [Alias('NocttyConfig')][switch]$NocttyConfigOnly
+    [Alias('NocttyConfig')][switch]$NocttyConfigOnly,
+    # Keep incomplete effects and tree-removal plans for explicit scoped recovery; no automatic cleanup.
+    [switch]$PreserveIncomplete,
+    # Existing terminal-package reader scratch only; no change to the host/user identity.
+    [string]$PackageScratchRoot
 )
 
 # The native Windows activation adapter. Product selection belongs to the built distribution (Nix).
@@ -187,6 +191,8 @@ function AssertPackageShape($Package) {
     foreach ($foreign in @($existing.installLocation) + @($protected)) {
         if (PathsOverlap $Package.directory $foreign) { throw "Package directory overlaps an unowned path: $name" }
     }
+    $problem = Get-EmptyDirectoryProblem $Package.files (Get-Field $Package 'emptyDirectories')
+    if ($problem) { throw "Invalid package directories: ${name}: $problem" }
     # A seed goes into the owned tree beside the executable, from a bundle file of its exact hash.
     $problem = Get-SeedProblem $Package $manifest.files
     if ($problem) { throw "Invalid package seed in manifest: ${name}: $problem" }
@@ -217,11 +223,11 @@ if (($Mode -cin @('ClientSsh','ClientSshTest')) -ne ($PSBoundParameters.Contains
     ($Mode -cnotin @('ClientSsh','ClientSshTest') -and ($PSBoundParameters.ContainsKey('ClientConfig') -or $PSBoundParameters.ContainsKey('ClientKnownHosts')))) {
     throw '-ClientConfig and -ClientKnownHosts are both required by, and only for, -Mode ClientSsh/ClientSshTest.'
 }
-# The desktop UI font face (a selected family, pack.py) set through ui-font.ahk by the locked interpreter package.
+# The desktop UI font face is observed with the Windows native read-only API.
 $uiTypography = Get-Field $manifest 'typography'
-if ($null -ne $uiTypography -and (-not (Test-UiFontFace (Get-Field $uiTypography 'face')) -or (Get-Field $uiTypography 'script') -cne 'ui-font.ahk' -or
-        @($manifest.packages | Where-Object { $_.name -ceq (Get-Field $uiTypography 'interpreter') }).Count -ne 1)) {
-    throw 'Invalid typography in manifest.'
+if ($null -ne $uiTypography -and (-not (Test-UiFontFace (Get-Field $uiTypography 'face')) -or
+        (Get-Field $uiTypography 'observer') -cne 'SystemParametersInfoW')) {
+    throw 'Invalid desktop UI font selection.'
 }
 if ($Typography -and $null -eq $uiTypography) { throw 'This distribution selects no UI font face.' }
 # Store apps Restore installs when absent; introduced identities are ledgered with removal held.
@@ -233,6 +239,10 @@ foreach ($app in $apps) {
         [string](Get-Field $app 'package') -cnotmatch '^[A-Za-z0-9][A-Za-z0-9.-]*\z' -or [string](Get-Field $app 'publisherId') -cnotmatch '^[a-z0-9]{13}\z') {
         throw "Invalid app in manifest: $(Get-Field $app 'name')"
     }
+    $acceptedVersion = Get-Field $app 'acceptedVersion'
+    if ($null -ne $acceptedVersion -and ($acceptedVersion -isnot [string] -or
+        $acceptedVersion -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\z' -or
+        @($acceptedVersion.Split('.') | Where-Object { [long]$_ -gt 65535 }).Count)) { throw 'Invalid accepted Appx version.' }
     # Its font preconfiguration (pack.py): quoted CSS families for ui, code and content, and the app's own complete
     # light and dark themes, used only where a theme is absent.
     $appearance = Get-Field $app 'appearance'
@@ -314,7 +324,7 @@ function ExistingProblems($Entry, $Package) {
 # Restore is per-user. An elevated token may belong to another account, and
 # elevated COM ignores per-user classes, so its activation check could start a
 # machine-wide Noctty instead of this user's registration.
-if ($Mode -eq 'Restore' -and
+if ($Mode -cin @('Restore','Plan') -and
     ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'Run Restore unelevated, from an Explorer-launched shell of the user being restored.'
@@ -328,9 +338,11 @@ $nocttyShortcut = Join-Path ([Environment]::GetFolderPath('StartMenu')) 'Program
 # configuration: the bundled VersaPro SSH entries, their UserKnownHostsFile bound to the bundled host key pin written
 # next to them (Get-NocttySshConfigText). Nothing here runs SSH.
 $nocttySshConfig, $nocttyKnownHosts = (Join-Path $localAppData 'noctty\versapro.config'), (Join-Path $localAppData 'noctty\versapro.known_hosts')
-$nocttyFiles = [ordered]@{
-    $nocttySshConfig = [Text.UTF8Encoding]::new($false).GetBytes((Get-NocttySshConfigText ([IO.File]::ReadAllText((BundlePath 'ssh/versapro.config'))) $nocttyKnownHosts))
-    $nocttyKnownHosts = [IO.File]::ReadAllBytes((BundlePath 'ssh/versapro.known_hosts')) }
+$nocttyFiles = [ordered]@{}
+if ((Get-Field $manifest.noctty.launch 'mode') -cne 'local') {
+    $nocttyFiles[$nocttySshConfig] = [Text.UTF8Encoding]::new($false).GetBytes((Get-NocttySshConfigText ([IO.File]::ReadAllText((BundlePath 'ssh/versapro.config'))) $nocttyKnownHosts))
+    $nocttyFiles[$nocttyKnownHosts] = [IO.File]::ReadAllBytes((BundlePath 'ssh/versapro.known_hosts'))
+}
 $nocttyConfigText = Get-NocttyConfigText $manifest.noctty (Join-Path ([Environment]::SystemDirectory) 'OpenSSH\ssh.exe') $nocttySshConfig
 $terminalStartup = 'HKCU:\Console\%%Startup'
 $startupSubkey = 'Console\%%Startup'
@@ -404,7 +416,7 @@ function RecordPriorTerminal([object]$Console, [object]$Terminal) {
 # HKCU that the package, and so the handoff, never sees. Unavailable or differing
 # views fail; nothing here writes the registry.
 function AssertActualSelection {
-    $view = Test-PackageTerminalSelection
+    $view = Test-PackageTerminalSelection -ScratchRoot (Get-Variable PackageScratchRoot -ValueOnly -ErrorAction SilentlyContinue)
     if ($view.state -ne 'match') {
         throw ("The default-terminal selection is not confirmed from the Windows Terminal package ($($view.state)): " +
             "$($view.failure)$($view.gap) Scratch cleanup: $($view.cleanup)")
@@ -1316,6 +1328,9 @@ function CleanStaging($Intent) {
     $staging = [string](IntentTemp $Intent)
     $cleanup = Get-StagingCleanupSteps $Intent @(ObserveTree $staging -Entries)
     if (-not $cleanup.ok) { throw "Staging directory $staging is kept: $($cleanup.reason)" }
+    if ((Get-Variable PreserveIncomplete -ValueOnly -ErrorAction SilentlyContinue) -and @($cleanup.steps).Count) {
+        throw "Staging directory $staging retained by PreserveIncomplete; explicit recovery approval is required."
+    }
     foreach ($step in $cleanup.steps) {
         if ($step.action -ceq 'delete-file') { [IO.File]::Delete($step.path) } else { [IO.Directory]::Delete($step.path, $false) }
     }
@@ -1368,6 +1383,7 @@ function RecoverId([string]$Id) {
     $class = Get-EffectClass $null (Observe $open[0]) '' $null (AttemptOf $Id)
     if ($class.class -ceq 'indeterminate') { throw "Effect ledger id $Id is indeterminate: $($class.reason)" }
     if ($class.resolution -ceq 'pendingPrevious') { throw 'Owned previous task preserved; pending switch must be retried or explicitly removed in host scope.' }
+    if ($class.resolution -and (Get-Variable PreserveIncomplete -ValueOnly -ErrorAction SilentlyContinue)) { throw "Incomplete effect $Id retained by PreserveIncomplete; inspect its actual state before explicit recovery." }
     if ($class.resolution) { ResolveAttempt $open ($(if ($class.resolution -ceq 'confirm') { 'commit' } else { $class.resolution })) }
 }
 
@@ -1466,7 +1482,11 @@ function UndoOwned($Open, $Expect, [switch]$Replacing) {
 function Recovering($Effect, [scriptblock]$Act) {
     try { & $Act } catch {
         $failure = $_
-        try { RecoverId $Effect.id } catch { Write-Warning "Recovery of $($Effect.id) deferred: $($_.Exception.Message)" }
+        if (Get-Variable PreserveIncomplete -ValueOnly -ErrorAction SilentlyContinue) {
+            Write-Warning "Effect $($Effect.id) retained by PreserveIncomplete; no automatic recovery was attempted."
+        } else {
+            try { RecoverId $Effect.id } catch { Write-Warning "Recovery of $($Effect.id) deferred: $($_.Exception.Message)" }
+        }
         throw $failure
     }
 }
@@ -1660,6 +1680,10 @@ function OrderedSteps($Plan) {
 # undone record. A tree's files are read back just before removal and its directories go only
 # when empty (already gone: skipped, as in a resumed plan); nothing is removed recursively.
 function UndoOwnedSteps($Steps) {
+    if ((Get-Variable PreserveIncomplete -ValueOnly -ErrorAction SilentlyContinue) -and
+        @($Steps | Where-Object { $_.kind -ceq 'tree-extracted' }).Count) {
+        throw 'Owned tree removal retained by PreserveIncomplete; an exact per-occurrence recovery decision is required.'
+    }
     $run = @()
     foreach ($step in @($Steps) + @($null)) {
         if ($run.Count -and ($null -eq $step -or $step.id -cne $run[0].id)) {
@@ -1795,8 +1819,8 @@ function AssertFonts {
 # the window geometry (CaptionWidth and more) too. Every other byte of each font, and every other WindowMetrics value,
 # stays. Observation, recovery and Uninstall read the same values. A face the user changed after this wrote it is
 # owned-drift: reported, never written. The raw value layout is not a documented API contract: proven on the builds
-# README names, and in effect only after the user's next sign-in (ui-font.ahk's read-only get tells pendingLogon from active).
-$script:uiFontDrift, $script:uiInterpreter = @(), $null
+# README names; the native GET-only observer distinguishes pendingLogon from active.
+$script:uiFontDrift = @()
 $windowMetricsSubkey = 'Control Panel\Desktop\WindowMetrics'
 $uiFontValues = @{ caption = 'CaptionFont'; smCaption = 'SmCaptionFont'; menu = 'MenuFont'; status = 'StatusFont'; message = 'MessageFont'; icon = 'IconFont' }
 
@@ -1864,35 +1888,43 @@ function UiFontEffects {
     }
 }
 
-# The interpreter package's executable with its locked SHA-256 (the owned tree, or an exact existing install), for the
-# advisory live reading only; $null when there is none.
-function UiFontInterpreter {
-    if ($null -ne $script:uiInterpreter) { return $script:uiInterpreter }
-    $package = $manifest.packages | Where-Object { $_.name -ceq (Get-Field $uiTypography 'interpreter') } | Select-Object -First 1
-    if ($null -eq $package) { return $null }
-    $state = ClassifyPackage $package
-    if ($state.class -cnotin @('owned-match', 'preexisting-match')) { return $null }
-    $want = (ConvertTo-FileMap $package.files)[$package.executable]
-    $candidates = @(Join-Path $state.effect.target $package.executable.Replace('/', '\')) + @(FindUninstallEntries $package.existing |
-        Where-Object { $_.installLocation -is [string] -and $_.installLocation.Trim() } |
-        ForEach-Object { Join-Path ([Environment]::ExpandEnvironmentVariables($_.installLocation.Trim().Trim('"'))) $package.existing.executable.Replace('/', '\') })
-    foreach ($exe in $candidates) {
-        if ((Test-Path -LiteralPath $exe -PathType Leaf) -and (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash -eq $want) {
-            $script:uiInterpreter = $exe
-            return $exe
-        }
-    }
-    $null
-}
-
-# Advisory: the faces this session uses (ui-font.ahk get), slot -> face; $null when they cannot be read.
+# Read-only and advisory: the same two GET operations as ui-font.ahk, without
+# installing an interpreter. A failed native read remains liveUnknown; no SET,
+# broadcast, logoff or process restart is used to force activation.
 function UiLiveFaces {
-    $exe = UiFontInterpreter
-    if ($null -eq $exe) { return $null }
-    try { $slots = (Invoke-Native $exe @('/ErrorStdOut', (BundlePath 'ui-font.ahk'), 'get') 60 | ConvertFrom-Json).slots } catch { return $null }
-    $live = @{}
-    foreach ($slot in Get-UiFontSlots) { $live[$slot] = [string]$slots.$slot.face }
-    $live
+    try {
+        if (-not ('WindowsIacUiFontReader' -as [type])) {
+            Add-Type -TypeDefinition @"
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class WindowsIacUiFontReader {
+    [DllImport("user32.dll", EntryPoint="SystemParametersInfoW", SetLastError=true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool Get(uint action, uint size, [In, Out] byte[] buffer, uint flags);
+    public static byte[] Read(uint action, int size) {
+        var buffer = new byte[size];
+        if (action == 0x29) Array.Copy(BitConverter.GetBytes(size), buffer, 4);
+        if (!Get(action, (uint)size, buffer, 0)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        return buffer;
+    }
+}
+"@
+        }
+        [byte[]]$ncm = [WindowsIacUiFontReader]::Read(0x29, 504)
+        [byte[]]$icon = [WindowsIacUiFontReader]::Read(0x1F, 92)
+        $offsets = @{ caption = 24; smCaption = 124; menu = 224; status = 316; message = 408; icon = 0 }
+        $live = @{}
+        foreach ($slot in Get-UiFontSlots) {
+            [byte[]]$font = New-Object byte[] 92
+            $source = if ($slot -ceq 'icon') { $icon } else { $ncm }
+            [Array]::Copy($source, $offsets[$slot], $font, 0, 92)
+            $face = Get-LogFontFace $font
+            if ($null -eq $face) { return $null }
+            $live[$slot] = $face
+        }
+        return $live
+    } catch { return $null }
 }
 
 # Apply -Typography and Restore, once the selected fonts are exact: the context is checked, every slot is classified;
@@ -1957,13 +1989,18 @@ function AppStates {
     foreach ($app in $apps) {
         $found = @(Get-AppxPackage -Name $app.package | ForEach-Object {
             [pscustomobject]@{ name = [string]$_.Name; publisherId = [string]$_.PublisherId; version = [string]$_.Version; installLocation = [string]$_.InstallLocation } })
-        [pscustomobject]@{ app = $app; found = $found; action = (Get-AppAction $found $app) }
+        $action = Get-AppAction $found $app
+        $acceptedVersion = Get-Field $app 'acceptedVersion'
+        if ($action -ceq 'present' -and $null -ne $acceptedVersion -and $found[0].version -cne $acceptedVersion) { $action = 'refuse' }
+        [pscustomobject]@{ app = $app; found = $found; action = $action }
     }
 }
 
 # Restore: each absent app through the official WinGet from the Microsoft Store source, by its exact id.
 function ConvergeApps {
-    foreach ($state in @(AppStates | Where-Object { $_.action -ceq 'install' })) {
+    $states = @(AppStates)
+    if (@($states | Where-Object { $_.action -ceq 'refuse' }).Count) { throw 'Store app identity/version drift; never replaced or downgraded.' }
+    foreach ($state in @($states | Where-Object { $_.action -ceq 'install' })) {
         $winget = Join-Path $localAppData 'Microsoft\WindowsApps\winget.exe'
         EnsureWinGet $winget
         $effect = AppxEffect $state.app.package $state.app.publisherId $null
@@ -3015,12 +3052,13 @@ function PlanNoctty([switch]$Restore) {
         $foreign = @(Get-ForeignKeyContent $declared $contents @{})
         if ($foreign.Count) { throw "$($foreign -join '; '); nothing was changed." }
     }
+    $view = $null
     if ($Restore) {
         if (-not (TestTerminalPackage)) { throw 'Noctty default-terminal handoff requires Windows Terminal 1.24 or newer; nothing was changed.' }
-        $view = Test-PackageTerminalSelection
+        $view = Test-PackageTerminalSelection -ScratchRoot (Get-Variable PackageScratchRoot -ValueOnly -ErrorAction SilentlyContinue)
         if ($view.state -eq 'mismatch') { throw "$($view.failure) Nothing was changed." }
     }
-    [pscustomobject]@{ effects = $effects; classes = $classes; com = $com }
+    [pscustomobject]@{ effects = $effects; classes = $classes; com = $com; packageView = $view }
 }
 
 # Creates what the plan found absent, in order: the tree, the configuration, the %%Startup key,
@@ -3243,7 +3281,7 @@ function PackageEffect($Package) {
     $seed = Get-Field $Package 'seed'
     if ($null -ne $seed) { $files[$seed.path] = $seed.sha256 }
     [ordered]@{ id = 'tree-extracted:' + $target.ToUpperInvariant(); kind = 'tree-extracted'; target = $target
-        prior = [ordered]@{ exists = $false }; desired = [ordered]@{ exists = $true; files = $files } }
+        prior = [ordered]@{ exists = $false }; desired = [ordered]@{ exists = $true; files = $files; other = @(Get-Field $Package 'emptyDirectories' | Where-Object { $null -ne $_ }) } }
 }
 
 # O1, read-only: for a seeded package, the Preferences its seed would overwrite, or $null. Chromium's
@@ -3309,7 +3347,7 @@ function ClassifyPackage($Package) {
 
 # The packages this run converges or checks: every lock for Restore and RestoreTest, those named by -Packages for Apply.
 function SelectedPackages {
-    if ($Mode -eq 'Restore' -or $Mode -eq 'RestoreTest') { return @($manifest.packages) }
+    if ($Mode -cin @('Restore','RestoreTest','Plan')) { return @($manifest.packages) }
     @($manifest.packages | Where-Object { $packageNames -ccontains $_.name })
 }
 
@@ -3381,8 +3419,12 @@ function InstallPackage($State) {
             if ($null -ne (Get-Field $package 'sha1')) { $stream.Position = 0; $sha1 = -join ([Security.Cryptography.SHA1]::Create().ComputeHash($stream) | ForEach-Object { $_.ToString('x2') }) }
             $problem = Get-AssetProblem $package $stream.Length $sha256 $sha1
             if ($problem) { throw "The downloaded $($package.name) asset is not the lock: $problem" }
-            $listing = @(ConvertFrom-TarListing ((Invoke-Native $tar @('-tf', $asset) 600) -split "`n") $package.files)
-            $problem = Get-ZipEntryProblem $listing $package.files
+            $rawListing = @((Invoke-Native $tar @('-tf', $asset) 600) -split "`n")
+            # Windows ZIP names may use backslashes; parse their separator meaning
+            # before the unchanged strict inventory/path validation, never collapse dots.
+            if ($package.format -ceq 'zip') { $rawListing = @($rawListing | ForEach-Object { $_.Replace('\', '/') }) }
+            $listing = @(ConvertFrom-TarListing $rawListing $package.files (Get-Field $package 'emptyDirectories'))
+            $problem = Get-ZipEntryProblem $listing $package.files (Get-Field $package 'emptyDirectories')
             if ($problem) { throw "The $($package.name) archive is not the pinned inventory: $problem" }
             $null = [IO.Directory]::CreateDirectory($staging)
             $null = Invoke-Native $tar @('-xf', $asset, '-C', $staging) 600
@@ -3536,6 +3578,15 @@ function Uninstall {
 }
 
 $script:runIdentity = RunIdentity
+# Host-specific artifacts refuse a different user/context before any lock or effect.
+$target = Get-Field $manifest 'target'
+if ($null -ne $target) {
+    if ($target.unresolved.Count -ne 0 -or $target.name -ine $env:COMPUTERNAME -or
+        $target.sid -cne $script:runIdentity.sid -or $target.user -ine [Security.Principal.WindowsIdentity]::GetCurrent().Name -or
+        $target.architecture -cne 'x64' -or $env:PROCESSOR_ARCHITECTURE -ine 'AMD64') {
+        throw 'This artifact is not bound to this resolved host/user/architecture; nothing written.'
+    }
+}
 try {
     if ($Mode -cin @('RentSsh','RentSshTest','RentAccess','HostRemove','QuickHttp','ClientSsh','ClientSshTest')) {
         $null = HostCaller
@@ -3556,6 +3607,42 @@ try {
     }
     if ($Mode -cin @('PlatformRestore','PlatformTest')) { PlatformRestore; return }
     if ($Mode -eq 'Uninstall') { Uninstall; return }
+    # The same native classifiers as Restore, with no lock, recovery, install or removal.
+    if ($Mode -ceq 'Plan') {
+        $problem = PackageContextProblem
+        if ($problem) { throw "Plan requires normal user context: $problem" }
+        $null = ReadLedger
+        $nativeNoctty = PlanNoctty -Restore
+        $nativePackages = @(SelectedPackages | ForEach-Object { ClassifyPackage $_ })
+        PreflightPackages $nativePackages
+        $fontPlan = @(FontEffects | ForEach-Object { $_.file; $_.value } | ForEach-Object {
+            $state = Classify $_
+            [ordered]@{ id = $_.id; target = $_.target; class = $state.class; reason = $state.reason }
+        })
+        $uiPlan = @(if ($null -ne $uiTypography) { UiFontEffects | ForEach-Object {
+            $state = Classify $_
+            [ordered]@{ id = $_.id; target = $_.target; class = $state.class; reason = $state.reason }
+        } })
+        $nocttyPlan = @($nativeNoctty.classes.Keys | Sort-Object | ForEach-Object {
+            $state = $nativeNoctty.classes[$_]
+            [ordered]@{ id = $_; class = $state.class; reason = $state.reason }
+        })
+        [ordered]@{ mode = 'Plan'; source = $manifest.source; identity = $script:runIdentity
+            target = (Get-Field $manifest 'target'); coreSelection = (Get-Field $manifest 'core')
+            fonts = $fontPlan; uiFontFaces = $uiPlan; liveUiFont = $(if ($null -ne $uiTypography) { UiFontReport } else { $null })
+            noctty = $nocttyPlan; terminalSelection = (StartupPair); terminalPackageView = $nativeNoctty.packageView
+            terminalMinimumVersionMet = (TestTerminalPackage)
+            packages = @($nativePackages | ForEach-Object { [ordered]@{ name = $_.package.name; version = $_.package.version
+                target = $_.effect.target; class = $_.class; install = $_.install; converged = $_.converged; reason = $_.reason } })
+            apps = @(AppStates | ForEach-Object { [ordered]@{ name = $_.app.name; action = $_.action; acceptedVersion = (Get-Field $_.app 'acceptedVersion'); found = @($_.found) } })
+            ledgerRecords = $script:ledgerRecords.Count
+            ledgerLastRecords = @(LedgerIds | ForEach-Object { $last = @(RecordsOf $_)[-1]
+                [ordered]@{ id = $_; kind = $last.kind; target = $last.target; phase = $last.phase } })
+            preserveIncomplete = [bool]$PreserveIncomplete; changed = 0; recordsWritten = 0; inDesiredState = $false
+            observationEffects = 'Existing terminal-package context reader may use GUID scratch files and nonrecursive cleanup; managed product/ledger effects are zero.'
+        } | ConvertTo-Json -Depth 10 -Compress
+        return
+    }
     # RestoreTest reads the ledger without the lock or recovery; an unrecovered attempt reads as indeterminate.
     if ($Mode -eq 'RestoreTest') {
         $null = ReadLedger
@@ -3581,7 +3668,8 @@ try {
         if ($NocttyConfigOnly) {
             $effect = ApplyNocttyConfigOnly
             [ordered]@{ mode = $Mode; source = $manifest.source; scope = 'Noctty configuration only'; target = $effect.target
-                changedProperties = $script:changed; recordsWritten = $script:recordsWritten; inDesiredState = $true
+                changedProperties = $script:changed; recordsWritten = $script:recordsWritten; scopeInDesiredState = $true
+                inDesiredState = ($null -eq (Get-Field $manifest 'core')); coreSelection = (Get-Field $manifest 'core')
                 runtimeProof = 'unproven'; alias = $manifest.noctty.launch.alias; session = $manifest.noctty.launch.session } | ConvertTo-Json -Depth 8 -Compress
             return
         }
@@ -3602,9 +3690,9 @@ try {
             $nocttyPlan = PlanNoctty -Restore:($Mode -eq 'Restore')
             # Packages (all for Restore, those named by -Packages for Apply), classified after recovery;
             # every package refusal comes before the first effect, then installs, then old versions go.
-            # The UI font interpreter is a package, so Restore installs it before the faces are set.
             $packageStates = @(SelectedPackages | ForEach-Object { ClassifyPackage $_ })
             PreflightPackages $packageStates
+            if ($Mode -ceq 'Restore' -and @(AppStates | Where-Object { $_.action -ceq 'refuse' }).Count) { throw 'Store app identity/version drift before installation; never replaced or downgraded.' }
             foreach ($state in @($packageStates | Where-Object { $_.install })) { InstallPackage $state }
             # App Paths names point at the selected trees before old versions go, and retired names are collected, only
             # in a run that handles packages (Restore, or Apply with -Packages): without them no package state is touched.
@@ -3639,7 +3727,7 @@ try {
     if ($Mode -eq 'Restore' -or $Mode -eq 'RestoreTest') {
         $appStates = @(AppStates)
         $script:appDrift += @($appStates | Where-Object { $_.action -cne 'present' } | ForEach-Object {
-            "$($_.app.name) ($($_.app.package)) is $(if ($_.action -ceq 'install') { 'not installed' } else { "not exactly one package of publisher $($_.app.publisherId); never replaced" })" })
+            "$($_.app.name) ($($_.app.package)) is $(if ($_.action -ceq 'install') { 'not installed' } else { "identity/publisher/accepted-version drift; never replaced" })" })
         if ($script:appDrift.Count) { throw "App drift: $($script:appDrift -join '; ')" }
     }
     if ($Mode -eq 'Restore' -or $Mode -eq 'RestoreTest') {
@@ -3680,9 +3768,17 @@ try {
         apps = @($apps | ForEach-Object {
             $package = $_.package
             $state = @($appStates | Where-Object { $_.app.package -ceq $package })
-            [ordered]@{ name = $_.name; package = $package; id = $_.id
+            [ordered]@{ name = $_.name; package = $package; id = $_.id; acceptedVersion = (Get-Field $_ 'acceptedVersion'); supply = 'mutable msstore current; historical bytes not pinned'
                 version = $(if ($state.Count -and $state[0].action -ceq 'present') { $state[0].found[0].version } else { 'notEvaluated' }) } });
-        inDesiredState = ($Mode -ne 'Validate');
+        coreSelection = (Get-Field $manifest 'core');
+        actualTestScope = [ordered]@{ fontFiles = ($Mode -ne 'Validate'); desktopFontFaces = [bool]$uiFont
+            noctty = ($Mode -cin @('Restore','RestoreTest')); packages = @($packageStates | ForEach-Object { $_.package.name })
+            storeApps = @($appStates | ForEach-Object { $_.app.name }) };
+        preserveIncomplete = [bool]$PreserveIncomplete;
+        selectedScopeInDesiredState = $(if ($Mode -cin @('Restore','RestoreTest')) { $true } else { $null });
+        inDesiredState = $(if ($null -eq (Get-Field $manifest 'core')) { $Mode -ne 'Validate' }
+            else { $Mode -cin @('Restore','RestoreTest') -and @($manifest.core.pending).Count -eq 0 });
+        # A partial core cannot report the whole declared core in desired state; active UX is separate.
         registrationState = $(if (TestNocttyRegistration) { 'registered' } else { 'unregistered' });
         handoffProof = 'unproven' } | ConvertTo-Json -Compress -Depth 4
 }

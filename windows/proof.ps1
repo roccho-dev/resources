@@ -325,6 +325,34 @@ Must ((Get-AppAction @() $app) -ceq 'install' -and (Get-AppAction @(@{ name = 'O
     (Get-AppAction @(@{ name = 'OpenAI.Codex'; publisherId = 'aaaaaaaaaaaaa' }) $app) -ceq 'refuse' -and
     (Get-AppAction @(@{ name = 'OpenAI.Codex'; publisherId = '2P2NQSD0C76G0' }) $app) -ceq 'refuse' -and
     (Get-AppAction @(@{ name = 'OpenAI.Codex'; publisherId = '2p2nqsd0c76g0' }, @{ name = 'OpenAI.Codex'; publisherId = '2p2nqsd0c76g0' }) $app) -ceq 'refuse') 'Get-AppAction'
+# Version equality is the actual AppStates path, without invoking the Store.
+& {
+    $nativeAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'win.ps1'),[ref]$null,[ref]$null)
+    . ([scriptblock]::Create($nativeAst.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'AppStates'},$false).Extent.Text))
+    $apps = @(@{ package = 'Proof.App'; publisherId = 'aaaaaaaaaaaaa'; acceptedVersion = '1.2.3.4' })
+    $observedVersion = '1.2.3.4'
+    function Get-AppxPackage { param($Name) [pscustomobject]@{Name=$Name;PublisherId='aaaaaaaaaaaaa';Version=$observedVersion;InstallLocation='C:\proof'} }
+    Must (@(AppStates)[0].action -ceq 'present') 'matching declared Store version is preserved'
+    $observedVersion = '1.2.3.5'
+    Must (@(AppStates)[0].action -ceq 'refuse') 'Store update drift cannot silently change the core pin'
+}
+# Fileless directory closure uses the existing desired.other observation shape.
+$emptyFiles = @{ 'bin/app.exe' = ('a' * 64) }
+$emptyDirs = @('empty/','empty/nested/')
+$emptyState = @{ exists=$true; files=$emptyFiles; other=$emptyDirs }
+Must ($null -eq (Get-EmptyDirectoryProblem $emptyFiles $emptyDirs) -and
+    $null -eq (Get-EffectStateProblem tree-extracted $emptyState desired) -and
+    (Test-EffectStateEqual tree-extracted $emptyState $emptyState) -and
+    $null -eq (Get-ZipEntryProblem @('bin/app.exe','empty/nested/') $emptyFiles $emptyDirs)) 'exact nested empty directories match'
+foreach ($bad in @(@('empty/nested/'), @('Empty/','empty/nested/'), @('bin/'), @('empty/','EMPTY/'), @('../escape/'), @('empty'))) {
+    Must ($null -ne (Get-EmptyDirectoryProblem $emptyFiles $bad)) 'invalid empty directory declaration refuses'
+}
+Must (-not (Test-EffectStateEqual tree-extracted $emptyState @{exists=$true;files=$emptyFiles;other=@('empty/')}) -and
+    -not (Test-EffectStateEqual tree-extracted $emptyState @{exists=$true;files=$emptyFiles;other=@('empty/','empty/nested/','foreign/')}) -and
+    -not (Test-EffectStateEqual tree-extracted $emptyState @{exists=$true;files=@{'bin/app.exe'=('a'*64);'empty/foreign.txt'=('b'*64)};other=@('empty/nested/')}) -and
+    -not (Test-EffectStateEqual tree-extracted $emptyState @{exists=$true;files=$emptyFiles;other=@('empty','empty/nested/')})) 'missing/extra/nonempty/reparse directory state differs'
+Must ($null -ne (Get-ZipEntryProblem @('bin/app.exe') $emptyFiles $emptyDirs) -and
+    $null -ne (Get-ZipEntryProblem @('bin/app.exe','empty/','empty/nested/','foreign/') $emptyFiles $emptyDirs)) 'archive missing or extra empty directory refuses'
 # The bootstrap action has no registration branch. Validate every native candidate
 # before accepting a sufficient version (a later foreign record cannot be hidden by order).
 $bootstrap = $manifest.wingetBootstrap
@@ -332,6 +360,14 @@ $manualText = Get-NocttyConfigText $manifest.noctty 'C:\Windows\System32\OpenSSH
 Must ($manualText -ceq ('font-family = ' + $manifest.noctty.fontFamily + "`n" +
     'command = direct:C:\Windows\System32\OpenSSH\ssh.exe -F "C:\Users\a b\AppData\Local\noctty\versapro.config" -t ' + $manifest.noctty.launch.alias +
     ' zmx attach ' + $manifest.noctty.launch.session + "`nwindow-save-state = never`n")) 'Noctty direct SSH into the declared zmx session through its own SSH configuration alone, quoted native paths'
+# A local adapter uses the normal native shell without SSH or an arbitrary command.
+$localNoctty = @{ fontFamily = $manifest.noctty.fontFamily; launch = @{ mode = 'local'; shell = 'powershell'; windowSaveState = 'never' } }
+$localText = Get-NocttyConfigText $localNoctty 'C:\Windows\System32\OpenSSH\ssh.exe' 'C:\Users\unused\config'
+Must ($localText -ceq ('font-family = ' + $manifest.noctty.fontFamily + "`ncommand = direct:C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoLogo`nwindow-save-state = never`n")) 'local Noctty launch uses only the declared native shell'
+foreach ($badLocal in @(@{ mode = 'local'; shell = 'cmd'; windowSaveState = 'never' },
+        @{ mode = 'local'; shell = 'powershell'; windowSaveState = 'never'; command = 'injected' })) {
+    Must ($null -ne (Get-NocttyLaunchProblem $badLocal)) 'local launch rejects unapproved shells and extra commands'
+}
 # The SSH configuration Noctty reads: the bundled entries with every UserKnownHostsFile bound to the bundled pin's
 # absolute path and nothing else changed, never the ClientSsh slot; the declared alias is there, each HostKeyAlias pinned.
 $bundledSsh, $bundledPins = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'ssh\versapro.config')), [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'ssh\versapro.known_hosts'))
@@ -685,7 +721,8 @@ $tree = @{ exists = $true; files = @{ 'a.txt' = (Sha a) } }
 Must ((Test-EffectStateEqual tree-extracted $tree @{ exists = $true; files = @{ 'A.TXT' = (Sha a) }; other = @() }) -and
     -not (Test-EffectStateEqual tree-extracted $tree @{ exists = $true; files = @{ 'a.txt' = (Sha a) }; other = @('e/') }) -and
     (Get-UnownedClass tree-extracted $tree @{ exists = $true; files = $tree.files; other = @('j') } $null).class -ceq 'preexisting-drift') 'tree other entries'
-Must ($null -ne (Get-EffectRecordProblem (PureRecord 1 intent tree-extracted 'C:\u\t' $absent @{ exists = $true; files = $tree.files; other = @('e/') } $null $null))) 'a desired tree has no other entries'
+Must ($null -eq (Get-EffectRecordProblem (PureRecord 1 intent tree-extracted 'C:\u\t' $absent @{ exists = $true; files = $tree.files; other = @('e/') } $null $null))) 'a desired tree may declare an exact plain empty directory'
+Must ($null -ne (Get-EffectRecordProblem (PureRecord 1 intent tree-extracted 'C:\u\t' $absent @{ exists = $true; files = $tree.files; other = @('e') } $null $null))) 'a desired tree never declares an unmarked or reparse-like path'
 # D1: a partly removed owned tree resumes while its files are exact and only inventory directories
 # are left empty; anything else is refused. The whole tree keeps its order.
 $treeOwned = @{ kind = 'tree-extracted'; target = 'C:\u\t'; desired = @{ exists = $true; files = @{ 'a.txt' = (Sha a); 'd/b.txt' = (Sha b); 'd/e/c.txt' = (Sha c) } } }
@@ -880,6 +917,7 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
     $Mode, $localAppData, $ledgerDirectory, $zip = 'Apply', $Scratch, (Join-Path $Scratch 'ledger'), (Join-Path $Root 'payload\noctty.zip')
     $fontDirectory, $fontSubkey = (Join-Path $Scratch 'fonts'), 'Software\Microsoft\Windows NT\CurrentVersion\Fonts'
     $fontKey = 'HKCU\' + $fontSubkey
+    $appPathsSubkey = 'Software\Microsoft\Windows\CurrentVersion\App Paths'
     $nocttyDirectory = Join-Path $Scratch ('Programs\noctty-' + $manifest.noctty.version)
     $nocttySshConfig, $nocttyKnownHosts = (Join-Path $Scratch 'noctty\versapro.config'), (Join-Path $Scratch 'noctty\versapro.known_hosts')
     $nocttyFiles = [ordered]@{
@@ -892,6 +930,42 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
     $script:ledgerById = NewLedgerIndex
     $null = New-Item -ItemType Directory -Path $ledgerDirectory, (Join-Path $Scratch 'Programs'), (Split-Path -Parent $nocttyConfig) -Force
     $selected = NocttyEffects
+    & {
+        $Package = @{ emptyDirectories = @('foreign/','foreign/nested/') }
+        $isolatedNoctty = NocttyEffects
+        Must (@(Get-Field $isolatedNoctty.tree.desired 'other' | Where-Object { $null -ne $_ }).Count -eq 0) 'Noctty inventory is independent of ambient package bindings'
+    }
+
+    # PreserveIncomplete keeps an actual failed tree's bytes/intent and blocks
+    # both recovery cleanup and whole-tree undo before the first removal step.
+    $savedLedger = $ledgerDirectory
+    $savedRecords, $savedIndex, $savedSeq = $script:ledgerRecords, $script:ledgerById, $script:nextSeq
+    $savedWritten, $savedCopied, $savedChanged, $savedRemoved = $script:recordsWritten, $script:copied, $script:changed, $script:removed
+    try {
+        $PreserveIncomplete = $true
+        $ledgerDirectory = Join-Path $Scratch 'preserved-ledger'
+        $null = [IO.Directory]::CreateDirectory($ledgerDirectory)
+        $script:ledgerRecords, $script:nextSeq, $script:recordsWritten = @(), 1, 0
+        $script:ledgerById = NewLedgerIndex
+        $held = Tree 'noctty-preserved-1' @{ 'keep.txt' = (Sha 'keep') }
+        $held.desired.other = @('empty/','empty/nested/')
+        $stage = Staging $held
+        $null = [IO.Directory]::CreateDirectory((Join-Path $stage 'empty\nested'))
+        [IO.File]::WriteAllText((Join-Path $stage 'keep.txt'), 'keep', [Text.UTF8Encoding]::new($false))
+        WriteRecord 'intent' $held $null $stage
+        Refused { Recovering $held { throw 'expected preserved failure' } } '*expected preserved failure*'
+        Refused { RecoverId $held.id } '*retained by PreserveIncomplete*'
+        Refused { CleanStaging @(RecordsOf $held.id)[0] } '*retained by PreserveIncomplete*'
+        Refused { UndoOwnedSteps @(@{ id = $held.id; kind = 'tree-extracted'; action = 'delete-file'; path = (Join-Path $stage 'keep.txt') }) } '*Owned tree removal retained*'
+        Must ((Phases $held) -ceq 'intent' -and $script:recordsWritten -eq 1 -and
+            [IO.File]::ReadAllText((Join-Path $stage 'keep.txt')) -ceq 'keep' -and
+            [IO.Directory]::Exists((Join-Path $stage 'empty\nested'))) 'failed tree and unresolved intent remain unchanged'
+    } finally {
+        $PreserveIncomplete = $false
+        $ledgerDirectory = $savedLedger
+        $script:ledgerRecords, $script:ledgerById, $script:nextSeq = $savedRecords, $savedIndex, $savedSeq
+        $script:recordsWritten, $script:copied, $script:changed, $script:removed = $savedWritten, $savedCopied, $savedChanged, $savedRemoved
+    }
 
     # The whole entry list is checked before anything is written.
     $two = @{ 'noctty/a.txt' = (Sha 'a'); 'noctty/d/b.txt' = (Sha 'b') }
@@ -1124,7 +1198,6 @@ public static string[] Split(string cmd) {
     # re-point to a new version; the value names its tree (reference guard); A3 keeps a retired key holding
     # foreign content; a retired name is collected value then key, but not while a seed would overwrite a profile.
     $registryViews = @(@('HKCU', 'CurrentUser', 'Default'), @('HKLM', 'LocalMachine', 'Registry64'), @('HKLM32', 'LocalMachine', 'Registry32'))
-    $appPathsSubkey = 'Software\Microsoft\Windows\CurrentVersion\App Paths'
     $script:packageDrift, $script:sharedCreated = @(), @()
     $appName = 'proof-' + [guid]::NewGuid().ToString('N') + '.exe'
     $appSubkey = "$appPathsSubkey\$appName"
@@ -2724,6 +2797,41 @@ $second = Run 'Apply'
 if ($second.copied -ne 0 -or $second.changedProperties -ne 0 -or $second.removed -ne 0 -or $second.recordsWritten -ne 0) { throw 'Second apply changed state.' }
 MustNotClaimHandoff $first
 MustNotClaimHandoff (Run 'Test')
+
+# Actual entry-point guards, on a copy of this artifact: wrong target/SID/arch
+# or unresolved bindings fail before a ledger lock/effect. A font-only Test must
+# not claim that the unrelated selected products have been verified.
+$guardRoot = Join-Path $env:RUNNER_TEMP ('host-guards-' + [guid]::NewGuid().ToString('N'))
+$guardManifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'manifest.json') -Raw -Encoding utf8 | ConvertFrom-Json
+foreach ($name in $guardManifest.files.PSObject.Properties.Name) {
+    $path = Join-Path $guardRoot $name
+    $null = [IO.Directory]::CreateDirectory((Split-Path -Parent $path))
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $path
+}
+$guardManifest.core = [pscustomobject]@{ declared = @('fonts','Noctty','Notepads','Meltype','Chromium Beta'); selected = @('fonts','Noctty','Notepads','Meltype'); pending = @('Chromium Beta') }
+$validTarget = @{ name = $env:COMPUTERNAME; user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; architecture = 'x64'; unresolved = @() }
+foreach ($bad in @(@{ name = 'wrong-host-proof' }, @{ sid = 'S-1-0-0' }, @{ architecture = 'x86' }, @{ unresolved = @('missing binding') })) {
+    $case = @{}; foreach ($key in $validTarget.Keys) { $case[$key] = $validTarget[$key] }
+    foreach ($key in $bad.Keys) { $case[$key] = $bad[$key] }
+    $guardManifest.target = [pscustomobject]$case
+    [IO.File]::WriteAllText((Join-Path $guardRoot 'manifest.json'), ($guardManifest | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
+    $beforeGuard = @(Ledger).Count
+    $lines = @(& $windowsPowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $guardRoot 'win.ps1') -Mode Apply -PreserveIncomplete 2>&1)
+    Must ($LASTEXITCODE -ne 0 -and ($lines -join ' ') -like '*not bound to this resolved host*' -and @(Ledger).Count -eq $beforeGuard) 'target mismatch refuses before ledger/effects'
+}
+$guardManifest.target = [pscustomobject]$validTarget
+[IO.File]::WriteAllText((Join-Path $guardRoot 'manifest.json'), ($guardManifest | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
+$lines = @(& $windowsPowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $guardRoot 'win.ps1') -Mode Test 2>&1)
+Must ($LASTEXITCODE -eq 0) 'limited Test succeeds on the installed font bytes'
+$limited = ($lines -join "`n") | ConvertFrom-Json
+Must ($null -eq $limited.selectedScopeInDesiredState -and -not $limited.inDesiredState -and
+    $limited.actualTestScope.fontFiles -and -not $limited.actualTestScope.noctty -and
+    @($limited.actualTestScope.packages).Count -eq 0 -and @($limited.actualTestScope.storeApps).Count -eq 0) 'font-only Test does not claim all selected products'
+$lines = @(& $windowsPowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $guardRoot 'win.ps1') -Mode Apply -NocttyConfigOnly -PreserveIncomplete 2>&1)
+Must ($LASTEXITCODE -eq 0) 'config-only no-op succeeds'
+$configOnly = ($lines -join "`n") | ConvertFrom-Json
+Must ($configOnly.scopeInDesiredState -and -not $configOnly.inDesiredState -and $configOnly.recordsWritten -eq 0) 'config-only no-op does not claim the complete core'
 
 # A2: independent readback from the selection (manifest.fonts), not from win.ps1.
 foreach ($font in $fonts) {

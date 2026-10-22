@@ -1,7 +1,7 @@
 """Compile pinned Windows selections into a portable, deterministic distribution.
 
 This module does not choose products, versions, URLs, or host/site values.
-Those inputs belong to nix.nix; Windows effects belong to win.ps1, the native
+Those inputs belong to core/host definitions and the legacy nix.nix consumer; Windows effects belong to win.ps1, the native
 activation adapter.
 """
 from __future__ import annotations
@@ -13,6 +13,7 @@ import json
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import stat
 import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
@@ -174,19 +175,104 @@ def verify_asset(package: dict, path: Path) -> None:
         raise ValueError(f"Asset differs from the {package['name']} lock")
 
 
+def archive_windows_path(name: str) -> str:
+    """Parse archive names with Windows separator semantics; never collapse dots/empty parts."""
+    if name.endswith(("/", "\\")):
+        name = name[:-1]
+    return windows_path(name.replace("\\", "/"))
+
+
+def extract_windows_zip(archive_path: Path, destination: Path) -> None:
+    """Materialize a Windows ZIP on Linux after validating every entry, before any write.
+    7-Zip on Linux treats backslash ZIP names as literal filenames; Windows does not.
+    The locked original archive is unchanged. No symlinks or path aliases are allowed.
+    """
+    with zipfile.ZipFile(archive_path) as archive:
+        entries, seen, spellings = [], set(), {}
+        for info in archive.infolist():
+            raw = info.orig_filename
+            name = archive_windows_path(raw)
+            mode = stat.S_IFMT(info.external_attr >> 16)
+            if mode not in (0, stat.S_IFREG, stat.S_IFDIR):
+                raise ValueError(f"Non-regular ZIP entry: {raw!r}")
+            directory = info.is_dir() or raw.endswith("\\") or bool(info.external_attr & 0x10)
+            if directory and info.file_size:
+                raise ValueError(f"Nonempty ZIP directory entry: {raw!r}")
+            key = name.casefold()
+            if key in seen:
+                raise ValueError(f"Windows ZIP path collision: {raw!r}")
+            seen.add(key)
+            parts = name.split("/")
+            for i in range(1, len(parts) + 1):
+                prefix = "/".join(parts[:i])
+                if spellings.setdefault(prefix.casefold(), prefix) != prefix:
+                    raise ValueError(f"Windows ZIP parent case collision: {raw!r}")
+            entries.append((info, name, directory))
+        if not entries:
+            raise ValueError("Empty Windows ZIP")
+        kinds = {name.casefold(): directory for _, name, directory in entries}
+        for _, name, _ in entries:
+            parts = name.split("/")
+            if any(kinds.get("/".join(parts[:i]).casefold()) is False for i in range(1, len(parts))):
+                raise ValueError(f"ZIP file is also a parent directory: {name!r}")
+        destination.mkdir(parents=False, exist_ok=False)
+        for info, name, directory in entries:
+            path = destination / name
+            if directory:
+                path.mkdir(parents=True, exist_ok=True)
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(info) as source, path.open("xb") as target:
+                    shutil.copyfileobj(source, target)
+
+
 def listed_paths(listing: str) -> list[str]:
     """Entry paths of a `7zz l -slt` listing, each a Windows path, unique without case.
     Run on the listing before extraction."""
     _, separator, entries = listing.partition("\n----------\n")
     if not separator:
         raise ValueError("Not a 7-Zip technical listing")
-    paths = [windows_path(line[len("Path = "):]) for line in entries.splitlines() if line.startswith("Path = ")]
+    paths = [archive_windows_path(line[len("Path = "):]) for line in entries.splitlines() if line.startswith("Path = ")]
     if not paths or len({p.casefold() for p in paths}) != len(paths):
         raise ValueError("Empty listing or case-insensitive duplicate archive path")
     return paths
 
 
-def tree_inventory(root: Path, listed: list[str], required: str) -> dict[str, str]:
+def validate_empty_directories(files: dict[str, str], directories: object) -> list[str]:
+    """Exact fileless directory closure, as native ObserveTree.other reports it."""
+    if not isinstance(directories, list):
+        raise ValueError("emptyDirectories is not a list")
+    if not directories:
+        return []
+    seen, spellings, parents = set(), {}, set()
+    for name in files:
+        parts = name.split("/")
+        for i in range(1, len(parts) + 1):
+            prefix = "/".join(parts[:i])
+            if spellings.setdefault(prefix.casefold(), prefix) != prefix:
+                raise ValueError("File parent case collision")
+            if i < len(parts):
+                parents.add(prefix.casefold())
+    for entry in directories:
+        if not isinstance(entry, str) or not entry.endswith("/"):
+            raise ValueError("Empty directory lacks its marker")
+        name = windows_path(entry[:-1])
+        if name.casefold() in seen or any(overlaps(name, file) for file in files):
+            raise ValueError("Empty directory collision or file overlap")
+        seen.add(name.casefold())
+        parts = name.split("/")
+        for i in range(1, len(parts) + 1):
+            prefix = "/".join(parts[:i])
+            if spellings.setdefault(prefix.casefold(), prefix) != prefix:
+                raise ValueError("Empty directory parent case collision")
+    for entry in directories:
+        parts = entry[:-1].split("/")
+        if any("/".join(parts[:i]).casefold() not in parents | seen for i in range(1, len(parts))):
+            raise ValueError("Empty directory closure is incomplete")
+    return directories
+
+
+def tree_inventory(root: Path, listed: list[str], required: str, *, allow_empty: bool = False) -> dict[str, str]:
     """relative path -> sha256 of every file extracted under root. Fails on a symlink,
     anything but a regular file or directory, a path the archive listing does not name
     (a listed path's parent directories count as named), a directory with no file
@@ -208,7 +294,7 @@ def tree_inventory(root: Path, listed: list[str], required: str) -> dict[str, st
         else:
             raise ValueError(f"Not a regular file or directory: {name}")
     empty = [d for d in directories if not any(f.startswith(d + "/") for f in files)]
-    if empty:
+    if empty and not allow_empty:
         raise ValueError(f"Extracted tree has directories without files: {empty}")
     if required not in files:
         raise ValueError(f"Extracted tree lacks {required}")
@@ -220,8 +306,14 @@ def package_inventory(lock_path: Path, archive_path: Path, listing: Path, tree: 
     their byte sizes as extracted, which Restore's free-space gate adds to the asset size."""
     package, = package_locks([json.loads(lock_path.read_text(encoding="utf-8"))])
     verify_asset(package, archive_path)
-    files = tree_inventory(tree, listed_paths(listing.read_text(encoding="utf-8")), package["executable"])
-    write_json(out, {"files": files, "unpackedSize": sum((tree / name).stat().st_size for name in files)})
+    files = tree_inventory(tree, listed_paths(listing.read_text(encoding="utf-8")), package["executable"], allow_empty=True)
+    empty = sorted(p.relative_to(tree).as_posix() + "/" for p in tree.rglob("*") if p.is_dir()
+                   and not any(name.startswith(p.relative_to(tree).as_posix() + "/") for name in files))
+    validate_empty_directories(files, empty)
+    result = {"files": files, "unpackedSize": sum((tree / name).stat().st_size for name in files)}
+    if empty:
+        result["emptyDirectories"] = empty
+    write_json(out, result)
 
 
 def inventoried(packages: object) -> list[dict]:
@@ -235,13 +327,16 @@ def inventoried(packages: object) -> list[dict]:
         locks.append({key: value for key, value in package.items() if key != "inventory"})
         inventories.append(json.loads(Path(package["inventory"]).read_text(encoding="utf-8")))
     for lock, inventory in zip(package_locks(locks), inventories):
-        if not isinstance(inventory, dict) or set(inventory) != {"files", "unpackedSize"} or not is_size(inventory["unpackedSize"]):
+        if not isinstance(inventory, dict) or set(inventory) - {"emptyDirectories"} != {"files", "unpackedSize"} or not is_size(inventory["unpackedSize"]):
             raise ValueError(f"Invalid inventory for {lock['name']}")
         files = inventory["files"]
         if (not isinstance(files, dict) or lock["executable"] not in files
                 or len({name.casefold() for name in files}) != len(files)
                 or any(windows_path(name) != name or not isinstance(sha, str) for name, sha in files.items())):
             raise ValueError(f"Invalid inventory for {lock['name']}")
+        empty = validate_empty_directories(files, inventory.get("emptyDirectories", []))
+        if empty:
+            lock["emptyDirectories"] = empty
         for sha in files.values():
             hex_digest(sha, 64, f"{lock['name']} inventory sha256")
         if "seed" in lock:
@@ -331,24 +426,21 @@ def archive(root: Path, destination: Path) -> None:
 
 
 def typography(value: object, entries: list[dict], packages: list[dict]) -> dict | None:
-    """The desktop UI font face win.ps1 sets through ui-font.ahk: {desktop: <role>, interpreter:
-    <package name>} becomes {face: <that role's family>, interpreter, script}. The face fits a
-    LOGFONTW lfFaceName (1 to 31 UTF-16 units, no control or surrogate), as Test-UiFontFace checks."""
+    """Resolve the desktop font role. Native Windows GET APIs observe live faces;
+    no optional application is a prerequisite for font deployment or observation."""
     if value is None:
         return None
-    if not isinstance(value, dict) or set(value) != {"desktop", "interpreter"}:
-        raise ValueError("typography is not {desktop, interpreter}")
+    if not isinstance(value, dict) or set(value) != {"desktop"}:
+        raise ValueError("typography is not {desktop}")
     families = {e["role"]: e["family"] for e in entries}
     if value["desktop"] not in families:
         raise ValueError(f"typography role is not selected by common fonts: {value['desktop']!r}")
     face = families[value["desktop"]]
     units = len(face.encode("utf-16-le")) // 2
-    # A str holds code points, so a character beyond the BMP is caught by ord, not by a surrogate range.
     if not 1 <= units <= 31 or re.search(r"[\x00-\x1f\x7f\ud800-\udfff]", face) or any(ord(c) > 0xFFFF for c in face):
         raise ValueError(f"typography face does not fit a LOGFONTW: {face!r}")
-    if [p["name"] for p in packages].count(value["interpreter"]) != 1:
-        raise ValueError(f"typography interpreter is not one locked package: {value['interpreter']!r}")
-    return {"face": face, "interpreter": value["interpreter"], "script": "ui-font.ahk"}
+    return {"face": face, "observer": "SystemParametersInfoW"}
+
 
 
 APP_KEYS = {"name", "source", "id", "package", "publisherId"}
@@ -396,12 +488,16 @@ def store_apps(value: object, entries: list[dict]) -> list[dict]:
     if not isinstance(value, list):
         raise ValueError("apps is not a list")
     for app in value:
-        if not isinstance(app, dict) or set(app) - {"appearance"} != APP_KEYS or app["source"] != "msstore" or \
+        if not isinstance(app, dict) or set(app) - {"appearance", "acceptedVersion"} != APP_KEYS or app["source"] != "msstore" or \
                 not all(isinstance(app[k], str) for k in APP_KEYS) or \
                 not re.fullmatch(r"[0-9A-Z]{12}", app["id"]) or \
                 not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 .-]*", app["name"]) or \
                 not TOKEN.fullmatch(app["package"]) or not re.fullmatch(r"[a-z0-9]{13}", app["publisherId"]):
             raise ValueError(f"App is not {sorted(APP_KEYS)} of a msstore id and package identity: {app!r}")
+        if "acceptedVersion" in app and (not isinstance(app["acceptedVersion"], str) or
+                not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", app["acceptedVersion"]) or
+                any(int(part) > 65535 for part in app["acceptedVersion"].split("."))):
+            raise ValueError("acceptedVersion is not a four-component Appx version")
     for key in ("name", "id", "package"):
         if len({app[key].casefold() for app in value}) != len(value):
             raise ValueError(f"Two apps share a {key}")
@@ -544,7 +640,11 @@ def verify_platform(lock: object, asset: Path) -> None:
 
 
 def noctty_launch(value: object) -> dict:
-    """Bounded SSH alias and zmx session selection; no other remote command or fallback."""
+    """A bounded local shell or the existing SSH/zmx launch, never a guessed fallback."""
+    if isinstance(value, dict) and value.get("mode") == "local":
+        if set(value) != {"mode", "shell", "windowSaveState"} or value["shell"] != "powershell" or value["windowSaveState"] != "never":
+            raise ValueError("Invalid Noctty local shell selection")
+        return dict(value)
     if (not isinstance(value, dict) or set(value) != {"alias", "session", "windowSaveState"}
             or any(not isinstance(value.get(k), str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]+", value[k])
                    for k in ("alias", "session"))
@@ -581,12 +681,13 @@ def distribution(fonts: Path, noctty: Path, cloudflared: Path, choices: Path,
             raise ValueError("Declared Store apps require absent-AppInstaller recovery metadata")
         # rent-access.ps1 is the rent ProxyCommand launcher RentSsh installs beside the pinned client.
         for name in ("win.ps1", "proof.ps1", "handoff-proof.ps1", "handoff-evaluate.ps1",
-                     "package-view.ps1", "ui-font.ahk", "rent-access.ps1", "README.md"):
+                     "package-view.ps1", "ui-font.ahk", "rent-access.ps1", "host-state.ps1", "README.md"):
             shutil.copyfile(scripts / name, root / name)
         # The SSH entries and host key pin Noctty's command reads; win.ps1 writes them beside its configuration.
         (root / "ssh").mkdir()
-        for name in ("versapro.config", "versapro.known_hosts"):
-            shutil.copyfile(scripts / "ssh" / name, root / "ssh" / name)
+        if launch.get("mode") != "local":
+            for name in ("versapro.config", "versapro.known_hosts"):
+                shutil.copyfile(scripts / "ssh" / name, root / "ssh" / name)
         (root / "payload").mkdir()
         shutil.copyfile(noctty, root / "payload/noctty.zip")
         # The pinned official client, installed only by the explicit RentSsh mode, never by Restore.
@@ -609,7 +710,7 @@ def distribution(fonts: Path, noctty: Path, cloudflared: Path, choices: Path,
                    "cloudflared": {"version": selected["cloudflared"]["version"], "file": "payload/cloudflared.exe",
                                    "sha256": files["payload/cloudflared.exe"]},
                    "packages": packages, "typography": ui, "apps": apps, "wingetBootstrap": bootstrap,
-                   "wslPlatform": platform, "files": files})
+                   "wslPlatform": platform, "files": files, "target": selected.get("target"), "core": selected.get("core")})
         output = out / "windows-dist.zip"
         archive(root, output)
         (out / "windows-dist.zip.sha256").write_text(digest(output) + "  windows-dist.zip\n", encoding="ascii")
@@ -626,6 +727,9 @@ if __name__ == "__main__":
         dist_parser.add_argument(argument, type=Path)
     dist_parser.add_argument("source")
     dist_parser.add_argument("out", type=Path)
+    zip_parser = sub.add_parser("extract-zip")
+    zip_parser.add_argument("archive", type=Path)
+    zip_parser.add_argument("destination", type=Path)
     listing_parser = sub.add_parser("listing")
     listing_parser.add_argument("listing", type=Path)
     inventory_parser = sub.add_parser("inventory")
@@ -640,6 +744,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.command == "fonts":
         prepare_fonts(json.loads(args.policy.read_text()), args.out)
+    elif args.command == "extract-zip":
+        extract_windows_zip(args.archive, args.destination)
     elif args.command == "listing":
         listed_paths(args.listing.read_text(encoding="utf-8"))
     elif args.command == "inventory":

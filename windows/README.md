@@ -1,7 +1,71 @@
 # Common selection → Windows recovery
 
-Issue #7 implementation slice. `nix.nix` is the only authority for selections,
-pins and package locks; `win.ps1` is a small native Windows activation adapter
+## Explicit host compositions
+
+`windows/core.nix` owns the Windows core once: Notepads, Noctty, the existing
+shared fonts, Chromium itself Beta, and the roccho-dev Meltype fork. Host files
+in `windows/hosts` contain only local bindings; they do not repeat product pins
+or deployment logic. `nix eval --json .#windowsHosts` reports both compositions.
+PC7337 is bound to its observed user/SID and x64 context, with a local PowerShell
+Noctty launch. G6I3 deliberately reports its unobserved user, architecture and
+launch as unresolved; this is structural support, not a deployed G6I3 claim.
+
+Chromium Beta has no accepted Windows artifact supplier/build yet. Chrome,
+ungoogled, Stable, and an arbitrary snapshot sharing a milestone are not fallback
+products. The full `windows-pc7337-dist` output is unavailable while any required
+core input is pending. `nix build .#windows-pc7337-partial-dist` produces only the
+four available core selections and records the missing Beta selection in the
+manifest and native report. `selectedScopeInDesiredState` is true only when Restore/RestoreTest actually
+check the whole selected scope; narrower modes report `actualTestScope` instead; `inDesiredState` stays false while a required core product is pending.
+
+Notepads has one accepted Appx version in the core. Existing and newly fetched
+packages must match product, publisher and that version. Another version is drift
+and is never automatically adopted, downgraded or reinstalled. Store payload bytes
+and future availability are mutable; this does not promise historical byte-for-byte
+recreation. A matching existing package is preserved.
+
+Only that explicitly selected PC7337 artifact may be restored on PC7337, from
+its normal unelevated user context. Its host/SID/architecture guard runs before
+any ledger lock/effect. Its Restore does not install or alter AutoHotkey,
+ChatGPT, or Stable Chromium. The old `windows-dist` output is an explicit legacy
+proof consumer, not the PC7337 deployment entry. Existing unrelated installations
+and application data are not adopted or removed.
+
+Notepads uses its official Store identity. A matching existing installation is
+retained and its observed version reported; mutable Store supply is not a promise
+of bit-for-bit historical reproduction. Meltype's Windows asset follows the
+version of the existing locked fork source; its digest and extracted inventory
+are checked. Its upstream installer, keyboard hooks, startup registration and
+self-test are not invoked by restoring the portable tree. User data stays outside
+the owned tree. Locked ZIP bytes are kept unchanged; Windows separators and
+declared fileless directory closure are materialized and observed exactly, with
+unknown paths, aliases, reparse points and file/directory conflicts refused. Any live functional check must disclose its actual effects.
+
+Use `-Mode Plan -PreserveIncomplete -PackageScratchRoot <existing-bounded-directory>` to read the same native classifiers as Restore
+(fonts, UI faces, Noctty/COM, packages, Store registration and prior ledger), without
+a lock, recovery or managed product/ledger effects. Pass the same explicit
+scratch root to subsequent Restore/RestoreTest calls. The existing terminal-package
+reader may use a finite GUID scratch directory and nonrecursive cleanup; its
+context read is not a UI/handoff proof. For the first PC7337 application use
+`-Mode Restore -PreserveIncomplete` after
+normal-user preflight confirms no unresolved ledger effects or old owned trees.
+This option preserves failed effects and refuses automatic staging/owned-tree
+removal. It does not authorize cleanup: inspect the exact retained paths and seek
+per-occurrence approval before any equivalent recursive removal. Prove reapplication no-op with the same artifact and
+`-Mode Restore -PreserveIncomplete` again (copied/changed/removed/recordsWritten
+all zero), then use `-Mode RestoreTest` for independent read-only convergence.
+A sign-in requirement remains pending activation.
+
+`host-state.ps1` is a finite read-only font observation entry for a machine whose
+fonts are not installed yet. It verifies the same distribution's script inventory
+and calls the exact native getter, reports live/persisted/unknown separately, and
+changes nothing. No reboot, signout or running-application termination is used.
+A pending sign-in remains pending activation, not full active host equality.
+
+
+Issue #7 legacy implementation slice. Core selections belong to `core.nix` and
+the existing shared font definition; `nix.nix` materializes those inputs and
+retains selections/locks only for legacy products outside this core; `win.ps1` is a small native Windows activation adapter
 that realizes them. No DSC backend, WinGet catalog, per-product installer, or new
 top-level directory is used. (The DSC `Microsoft.Windows/Registry` resource is a
 proof-of-concept example that Microsoft says not to use in production, so the
@@ -689,10 +753,11 @@ title.
 - **When it takes effect:** Windows reads these values at sign-in, so the faces apply
   after the user's next normal sign-in. Running applications are not notified.
   - Each slot is reported as `pendingLogon` (persisted, not yet in use), `active` (in
-    use; read through `ui-font.ahk get`), `liveUnknown` (no interpreter to read with)
-    or `drift`.
-  - `ui-font.ahk` is now read-only and advisory. It runs on the locked AutoHotkey, never
-    sets anything, and is needed for no write.
+    use; read through native `SystemParametersInfoW` GET calls), `liveUnknown`
+    (the native read failed) or `drift`.
+  - Live observation installs no interpreter. It reads NONCLIENTMETRICS and the
+    icon LOGFONT only; no SET call, broadcast, signout or process restart occurs.
+    `ui-font.ahk` remains a legacy read-only proof input, not a deployment prerequisite.
 - **Unproven:** this layout is not a documented API contract. It is tested on Windows 11
   build 26200 (the host, read only) and the CI runner's Windows Server; it is proven only
   once a real user's sign-in shows the faces `active`. If something calls the SPI SET
