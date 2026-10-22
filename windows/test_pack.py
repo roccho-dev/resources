@@ -375,6 +375,20 @@ class CompilerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "without files"):
             pack.tree_inventory(tree, ["bin/fixture.exe", "bin/empty/deeper", "readme"], "bin/fixture.exe")
 
+    def test_exact_empty_directory_closure(self):
+        tree = self.extracted()
+        (tree / "empty/nested").mkdir(parents=True)
+        listing = ["bin/fixture.exe", "readme", "empty/nested"]
+        files = pack.tree_inventory(tree, listing, "bin/fixture.exe", allow_empty=True)
+        dirs = ["empty/", "empty/nested/"]
+        self.assertEqual(pack.validate_empty_directories(files, dirs), dirs)
+        raw = {"files": files, "unpackedSize": 16, "emptyDirectories": dirs}
+        self.assertEqual(pack.inventoried([self.lock(inventory=str(self.inventory(raw=raw)))])[0]["emptyDirectories"], dirs)
+        for bad in (["empty/nested/"], ["Empty/", "empty/nested/"], ["bin/"], ["readme/"],
+                    ["empty/", "EMPTY/"], ["../escape/"], ["empty"], ["bin/FIXTURE.exe/sub/"]):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                pack.validate_empty_directories(files, bad)
+
     def test_tree_inventory_rejects_symlink(self):
         tree = self.extracted()
         try:
@@ -590,6 +604,11 @@ class CompilerTests(unittest.TestCase):
     def test_store_app_contract(self):
         self.assertEqual(pack.store_apps([self.APP], []), [self.APP])
         self.assertEqual(pack.store_apps(None, []), [])
+        fixed = {**self.APP, "acceptedVersion": "1.2.3.4"}
+        self.assertEqual(pack.store_apps([fixed], []), [fixed])
+        for version in ("1.2", "01.2.3.4", "1.2.3.65536", 1234):
+            with self.subTest(version=version), self.assertRaises(ValueError):
+                pack.store_apps([{**self.APP, "acceptedVersion": version}], [])
         bad = {
             "not a list": self.APP,
             "extra key": [{**self.APP, "version": "1.0"}],

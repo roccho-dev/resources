@@ -325,6 +325,34 @@ Must ((Get-AppAction @() $app) -ceq 'install' -and (Get-AppAction @(@{ name = 'O
     (Get-AppAction @(@{ name = 'OpenAI.Codex'; publisherId = 'aaaaaaaaaaaaa' }) $app) -ceq 'refuse' -and
     (Get-AppAction @(@{ name = 'OpenAI.Codex'; publisherId = '2P2NQSD0C76G0' }) $app) -ceq 'refuse' -and
     (Get-AppAction @(@{ name = 'OpenAI.Codex'; publisherId = '2p2nqsd0c76g0' }, @{ name = 'OpenAI.Codex'; publisherId = '2p2nqsd0c76g0' }) $app) -ceq 'refuse') 'Get-AppAction'
+# Version equality is the actual AppStates path, without invoking the Store.
+& {
+    $nativeAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'win.ps1'),[ref]$null,[ref]$null)
+    . ([scriptblock]::Create($nativeAst.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'AppStates'},$false).Extent.Text))
+    $apps = @(@{ package = 'Proof.App'; publisherId = 'aaaaaaaaaaaaa'; acceptedVersion = '1.2.3.4' })
+    $observedVersion = '1.2.3.4'
+    function Get-AppxPackage { param($Name) [pscustomobject]@{Name=$Name;PublisherId='aaaaaaaaaaaaa';Version=$observedVersion;InstallLocation='C:\proof'} }
+    Must (@(AppStates)[0].action -ceq 'present') 'matching declared Store version is preserved'
+    $observedVersion = '1.2.3.5'
+    Must (@(AppStates)[0].action -ceq 'refuse') 'Store update drift cannot silently change the core pin'
+}
+# Fileless directory closure uses the existing desired.other observation shape.
+$emptyFiles = @{ 'bin/app.exe' = ('a' * 64) }
+$emptyDirs = @('empty/','empty/nested/')
+$emptyState = @{ exists=$true; files=$emptyFiles; other=$emptyDirs }
+Must ($null -eq (Get-EmptyDirectoryProblem $emptyFiles $emptyDirs) -and
+    $null -eq (Get-EffectStateProblem tree-extracted $emptyState desired) -and
+    (Test-EffectStateEqual tree-extracted $emptyState $emptyState) -and
+    $null -eq (Get-ZipEntryProblem @('bin/app.exe','empty/nested/') $emptyFiles $emptyDirs)) 'exact nested empty directories match'
+foreach ($bad in @(@('empty/nested/'), @('Empty/','empty/nested/'), @('bin/'), @('empty/','EMPTY/'), @('../escape/'), @('empty'))) {
+    Must ($null -ne (Get-EmptyDirectoryProblem $emptyFiles $bad)) 'invalid empty directory declaration refuses'
+}
+Must (-not (Test-EffectStateEqual tree-extracted $emptyState @{exists=$true;files=$emptyFiles;other=@('empty/')}) -and
+    -not (Test-EffectStateEqual tree-extracted $emptyState @{exists=$true;files=$emptyFiles;other=@('empty/','empty/nested/','foreign/')}) -and
+    -not (Test-EffectStateEqual tree-extracted $emptyState @{exists=$true;files=@{'bin/app.exe'=('a'*64);'empty/foreign.txt'=('b'*64)};other=@('empty/nested/')}) -and
+    -not (Test-EffectStateEqual tree-extracted $emptyState @{exists=$true;files=$emptyFiles;other=@('empty','empty/nested/')})) 'missing/extra/nonempty/reparse directory state differs'
+Must ($null -ne (Get-ZipEntryProblem @('bin/app.exe') $emptyFiles $emptyDirs) -and
+    $null -ne (Get-ZipEntryProblem @('bin/app.exe','empty/','empty/nested/','foreign/') $emptyFiles $emptyDirs)) 'archive missing or extra empty directory refuses'
 # The bootstrap action has no registration branch. Validate every native candidate
 # before accepting a sufficient version (a later foreign record cannot be hidden by order).
 $bootstrap = $manifest.wingetBootstrap
@@ -913,8 +941,9 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
         $script:ledgerRecords, $script:nextSeq, $script:recordsWritten = @(), 1, 0
         $script:ledgerById = NewLedgerIndex
         $held = Tree 'preserved-1' @{ 'keep.txt' = (Sha 'keep') }
+        $held.desired.other = @('empty/','empty/nested/')
         $stage = Staging $held
-        $null = [IO.Directory]::CreateDirectory($stage)
+        $null = [IO.Directory]::CreateDirectory((Join-Path $stage 'empty\nested'))
         [IO.File]::WriteAllText((Join-Path $stage 'keep.txt'), 'keep', [Text.UTF8Encoding]::new($false))
         WriteRecord 'intent' $held $null $stage
         Refused { Recovering $held { throw 'expected preserved failure' } } '*expected preserved failure*'
@@ -922,7 +951,8 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
         Refused { CleanStaging @(RecordsOf $held.id)[0] } '*retained by PreserveIncomplete*'
         Refused { UndoOwnedSteps @(@{ id = $held.id; kind = 'tree-extracted'; action = 'delete-file'; path = (Join-Path $stage 'keep.txt') }) } '*Owned tree removal retained*'
         Must ((Phases $held) -ceq 'intent' -and $script:recordsWritten -eq 1 -and
-            [IO.File]::ReadAllText((Join-Path $stage 'keep.txt')) -ceq 'keep') 'failed tree and unresolved intent remain unchanged'
+            [IO.File]::ReadAllText((Join-Path $stage 'keep.txt')) -ceq 'keep' -and
+            [IO.Directory]::Exists((Join-Path $stage 'empty\nested'))) 'failed tree and unresolved intent remain unchanged'
     } finally {
         $PreserveIncomplete = $false
         $ledgerDirectory = $savedLedger

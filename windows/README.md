@@ -18,6 +18,12 @@ four available core selections and records the missing Beta selection in the
 manifest and native report. `selectedScopeInDesiredState` is true only when Restore/RestoreTest actually
 check the whole selected scope; narrower modes report `actualTestScope` instead; `inDesiredState` stays false while a required core product is pending.
 
+Notepads has one accepted Appx version in the core. Existing and newly fetched
+packages must match product, publisher and that version. Another version is drift
+and is never automatically adopted, downgraded or reinstalled. Store payload bytes
+and future availability are mutable; this does not promise historical byte-for-byte
+recreation. A matching existing package is preserved.
+
 Only that explicitly selected PC7337 artifact may be restored on PC7337, from
 its normal unelevated user context. Its host/SID/architecture guard runs before
 any ledger lock/effect. Its Restore does not install or alter AutoHotkey,
@@ -31,19 +37,24 @@ of bit-for-bit historical reproduction. Meltype's Windows asset follows the
 version of the existing locked fork source; its digest and extracted inventory
 are checked. Its upstream installer, keyboard hooks, startup registration and
 self-test are not invoked by restoring the portable tree. User data stays outside
-the owned tree. Any live functional check must disclose its actual effects.
+the owned tree. Locked ZIP bytes are kept unchanged; Windows separators and
+declared fileless directory closure are materialized and observed exactly, with
+unknown paths, aliases, reparse points and file/directory conflicts refused. Any live functional check must disclose its actual effects.
 
-Use `-Mode Plan -PreserveIncomplete` to read the same native classifiers as Restore
+Use `-Mode Plan -PreserveIncomplete -PackageScratchRoot <existing-bounded-directory>` to read the same native classifiers as Restore
 (fonts, UI faces, Noctty/COM, packages, Store registration and prior ledger), without
-a lock, recovery or managed product/ledger effects. The existing terminal-package
+a lock, recovery or managed product/ledger effects. Pass the same explicit
+scratch root to subsequent Restore/RestoreTest calls. The existing terminal-package
 reader may use a finite GUID scratch directory and nonrecursive cleanup; its
 context read is not a UI/handoff proof. For the first PC7337 application use
 `-Mode Restore -PreserveIncomplete` after
 normal-user preflight confirms no unresolved ledger effects or old owned trees.
 This option preserves failed effects and refuses automatic staging/owned-tree
 removal. It does not authorize cleanup: inspect the exact retained paths and seek
-per-occurrence approval before any equivalent recursive removal. No-op validation
-uses `-Mode RestoreTest`; a sign-in requirement remains pending activation.
+per-occurrence approval before any equivalent recursive removal. Prove reapplication no-op with the same artifact and
+`-Mode Restore -PreserveIncomplete` again (copied/changed/removed/recordsWritten
+all zero), then use `-Mode RestoreTest` for independent read-only convergence.
+A sign-in requirement remains pending activation.
 
 `host-state.ps1` is a finite read-only font observation entry for a machine whose
 fonts are not installed yet. It verifies the same distribution's script inventory

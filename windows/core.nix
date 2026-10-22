@@ -30,9 +30,9 @@ in {
       installLocation = "Programs/Meltype"; executable = "Meltype.exe"; };
     protected = [ "Meltype" ]; appPath = "meltype.exe";
   } ];
-  # Mutable Store supply: retain/report an existing matching package, never pin
-  # or silently adopt its observed bytes as a new canonical release.
+  # Store payload bytes are mutable, but the accepted product/publisher/Appx
+  # version is explicit. Another version is drift, never silently adopted.
   apps = [ { name = "Notepads"; source = "msstore"; id = "9NHL4NSC67WM";
-    package = "19282JackieLiu.Notepads-Beta"; publisherId = "echhpq9pdbte8"; } ];
+    package = "19282JackieLiu.Notepads-Beta"; publisherId = "echhpq9pdbte8"; acceptedVersion = "1.5.6.0"; } ];
   typography = { desktop = "ui"; };
 }

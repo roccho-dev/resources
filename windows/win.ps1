@@ -29,7 +29,9 @@ param(
     # Apply only: converge/recover the Noctty configuration alone; no terminal selection, fonts or runtime launch.
     [Alias('NocttyConfig')][switch]$NocttyConfigOnly,
     # Keep incomplete effects and tree-removal plans for explicit scoped recovery; no automatic cleanup.
-    [switch]$PreserveIncomplete
+    [switch]$PreserveIncomplete,
+    # Existing terminal-package reader scratch only; no change to the host/user identity.
+    [string]$PackageScratchRoot
 )
 
 # The native Windows activation adapter. Product selection belongs to the built distribution (Nix).
@@ -189,6 +191,8 @@ function AssertPackageShape($Package) {
     foreach ($foreign in @($existing.installLocation) + @($protected)) {
         if (PathsOverlap $Package.directory $foreign) { throw "Package directory overlaps an unowned path: $name" }
     }
+    $problem = Get-EmptyDirectoryProblem $Package.files (Get-Field $Package 'emptyDirectories')
+    if ($problem) { throw "Invalid package directories: ${name}: $problem" }
     # A seed goes into the owned tree beside the executable, from a bundle file of its exact hash.
     $problem = Get-SeedProblem $Package $manifest.files
     if ($problem) { throw "Invalid package seed in manifest: ${name}: $problem" }
@@ -235,6 +239,10 @@ foreach ($app in $apps) {
         [string](Get-Field $app 'package') -cnotmatch '^[A-Za-z0-9][A-Za-z0-9.-]*\z' -or [string](Get-Field $app 'publisherId') -cnotmatch '^[a-z0-9]{13}\z') {
         throw "Invalid app in manifest: $(Get-Field $app 'name')"
     }
+    $acceptedVersion = Get-Field $app 'acceptedVersion'
+    if ($null -ne $acceptedVersion -and ($acceptedVersion -isnot [string] -or
+        $acceptedVersion -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\z' -or
+        @($acceptedVersion.Split('.') | Where-Object { [long]$_ -gt 65535 }).Count)) { throw 'Invalid accepted Appx version.' }
     # Its font preconfiguration (pack.py): quoted CSS families for ui, code and content, and the app's own complete
     # light and dark themes, used only where a theme is absent.
     $appearance = Get-Field $app 'appearance'
@@ -408,7 +416,7 @@ function RecordPriorTerminal([object]$Console, [object]$Terminal) {
 # HKCU that the package, and so the handoff, never sees. Unavailable or differing
 # views fail; nothing here writes the registry.
 function AssertActualSelection {
-    $view = Test-PackageTerminalSelection
+    $view = Test-PackageTerminalSelection -ScratchRoot (Get-Variable PackageScratchRoot -ValueOnly -ErrorAction SilentlyContinue)
     if ($view.state -ne 'match') {
         throw ("The default-terminal selection is not confirmed from the Windows Terminal package ($($view.state)): " +
             "$($view.failure)$($view.gap) Scratch cleanup: $($view.cleanup)")
@@ -1164,7 +1172,7 @@ function NocttyEffects {
     $config = [Security.Cryptography.SHA256]::Create().ComputeHash([Text.UTF8Encoding]::new($false).GetBytes($nocttyConfigText))
     [ordered]@{
         tree = [ordered]@{ id = 'tree-extracted:' + $nocttyDirectory.ToUpperInvariant(); kind = 'tree-extracted'; target = $nocttyDirectory
-            prior = [ordered]@{ exists = $false }; desired = [ordered]@{ exists = $true; files = $files } }
+            prior = [ordered]@{ exists = $false }; desired = [ordered]@{ exists = $true; files = $files; other = @(Get-Field $Package 'emptyDirectories' | Where-Object { $null -ne $_ }) } }
         config = FileEffect $nocttyConfig (-join ($config | ForEach-Object { $_.ToString('x2') }))
         files = @(foreach ($path in $nocttyFiles.Keys) {
             FileEffect $path (-join ([Security.Cryptography.SHA256]::Create().ComputeHash($nocttyFiles[$path]) | ForEach-Object { $_.ToString('x2') })) })
@@ -1981,13 +1989,18 @@ function AppStates {
     foreach ($app in $apps) {
         $found = @(Get-AppxPackage -Name $app.package | ForEach-Object {
             [pscustomobject]@{ name = [string]$_.Name; publisherId = [string]$_.PublisherId; version = [string]$_.Version; installLocation = [string]$_.InstallLocation } })
-        [pscustomobject]@{ app = $app; found = $found; action = (Get-AppAction $found $app) }
+        $action = Get-AppAction $found $app
+        $acceptedVersion = Get-Field $app 'acceptedVersion'
+        if ($action -ceq 'present' -and $null -ne $acceptedVersion -and $found[0].version -cne $acceptedVersion) { $action = 'refuse' }
+        [pscustomobject]@{ app = $app; found = $found; action = $action }
     }
 }
 
 # Restore: each absent app through the official WinGet from the Microsoft Store source, by its exact id.
 function ConvergeApps {
-    foreach ($state in @(AppStates | Where-Object { $_.action -ceq 'install' })) {
+    $states = @(AppStates)
+    if (@($states | Where-Object { $_.action -ceq 'refuse' }).Count) { throw 'Store app identity/version drift; never replaced or downgraded.' }
+    foreach ($state in @($states | Where-Object { $_.action -ceq 'install' })) {
         $winget = Join-Path $localAppData 'Microsoft\WindowsApps\winget.exe'
         EnsureWinGet $winget
         $effect = AppxEffect $state.app.package $state.app.publisherId $null
@@ -3041,7 +3054,7 @@ function PlanNoctty([switch]$Restore) {
     }
     if ($Restore) {
         if (-not (TestTerminalPackage)) { throw 'Noctty default-terminal handoff requires Windows Terminal 1.24 or newer; nothing was changed.' }
-        $view = Test-PackageTerminalSelection
+        $view = Test-PackageTerminalSelection -ScratchRoot (Get-Variable PackageScratchRoot -ValueOnly -ErrorAction SilentlyContinue)
         if ($view.state -eq 'mismatch') { throw "$($view.failure) Nothing was changed." }
     }
     [pscustomobject]@{ effects = $effects; classes = $classes; com = $com }
@@ -3267,7 +3280,7 @@ function PackageEffect($Package) {
     $seed = Get-Field $Package 'seed'
     if ($null -ne $seed) { $files[$seed.path] = $seed.sha256 }
     [ordered]@{ id = 'tree-extracted:' + $target.ToUpperInvariant(); kind = 'tree-extracted'; target = $target
-        prior = [ordered]@{ exists = $false }; desired = [ordered]@{ exists = $true; files = $files } }
+        prior = [ordered]@{ exists = $false }; desired = [ordered]@{ exists = $true; files = $files; other = @(Get-Field $Package 'emptyDirectories' | Where-Object { $null -ne $_ }) } }
 }
 
 # O1, read-only: for a seeded package, the Preferences its seed would overwrite, or $null. Chromium's
@@ -3409,8 +3422,8 @@ function InstallPackage($State) {
             # Windows ZIP names may use backslashes; parse their separator meaning
             # before the unchanged strict inventory/path validation, never collapse dots.
             if ($package.format -ceq 'zip') { $rawListing = @($rawListing | ForEach-Object { $_.Replace('\', '/') }) }
-            $listing = @(ConvertFrom-TarListing $rawListing $package.files)
-            $problem = Get-ZipEntryProblem $listing $package.files
+            $listing = @(ConvertFrom-TarListing $rawListing $package.files (Get-Field $package 'emptyDirectories'))
+            $problem = Get-ZipEntryProblem $listing $package.files (Get-Field $package 'emptyDirectories')
             if ($problem) { throw "The $($package.name) archive is not the pinned inventory: $problem" }
             $null = [IO.Directory]::CreateDirectory($staging)
             $null = Invoke-Native $tar @('-xf', $asset, '-C', $staging) 600
@@ -3620,7 +3633,7 @@ try {
             terminalMinimumVersionMet = (TestTerminalPackage)
             packages = @($nativePackages | ForEach-Object { [ordered]@{ name = $_.package.name; version = $_.package.version
                 target = $_.effect.target; class = $_.class; install = $_.install; converged = $_.converged; reason = $_.reason } })
-            apps = @(AppStates | ForEach-Object { [ordered]@{ name = $_.app.name; action = $_.action; found = @($_.found) } })
+            apps = @(AppStates | ForEach-Object { [ordered]@{ name = $_.app.name; action = $_.action; acceptedVersion = (Get-Field $_.app 'acceptedVersion'); found = @($_.found) } })
             ledgerRecords = $script:ledgerRecords.Count
             ledgerLastRecords = @(LedgerIds | ForEach-Object { $last = @(RecordsOf $_)[-1]
                 [ordered]@{ id = $_; kind = $last.kind; target = $last.target; phase = $last.phase } })
@@ -3678,6 +3691,7 @@ try {
             # every package refusal comes before the first effect, then installs, then old versions go.
             $packageStates = @(SelectedPackages | ForEach-Object { ClassifyPackage $_ })
             PreflightPackages $packageStates
+            if ($Mode -ceq 'Restore' -and @(AppStates | Where-Object { $_.action -ceq 'refuse' }).Count) { throw 'Store app identity/version drift before installation; never replaced or downgraded.' }
             foreach ($state in @($packageStates | Where-Object { $_.install })) { InstallPackage $state }
             # App Paths names point at the selected trees before old versions go, and retired names are collected, only
             # in a run that handles packages (Restore, or Apply with -Packages): without them no package state is touched.
@@ -3712,7 +3726,7 @@ try {
     if ($Mode -eq 'Restore' -or $Mode -eq 'RestoreTest') {
         $appStates = @(AppStates)
         $script:appDrift += @($appStates | Where-Object { $_.action -cne 'present' } | ForEach-Object {
-            "$($_.app.name) ($($_.app.package)) is $(if ($_.action -ceq 'install') { 'not installed' } else { "not exactly one package of publisher $($_.app.publisherId); never replaced" })" })
+            "$($_.app.name) ($($_.app.package)) is $(if ($_.action -ceq 'install') { 'not installed' } else { "identity/publisher/accepted-version drift; never replaced" })" })
         if ($script:appDrift.Count) { throw "App drift: $($script:appDrift -join '; ')" }
     }
     if ($Mode -eq 'Restore' -or $Mode -eq 'RestoreTest') {
@@ -3753,7 +3767,7 @@ try {
         apps = @($apps | ForEach-Object {
             $package = $_.package
             $state = @($appStates | Where-Object { $_.app.package -ceq $package })
-            [ordered]@{ name = $_.name; package = $package; id = $_.id
+            [ordered]@{ name = $_.name; package = $package; id = $_.id; acceptedVersion = (Get-Field $_ 'acceptedVersion'); supply = 'mutable msstore current; historical bytes not pinned'
                 version = $(if ($state.Count -and $state[0].action -ceq 'present') { $state[0].found[0].version } else { 'notEvaluated' }) } });
         coreSelection = (Get-Field $manifest 'core');
         actualTestScope = [ordered]@{ fontFiles = ($Mode -ne 'Validate'); desktopFontFaces = [bool]$uiFont

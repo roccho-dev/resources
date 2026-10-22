@@ -238,7 +238,41 @@ def listed_paths(listing: str) -> list[str]:
     return paths
 
 
-def tree_inventory(root: Path, listed: list[str], required: str) -> dict[str, str]:
+def validate_empty_directories(files: dict[str, str], directories: object) -> list[str]:
+    """Exact fileless directory closure, as native ObserveTree.other reports it."""
+    if not isinstance(directories, list):
+        raise ValueError("emptyDirectories is not a list")
+    if not directories:
+        return []
+    seen, spellings, parents = set(), {}, set()
+    for name in files:
+        parts = name.split("/")
+        for i in range(1, len(parts) + 1):
+            prefix = "/".join(parts[:i])
+            if spellings.setdefault(prefix.casefold(), prefix) != prefix:
+                raise ValueError("File parent case collision")
+            if i < len(parts):
+                parents.add(prefix.casefold())
+    for entry in directories:
+        if not isinstance(entry, str) or not entry.endswith("/"):
+            raise ValueError("Empty directory lacks its marker")
+        name = windows_path(entry[:-1])
+        if name.casefold() in seen or any(overlaps(name, file) for file in files):
+            raise ValueError("Empty directory collision or file overlap")
+        seen.add(name.casefold())
+        parts = name.split("/")
+        for i in range(1, len(parts) + 1):
+            prefix = "/".join(parts[:i])
+            if spellings.setdefault(prefix.casefold(), prefix) != prefix:
+                raise ValueError("Empty directory parent case collision")
+    for entry in directories:
+        parts = entry[:-1].split("/")
+        if any("/".join(parts[:i]).casefold() not in parents | seen for i in range(1, len(parts))):
+            raise ValueError("Empty directory closure is incomplete")
+    return directories
+
+
+def tree_inventory(root: Path, listed: list[str], required: str, *, allow_empty: bool = False) -> dict[str, str]:
     """relative path -> sha256 of every file extracted under root. Fails on a symlink,
     anything but a regular file or directory, a path the archive listing does not name
     (a listed path's parent directories count as named), a directory with no file
@@ -260,7 +294,7 @@ def tree_inventory(root: Path, listed: list[str], required: str) -> dict[str, st
         else:
             raise ValueError(f"Not a regular file or directory: {name}")
     empty = [d for d in directories if not any(f.startswith(d + "/") for f in files)]
-    if empty:
+    if empty and not allow_empty:
         raise ValueError(f"Extracted tree has directories without files: {empty}")
     if required not in files:
         raise ValueError(f"Extracted tree lacks {required}")
@@ -272,8 +306,14 @@ def package_inventory(lock_path: Path, archive_path: Path, listing: Path, tree: 
     their byte sizes as extracted, which Restore's free-space gate adds to the asset size."""
     package, = package_locks([json.loads(lock_path.read_text(encoding="utf-8"))])
     verify_asset(package, archive_path)
-    files = tree_inventory(tree, listed_paths(listing.read_text(encoding="utf-8")), package["executable"])
-    write_json(out, {"files": files, "unpackedSize": sum((tree / name).stat().st_size for name in files)})
+    files = tree_inventory(tree, listed_paths(listing.read_text(encoding="utf-8")), package["executable"], allow_empty=True)
+    empty = sorted(p.relative_to(tree).as_posix() + "/" for p in tree.rglob("*") if p.is_dir()
+                   and not any(name.startswith(p.relative_to(tree).as_posix() + "/") for name in files))
+    validate_empty_directories(files, empty)
+    result = {"files": files, "unpackedSize": sum((tree / name).stat().st_size for name in files)}
+    if empty:
+        result["emptyDirectories"] = empty
+    write_json(out, result)
 
 
 def inventoried(packages: object) -> list[dict]:
@@ -287,13 +327,16 @@ def inventoried(packages: object) -> list[dict]:
         locks.append({key: value for key, value in package.items() if key != "inventory"})
         inventories.append(json.loads(Path(package["inventory"]).read_text(encoding="utf-8")))
     for lock, inventory in zip(package_locks(locks), inventories):
-        if not isinstance(inventory, dict) or set(inventory) != {"files", "unpackedSize"} or not is_size(inventory["unpackedSize"]):
+        if not isinstance(inventory, dict) or set(inventory) - {"emptyDirectories"} != {"files", "unpackedSize"} or not is_size(inventory["unpackedSize"]):
             raise ValueError(f"Invalid inventory for {lock['name']}")
         files = inventory["files"]
         if (not isinstance(files, dict) or lock["executable"] not in files
                 or len({name.casefold() for name in files}) != len(files)
                 or any(windows_path(name) != name or not isinstance(sha, str) for name, sha in files.items())):
             raise ValueError(f"Invalid inventory for {lock['name']}")
+        empty = validate_empty_directories(files, inventory.get("emptyDirectories", []))
+        if empty:
+            lock["emptyDirectories"] = empty
         for sha in files.values():
             hex_digest(sha, 64, f"{lock['name']} inventory sha256")
         if "seed" in lock:
@@ -445,12 +488,16 @@ def store_apps(value: object, entries: list[dict]) -> list[dict]:
     if not isinstance(value, list):
         raise ValueError("apps is not a list")
     for app in value:
-        if not isinstance(app, dict) or set(app) - {"appearance"} != APP_KEYS or app["source"] != "msstore" or \
+        if not isinstance(app, dict) or set(app) - {"appearance", "acceptedVersion"} != APP_KEYS or app["source"] != "msstore" or \
                 not all(isinstance(app[k], str) for k in APP_KEYS) or \
                 not re.fullmatch(r"[0-9A-Z]{12}", app["id"]) or \
                 not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 .-]*", app["name"]) or \
                 not TOKEN.fullmatch(app["package"]) or not re.fullmatch(r"[a-z0-9]{13}", app["publisherId"]):
             raise ValueError(f"App is not {sorted(APP_KEYS)} of a msstore id and package identity: {app!r}")
+        if "acceptedVersion" in app and (not isinstance(app["acceptedVersion"], str) or
+                not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", app["acceptedVersion"]) or
+                any(int(part) > 65535 for part in app["acceptedVersion"].split("."))):
+            raise ValueError("acceptedVersion is not a four-component Appx version")
     for key in ("name", "id", "package"):
         if len({app[key].casefold() for app in value}) != len(value):
             raise ValueError(f"Two apps share a {key}")

@@ -36,13 +36,22 @@ function Get-HkcuTerminalSelection {
 
 # Reads HKCU, then the package view, then HKCU again, and compares them. A
 # change of HKCU in between makes the comparison unavailable.
-function Test-PackageTerminalSelection([int]$TimeoutSeconds = 30) {
+function Test-PackageTerminalSelection([int]$TimeoutSeconds = 30, [string]$ScratchRoot) {
     $terminalPackage = 'Microsoft.WindowsTerminal_8wekyb3d8bbwe'
     $local = Get-HkcuTerminalSelection
     $packagePair, $note = $null, $null
-    # One unique scratch directory directly under the profile: outside AppData
+    # One unique scratch directory under an explicit base or the legacy profile: outside AppData
     # (which a package may redirect), OneDrive, and this bundle.
     $userHome = [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\')
+    if ($ScratchRoot) {
+        if ($ScratchRoot -notmatch '^[A-Za-z]:\\' -or $ScratchRoot -match '[\r\n\x00]') { throw 'ScratchRoot must be an existing absolute native directory.' }
+        $userHome = [IO.Path]::GetFullPath($ScratchRoot).TrimEnd('\')
+    }
+    $baseItem = Get-Item -LiteralPath $userHome -Force -ErrorAction Stop
+    if (-not $baseItem.PSIsContainer) { throw 'ScratchRoot is not a directory.' }
+    for ($ancestor = $baseItem; $null -ne $ancestor; $ancestor = $ancestor.Parent) {
+        if ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'A scratch base ancestor is a reparse point.' }
+    }
     if ((Get-Item -LiteralPath $userHome -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
         throw 'The user profile directory is a reparse point.'
     }
