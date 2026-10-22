@@ -1820,49 +1820,7 @@ function Get-BootstrapAction($Found, $Expected, [bool]$AliasPresent, [switch]$Ap
 }
 
 # Same release-lock shape as pack.py; actual archive manifests/signatures are checked by win.ps1.
-# ---- Declared own target host-only startup and native task predicates -------
-# Site values come from the target's Binding (pack.py own_resume); the image publisher is the own role's invariant.
-function Get-OwnResumeProblem($Contract) {
-    $port = Get-Field $Contract 'hostPort'
-    if ([string](Get-Field $Contract 'expectHost') -cnotmatch '^[A-Za-z0-9]([A-Za-z0-9-]{0,13}[A-Za-z0-9])?\z' -or
-        [string](Get-Field $Contract 'container') -cnotmatch '^[a-z0-9][a-z0-9-]+\z' -or
-        [string](Get-Field $Contract 'session') -cnotmatch '^wslc-cli-[a-z0-9][a-z0-9-]*\z' -or
-        -not ($port -is [int] -or $port -is [long]) -or $port -lt 1024 -or $port -gt 65535 -or
-        [string](Get-Field $Contract 'image') -cnotmatch '^ghcr\.io/roccho-dev/windows-own@sha256:[a-f0-9]{64}\z') { return 'Invalid declared own target binding.' }
-    $volumes = @(Get-Field $Contract 'volumes')
-    if ($volumes.Count -ne 3 -or (@($volumes | ForEach-Object { Get-Field $_ 'destination' }) -join ',') -cne '/home/dev,/work/repos,/nix' -or
-        @($volumes | ForEach-Object { Get-Field $_ 'name' } | Sort-Object -Unique -CaseSensitive).Count -ne 3 -or
-        @($volumes | Where-Object { [string](Get-Field $_ 'name') -cnotmatch '^[a-z0-9][a-z0-9-]*\z' }).Count) { return 'Invalid three-volume binding.' }
-    $ssh = Get-Field $Contract 'ssh'
-    $identity = [string](Get-Field $ssh 'identity'); $knownHosts = [string](Get-Field $ssh 'knownHosts')
-    if ([string](Get-Field $ssh 'alias') -cnotmatch '^[a-z0-9][a-z0-9-]+\z' -or $identity -ceq $knownHosts -or
-        @($identity, $knownHosts | Where-Object { $_ -cnotmatch '^\.ssh/(?!\.\.?\z)[A-Za-z0-9._-]+\z' }).Count) { return 'Invalid Windows SSH binding.' }
-    return $null
-}
-
-function Get-OwnContainerAction($Contract, $Container) {
-    $problem = Get-OwnResumeProblem $Contract
-    if ($problem) { throw $problem }
-    if ($null -eq $Container) { throw 'Existing own container is missing; never created by Resume.' }
-    if ([string](Get-Field $Container 'Id') -cnotmatch '^[a-f0-9]{64}\z' -or
-        (Get-Field $Container 'Name') -cne ('/' + $Contract.container) -or
-        (Get-Field (Get-Field $Container 'Config') 'Image') -cne $Contract.image) { throw 'Own container name/image differs from this artifact.' }
-    $mounts = @(Get-Field $Container 'Mounts')
-    if ($mounts.Count -ne 3) { throw 'Own container does not have the accepted three volumes.' }
-    foreach ($volume in $Contract.volumes) {
-        $match = @($mounts | Where-Object { (Get-Field $_ 'Type') -ceq 'volume' -and
-            (Get-Field $_ 'Name') -ceq $volume.name -and (Get-Field $_ 'Destination') -ceq $volume.destination -and (Get-Field $_ 'ReadWrite') -eq $true })
-        if ($match.Count -ne 1) { throw 'Own container volume binding differs.' }
-    }
-    $ports = @(Get-Field (Get-Field $Container 'Ports') '2223/tcp')
-    if ($ports.Count -ne 1 -or (Get-Field $ports[0] 'HostIp') -cne '127.0.0.1' -or
-        (Get-Field $ports[0] 'HostPort') -cne [string]$Contract.hostPort) { throw 'Own SSH port is not the declared loopback binding.' }
-    $state = Get-Field $Container 'State'
-    if ((Get-Field $state 'Running') -eq $true -and (Get-Field $state 'Status') -ceq 'running') { return 'running' }
-    if ((Get-Field $state 'Running') -eq $false -and (Get-Field $state 'Status') -cin @('exited','created')) { return 'start' }
-    throw 'Own container has an unsupported transient/paused/dead state.'
-}
-
+# ---- Host-mode predicates; the retired own logon Task's records are only validated and observed ----
 function Get-QuickHttpArguments([string]$Origin, $EnvironmentNames) {
     if (@($EnvironmentNames | Where-Object { $_ -match '^TUNNEL_' }).Count) { throw 'QuickHttp refuses nonempty TUNNEL_* environment; values are not logged.' }
     $uri = $null
@@ -1897,19 +1855,6 @@ function Get-OwnTaskSettings {
         AllowHardTerminate = 'false'; StartWhenAvailable = 'true'; RunOnlyIfNetworkAvailable = 'false'
         AllowStartOnDemand = 'true'; Enabled = 'true'; Hidden = 'false'; RunOnlyIfIdle = 'false'; WakeToRun = 'false'
         ExecutionTimeLimit = 'PT2M'; Priority = '7' }
-}
-
-function Get-OwnTaskPolicyProblem($Policies) {
-    # A bootstrapper's process-only Bypass is not inherited by future logon.
-    foreach ($scope in 'MachinePolicy','UserPolicy','CurrentUser','LocalMachine') {
-        $rows = @($Policies | Where-Object { [string](Get-Field $_ 'Scope') -ceq $scope })
-        if ($rows.Count -ne 1) { return 'Task execution policy is unavailable/ambiguous.' }
-        $value = [string](Get-Field $rows[0] 'ExecutionPolicy')
-        if ($value -ceq 'Undefined') { continue }
-        if ($value -cin @('RemoteSigned','Unrestricted','Bypass')) { return $null }
-        return 'Existing task execution policy blocks unsigned runtime; policy is not changed.'
-    }
-    return 'Default Restricted task execution policy blocks unsigned runtime; policy is not changed.'
 }
 
 function Read-OwnTaskXml([string]$Text) {

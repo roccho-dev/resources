@@ -84,53 +84,35 @@ jobs:
                "$(nix eval --raw .#own-core.drvPath --no-write-lock-file)"
           bindings=$(nix build .#binding-inputs --no-write-lock-file --no-link --print-out-paths)
           envs=$(nix eval --impure --raw --expr '(builtins.getFlake (toString ./.)).inputs.host-bindings.outPath')
-          cmp "$envs/contracts/host-bindings/own/G6I3.json" "$bindings/own.json"
           cmp "$envs/contracts/host-bindings/dev/G6I3.json" "$bindings/dev.json"
           python3 - "$bindings" <<'PYCODE'
           import json, re, sys
           from pathlib import Path
 
-          def compare(old, new, role):
-              allowed = {"own": {"image", "imageFrom"}, "dev": {"baseSha", "toolsRev"}}[role]
-              # envs' T selection (envs#117): own alone may add exactly the tool/toolFrom pair, absent from the pinned source.
-              pair = {"own": {"tool", "toolFrom"}, "dev": set()}[role]
-              assert isinstance(new, dict) and set(old) <= set(new) and set(new) - set(old) in (set(), pair) and allowed <= set(new), "Binding fields differ"
-              added = set(new) - set(old)
+          # The own Binding is no longer an input (#61 I3); dev may change only its two version selections.
+          def compare(old, new):
+              allowed = {"baseSha", "toolsRev"}
+              assert isinstance(new, dict) and set(new) == set(old) and allowed <= set(new), "Binding fields differ"
               for key in set(old) - allowed:
-                  assert type(old[key]) is type(new[key]) and old[key] == new[key], f"unapproved {role}.{key} change"
-              assert all(isinstance(new[k], str) and new[k] for k in allowed | added), "selection must be nonempty text"
-              if role == "own":
-                  assert re.fullmatch(r"ghcr\.io/roccho-dev/windows-own@sha256:[0-9a-f]{64}", new["image"])
-                  assert not added or re.fullmatch(r"/nix/store/[0-9a-z]{32}-own-tool-profile", new["tool"])
-              else:
-                  assert all(re.fullmatch(r"[0-9a-f]{40}", new[k]) for k in allowed)
+                  assert type(old[key]) is type(new[key]) and old[key] == new[key], f"unapproved dev.{key} change"
+              assert all(isinstance(new[k], str) and re.fullmatch(r"[0-9a-f]{40}", new[k]) for k in allowed), "selection must be a commit"
 
-          for role, path in (("own", "_source/hosts/own/bindings/G6I3.json"), ("dev", "_source/oci/dev/bindings/G6I3.json")):
-              old = json.loads(Path(path).read_text())
-              new = json.loads((Path(sys.argv[1]) / f"{role}.json").read_text())
-              compare(old, new, role)
-              # The same predicate must refuse every missing or type-changed field and an extra field.
-              invalid = [{**new, "extra": "unapproved"}]
-              for key in new:
-                  invalid.extend(({k: v for k, v in new.items() if k != key}, {**new, key: None}))
-              if role == "own":
-                  # The widened boundary, fixed independently of the adopted bytes: exactly the pair with a store-path
-                  # tool is accepted; tool alone, the pair with an unknown key and a non-store tool are refused.
-                  base = {k: v for k, v in new.items() if k not in ("tool", "toolFrom")}
-                  tool = "/nix/store/" + "a" * 32 + "-own-tool-profile"
-                  compare(old, {**base, "tool": tool, "toolFrom": "CI-only T fixture"}, role)
-                  invalid.extend(({**base, "tool": tool},
-                                  {**base, "tool": tool, "toolFrom": "CI-only T fixture", "extra": "unapproved"},
-                                  {**base, "tool": "/tmp/own-tool-profile", "toolFrom": "CI-only T fixture"}))
-              for candidate in invalid:
-                  try:
-                      compare(old, candidate, role)
-                  except AssertionError:
-                      continue
-                  raise AssertionError(f"invalid {role} Binding was accepted")
-              print(f"PASS {role}: exact adopted envs bytes; retained fields equal pinned source; {len(invalid)} refusals")
+          old = json.loads(Path("_source/oci/dev/bindings/G6I3.json").read_text())
+          new = json.loads((Path(sys.argv[1]) / "dev.json").read_text())
+          compare(old, new)
+          # The same predicate must refuse every missing or type-changed field and an extra field.
+          invalid = [{**new, "extra": "unapproved"}]
+          for key in new:
+              invalid.extend(({k: v for k, v in new.items() if k != key}, {**new, key: None}))
+          for candidate in invalid:
+              try:
+                  compare(old, candidate)
+              except AssertionError:
+                  continue
+              raise AssertionError("invalid dev Binding was accepted")
+          print(f"PASS dev: exact adopted envs bytes; retained fields equal pinned source; {len(invalid)} refusals")
           PYCODE
-          echo 'PASS: pinned fonts full contents and own core derivation; adopted envs Binding bytes with only version selections changed or the own tool/toolFrom pair added; root flake has no windows input.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'PASS: pinned fonts full contents and own core derivation; adopted envs dev Binding bytes with only version selections changed; root flake has no windows input.' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: windows-path-inventory-${{ github.event.pull_request.head.sha || github.sha }}

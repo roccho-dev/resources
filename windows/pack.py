@@ -553,54 +553,6 @@ def noctty_launch(value: object) -> dict:
     return dict(value)
 
 
-def own_resume(value):
-    """A projection generated from the declared own target's Binding, not a second authored OCI binding."""
-    if value is None:
-        return None
-    if (not isinstance(value, dict) or set(value) !=
-            {"expectHost", "container", "hostPort", "image", "session", "volumes", "ssh"}):
-        raise ValueError("Invalid own resume projection")
-    # Site values come from the Binding; the image publisher is the own role's Spec invariant.
-    if (not isinstance(value["expectHost"], str) or
-            not re.fullmatch(r"[A-Za-z0-9]([A-Za-z0-9-]{0,13}[A-Za-z0-9])?", value["expectHost"]) or
-            not isinstance(value["container"], str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]+", value["container"]) or
-            not isinstance(value["session"], str) or not re.fullmatch(r"wslc-cli-[a-z0-9][a-z0-9-]*", value["session"]) or
-            type(value["hostPort"]) is not int or not 1024 <= value["hostPort"] <= 65535 or
-            not isinstance(value["image"], str) or not re.fullmatch(
-                r"ghcr\.io/roccho-dev/windows-own@sha256:[a-f0-9]{64}", value["image"])):
-        raise ValueError("Own resume requires an explicit declared own target binding")
-    volumes = value["volumes"]
-    if (not isinstance(volumes, list) or len(volumes) != 3 or
-            any(not isinstance(v, dict) or set(v) != {"name", "destination"} for v in volumes) or
-            [v["destination"] for v in volumes] != ["/home/dev", "/work/repos", "/nix"] or
-            any(not isinstance(v["name"], str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", v["name"])
-                for v in volumes) or len({v["name"] for v in volumes}) != 3):
-        raise ValueError("Own resume requires three distinct existing named volumes")
-    ssh = value["ssh"]
-    if (not isinstance(ssh, dict) or set(ssh) != {"alias", "identity", "knownHosts"} or
-            any(not isinstance(ssh[k], str) for k in ssh) or not re.fullmatch(r"[a-z0-9][a-z0-9-]+", ssh["alias"]) or
-            any(not re.fullmatch(r"\.ssh/(?!\.\.?$)[A-Za-z0-9._-]+", ssh[k]) for k in ("identity", "knownHosts")) or
-            ssh["identity"] == ssh["knownHosts"]):
-        raise ValueError("Own resume must declare its Windows SSH alias, identity and known hosts")
-    return value
-
-
-def resume_runtime(root: Path, scripts: Path, contract, source: str):
-    if contract is None:
-        return None
-    if not re.fullmatch(r"[a-f0-9]{40}", source):
-        raise ValueError("Own resume requires the exact source commit")
-    runtime = root / "host-runtime"
-    runtime.mkdir()
-    for name in ("win.ps1", "handoff-evaluate.ps1", "package-view.ps1"):
-        shutil.copyfile(scripts / name, runtime / name)
-    hashes = {p.name: digest(p) for p in sorted(runtime.iterdir())}
-    write_json(runtime / "manifest.json", {"schemaVersion": 1, "kind": "own-resume-runtime",
-               "source": source, "contract": contract, "files": hashes})
-    return {"contract": contract, "directory": "host-runtime",
-            "files": {p.name: digest(p) for p in sorted(runtime.iterdir())}}
-
-
 def distribution(fonts: Path, noctty: Path, cloudflared: Path, choices: Path,
                  scripts: Path, source: str, out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
@@ -614,7 +566,6 @@ def distribution(fonts: Path, noctty: Path, cloudflared: Path, choices: Path,
     noctty_files = noctty_inventory(noctty)
     registration = noctty_registration(selected["noctty"].get("registration"), noctty_files)
     launch = noctty_launch(selected["noctty"].get("launch"))
-    own = own_resume(selected.get("ownResume"))
     packages = inventoried(selected.get("packages"))
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
@@ -640,7 +591,6 @@ def distribution(fonts: Path, noctty: Path, cloudflared: Path, choices: Path,
         shutil.copyfile(noctty, root / "payload/noctty.zip")
         # The pinned official client, installed only by the explicit RentSsh mode, never by Restore.
         shutil.copyfile(cloudflared, root / "payload/cloudflared.exe")
-        runtime = resume_runtime(root, scripts, own, source)
         # A seed ships as a bundle file; the manifest names where it goes and what it holds.
         for package in packages:
             if "seed" in package:
@@ -659,7 +609,7 @@ def distribution(fonts: Path, noctty: Path, cloudflared: Path, choices: Path,
                    "cloudflared": {"version": selected["cloudflared"]["version"], "file": "payload/cloudflared.exe",
                                    "sha256": files["payload/cloudflared.exe"]},
                    "packages": packages, "typography": ui, "apps": apps, "wingetBootstrap": bootstrap,
-                   "wslPlatform": platform, "ownResume": runtime, "files": files})
+                   "wslPlatform": platform, "files": files})
         output = out / "windows-dist.zip"
         archive(root, output)
         (out / "windows-dist.zip.sha256").write_text(digest(output) + "  windows-dist.zip\n", encoding="ascii")

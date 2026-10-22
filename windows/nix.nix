@@ -1,14 +1,7 @@
-# ownBinding is the declared own target; CI passes an alternate one to prove the projection.
-{ pkgs, source, ownBinding }:
+{ pkgs, source }:
 let
-  # Read-only projection: the remote owner changes the accepted image/mount binding.
-  # Windows never writes that source or depends on the retired Xpra fields.
-  ownSpec = builtins.fromJSON (builtins.readFile ../oci/own/spec.json);
-  # A Binding Windows SSH path (%USERPROFILE%\.ssh\<name>) as the profile-relative form the runtime joins.
-  profileRelative = path: let m = builtins.match ''%USERPROFILE%\\\.ssh\\([A-Za-z0-9._-]+)'' path; in
-    assert m != null; ".ssh/${builtins.head m}";
   # VersaPro's native own (#72) as dev, in its persistent zmx session (#75): an alias of ssh/versapro.config, which
-  # the distribution bundles with its pin and win.ps1 writes beside the Noctty configuration. Same for every own Binding.
+  # the distribution bundles with its pin and win.ps1 writes beside the Noctty configuration.
   nocttyLaunch = let alias = "versapro-dev"; in
     assert builtins.elem "Host ${alias}" (pkgs.lib.splitString "\n" (builtins.readFile ./ssh/versapro.config));
     { inherit alias; session = "own"; windowSaveState = "never"; };
@@ -158,16 +151,6 @@ let
     7zz x -y -otree ${archive} > /dev/null
     python ${./pack.py} inventory ${pkgs.writeText "${lock.name}-lock.json" (builtins.toJSON upstream)} ${archive} listing.txt tree "$out"
   '';
-  ownResume = {
-    inherit (ownBinding) expectHost container hostPort image session;
-    volumes = [
-      { name = ownBinding.volume; destination = ownSpec.stateMount; }
-      { name = ownBinding.workVolume; destination = ownSpec.workMount; }
-      { name = ownBinding.nixVolume; destination = ownSpec.nixMount; }
-    ];
-    ssh = { alias = ownBinding.sshAlias; identity = profileRelative ownBinding.windowsIdentityFile;
-      knownHosts = profileRelative ownBinding.knownHostsFile; };
-  };
   windowsChoices = pkgs.writeText "windows-restore-selection.json" (builtins.toJSON {
     noctty = {
       version = nocttyVersion;
@@ -189,7 +172,7 @@ let
       ];
     };
     cloudflared.version = cloudflaredVersion;
-    inherit ownResume wingetBootstrap wslPlatform;
+    inherit wingetBootstrap wslPlatform;
     packages = map (lock: lock // { inventory = "${inventory lock}"; }) packageLocks;
     # The desktop UI font face: the family of this role, set face-only in the six Win32 UI font slots
     # in HKCU WindowMetrics; ui-font.ahk reads the live faces only (no setter or compiler).
@@ -229,8 +212,6 @@ let
   '';
 in {
   inherit fonts dist python;
-  # The production projection, exactly as windowsChoices carries it; only ownResume comes from ownBinding.
-  ownProjection = { launch = nocttyLaunch; inherit ownResume; };
   check = pkgs.runCommand "windows-dist-check" {
     nativeBuildInputs = [ python pkgs.unzip ];
   } ''

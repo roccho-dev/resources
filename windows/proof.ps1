@@ -858,7 +858,7 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
         'ConvergeAppPath', 'CollectAppPathGarbage', 'ConvergeEffect', 'Classify', 'UndoOwned', 'SharedKey', 'ObserveKeyContent',
         'ConvergeNocttyConfig','ApplyNocttyConfigOnly','PlatformDirectory','SharedDirectory'
     $names += 'AppxEffect', 'ObserveAppx', 'IntroduceAppx', 'ConvergeApps', 'FetchBootstrap', 'AssertAppxManifest', 'AssertMicrosoftSignature'
-    $names += 'PlatformEffect','ObservePlatformEffect','IntroducePlatform','IsPlatformEffect','IsHostEffect','OwnDeclared','HostProfile'
+    $names += 'PlatformEffect','ObservePlatformEffect','IntroducePlatform','IsPlatformEffect','IsHostEffect','HostProfile'
     $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $Root 'win.ps1'), [ref]$null, [ref]$null)
     foreach ($definition in $ast.FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -cin $names }, $false)) {
         . ([scriptblock]::Create($definition.Extent.Text))
@@ -1549,11 +1549,11 @@ function HostPrimitiveProof([string]$Root, [string]$Scratch, [switch]$NativeTask
     $ErrorActionPreference = 'Stop'
     . (Join-Path $Root 'handoff-evaluate.ps1')
     $names = 'WriteRecord','IndexRecord','NewLedgerIndex','AttemptOf','RecordsOf','LedgerIds','ReadLedger','OpenAttempt',
-        'IntentTemp','CleanStaging','ResolveAttempt','RecoverId','Recovering','IsPlatformEffect','IsHostEffect','OwnDeclared','Observe',
-        'ObserveFile','ObserveTree','ObserveHostEffect','ObserveOwnTask','ResolveOwnTaskTriggerUser','OwnTaskName','OwnTaskEffect','OwnTaskXml','RegisterOwnTask','ConvergeOwnTask',
+        'IntentTemp','CleanStaging','ResolveAttempt','RecoverId','Recovering','IsPlatformEffect','IsHostEffect','Observe',
+        'ObserveFile','ObserveTree','ObserveHostEffect','ObserveOwnTask','ResolveOwnTaskTriggerUser','OwnTaskName',
         'HostTreeEffect','InstallHostTree','Classify','HostHash','WriteHostTemp','HostFileState','ConvergeHostBytes','HostPrefix','FileEffect','CreateOwnedFile',
-        'HostUndoPlan','UndoHostEffect','HostRemove','HostLogon','AssertPlainPath','HostProfile','AssertHostRuntimeStreams',
-        'OwnResume','OwnInspect','OwnInfo','OwnSshReady','SshConfigFiles','SshDeclaredCount','SshEffective','SshPath','AssertSshEffective','AssertOwnedSsh','HostSsh','ClientSshInput','ClientPrefixState','HostClientSsh','Invoke-Native','QuickHttp','HostTreeReferences',
+        'HostUndoPlan','UndoHostEffect','HostRemove','AssertPlainPath','HostProfile',
+        'SshConfigFiles','SshDeclaredCount','SshEffective','SshPath','AssertSshEffective','AssertOwnedSsh','HostSsh','ClientSshInput','ClientPrefixState','HostClientSsh','Invoke-Native','QuickHttp','HostTreeReferences',
         'OwnerOnlySecurity','NewOwnerOnlyFile','OwnerOnlyProblem','RentProxyCommand','RentAccessSlot','Get-RentAccessProblem','PlaceRentAccess'
     $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $Root 'win.ps1'),[ref]$null,[ref]$null)
     foreach ($definition in $ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -cin $names},$false)) {
@@ -1566,7 +1566,7 @@ function HostPrimitiveProof([string]$Root, [string]$Scratch, [switch]$NativeTask
     }
     $manifest = [IO.File]::ReadAllText((Join-Path $Root 'manifest.json')) | ConvertFrom-Json
     # The production ledger layout under the scratch %LOCALAPPDATA%: the packaged rent launcher reads it there.
-    $Mode,$localAppData,$ledgerDirectory = 'OwnLogon',$Scratch,(Join-Path $Scratch 'windows-iac\ledger')
+    $Mode,$localAppData,$ledgerDirectory = 'HostRemove',$Scratch,(Join-Path $Scratch 'windows-iac\ledger')
     $profile = Join-Path $Scratch 'profile'
     function HostProfile { $profile }
     $script:runIdentity = @{ sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; elevated = $false }
@@ -1595,72 +1595,16 @@ function HostPrimitiveProof([string]$Root, [string]$Scratch, [switch]$NativeTask
         Refused { Get-QuickHttpArguments $origin @() } '*explicit nonsecret loopback*'
     }
 
-    # The production observer uses actual 3.0.1 Ports/ReadWrite schema, not Docker HostConfig.PortBindings/RW.
-    $contract = $manifest.ownResume.contract
-    $container = @{ Id = 'a' * 64; Name = '/' + $contract.container; Config = @{ Image = $contract.image }
-        Mounts = @($contract.volumes | ForEach-Object { @{ Type='volume'; Name=$_.name; Destination=$_.destination; ReadWrite=$true } })
-        Ports = @{ '2223/tcp' = @(@{HostIp='127.0.0.1';HostPort=[string]$contract.hostPort}) }; State = @{Running=$false;Status='exited'} }
-    Must ((Get-OwnContainerAction $contract $container) -ceq 'start') 'actual native inspect shape'
-    $container.Mounts = @($container.Mounts[0]); Refused { Get-OwnContainerAction $contract $container } '*accepted three volumes*'
-    $container.Mounts = @($contract.volumes | ForEach-Object { @{Type='volume';Name=$_.name;Destination=$_.destination;ReadWrite=$true} })
-    # Native JSON snapshots are separate objects. Do not resolve OwnResume's
-    # dynamically scoped $container and mutate its first snapshot in the mock.
-    $script:inspectFixture = $container
-    $script:calls = @(); $script:inspects = 0; $script:sessionRunning = $false; $script:race = 'running'
-    $script:sessionName=$contract.session; $script:cold='correct'; $script:defaults=0
-    $resumeRuntime = $false
-    function OwnContract { $contract }
-    function OwnContext { @{wslc='fixture-wslc';ssh='fixture-ssh';profile=$profile;storage='guarded-existing-vhd'} }
-    function OwnInfo { @{ Server=@{Sessions=@(if ($script:sessionRunning) { @{Name=$script:sessionName} })} } }
-    function Invoke-Native($Exe,$Arguments,$Seconds) {
-        $script:calls += ,@($Arguments)
-        if ($Arguments -contains 'inspect') {
-            if ($Arguments -notcontains '--session') {
-                $script:defaults++
-                if ($script:cold -cne 'missing') { $script:sessionRunning=$true }
-                if ($script:cold -ceq 'wrong') { $script:sessionName='wrong-session' }
-            }
-            $script:inspects++
-            if ($script:inspects -ge 2) {
-                if ($script:race -ceq 'replace') { $script:inspectFixture.Id = 'b' * 64 }
-                if ($script:race -ceq 'running') { $script:inspectFixture.State = @{Running=$true;Status='running'} }
-            }
-            return '[' + ($script:inspectFixture | ConvertTo-Json -Depth 12 -Compress) + ']'
-        }
-        if ($Arguments -contains 'start') { $script:inspectFixture.State = @{Running=$true;Status='running'}; return '' }
-        return ''
-    }
-    $cold = OwnResume -Test
-    Must ($cold.action -ceq 'cold' -and $script:calls.Count -eq 0) 'Test never default-resolves a cold session'
-    $script:sessionRunning=$true
-    $null = OwnResume
-    Must (-not @($script:calls | Where-Object { $_ -contains 'start' }).Count) 'reobserved Running never starts'
-    $container.State=@{Running=$false;Status='exited'}; $script:calls=@(); $script:inspects=0; $script:race='replace'
-    Refused { OwnResume } '*changed before start*'
-    Must (-not @($script:calls | Where-Object { $_ -contains 'start' }).Count) 'replaced object never starts by name'
-    $container.Id='a'*64; $container.State=@{Running=$false;Status='exited'}; $script:calls=@(); $script:inspects=0; $script:race='none'
-    $null=OwnResume
-    $starts=@($script:calls | Where-Object { $_ -contains 'start' })
-    Must ($starts.Count -eq 1 -and ($starts[0] -join '|') -ceq ('--session|' + $contract.session + '|container|start|' + ('a'*64))) 'only exact observed ID is started once'
-    $container.State=@{Running=$false;Status='exited'}; $script:calls=@(); $script:inspects=0; $script:defaults=0; $script:sessionRunning=$false
-    $null=OwnResume
-    Must ($script:defaults -eq 1 -and ($script:calls[0] -join '|') -ceq ('container|inspect|' + $contract.container + '|--format|json') -and
-        @($script:calls | Where-Object { $_ -contains 'start' }).Count -eq 1) 'cold Apply default-opens once, observes known name, then only bound own start'
-    foreach ($outcome in 'missing','wrong') {
-        $container.State=@{Running=$false;Status='exited'}; $script:calls=@(); $script:inspects=0; $script:defaults=0; $script:sessionRunning=$false
-        $script:sessionName=$contract.session; $script:cold=$outcome
-        Refused { OwnResume } '*did not open the known normal session*'
-        Must ($script:defaults -eq 1 -and -not @($script:calls | Where-Object { $_ -contains 'start' }).Count) 'unknown/missing cold result never directly starts a container'
+    # The actual scoped host caller reads no declared host name (#61 I3); SYSTEM, an administrator and a packaged-app
+    # context stay refused. An elevated runner shows the refusal, a normal-user runner the caller's own SID.
+    & {
+        foreach ($name in 'HostCaller','PackageContextProblem') { . ([scriptblock]::Create($ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$false).Extent.Text)) }
+        $current=[Security.Principal.WindowsIdentity]::GetCurrent()
+        if ($current.IsSystem -or [Security.Principal.WindowsPrincipal]::new($current).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            Refused { HostCaller } 'Scoped host mode *'
+        } else { Must ((HostCaller) -ceq $current.User.Value) 'a normal user is the scoped host caller on any machine name' }
     }
 
-    # Existing local alias compatibility: absent optional IdentitiesOnly/UpdateHostKeys
-    # is not conflict; the actual key/endpoint/strict binding is preserved.
-    $ownSsh=$contract.ssh
-    $values=@{hostname=@('127.0.0.1');user=@('dev');stricthostkeychecking=@('true');port=@([string]$contract.hostPort)
-        identityfile=@('~/' + $ownSsh.identity);userknownhostsfile=@('~/' + $ownSsh.knownHosts)}
-    AssertSshEffective $values $ownSsh.alias '127.0.0.1' (Join-Path $profile $ownSsh.identity) (Join-Path $profile $ownSsh.knownHosts) '' $profile ([string]$contract.hostPort)
-    $values.port=@('2299'); Refused { AssertSshEffective $values $ownSsh.alias '127.0.0.1' (Join-Path $profile $ownSsh.identity) (Join-Path $profile $ownSsh.knownHosts) '' $profile ([string]$contract.hostPort) } '*different port/proxy*'
-    $values.port=@([string]$contract.hostPort)
     $master=Join-Path $profile '.ssh\config'; $backup=Join-Path $profile '.ssh\config.before-windows-rent'
     $include='Include windows-rent/config windows-own/config'
     HostPrefix $master $backup $include
@@ -2072,21 +2016,35 @@ static class Child { static int Main(string[] args) {
     Must (-not (Test-Path -LiteralPath $master) -and -not (Test-Path -LiteralPath $clientFragment)) 'created-master removal returns its original absence'
     [IO.File]::WriteAllBytes($master,$original)
 
-    # Native deployment result may be old/new/unknown. Recovery is production
-    # Get-EffectAttempt and scoped undo, never an independent in-memory model.
-    $script:fakeTask=@{exists=$false}; $script:failure=''; $script:registrations=0
+    # The retired own logon Task (#61 I3): no mode registers it now. A record an earlier distribution committed stays
+    # a host effect that HostRemove validates, observes and undoes. The fixture writes it as that distribution's
+    # ConvergeOwnTask did: intent, then commit of the observed Task.
+    $script:fakeTask=@{exists=$false}
     function ObserveOwnTask { $script:fakeTask }
-    function RegisterOwnTask($Effect) {
-        $script:registrations++
-        if ($script:failure -cne 'old') { $script:fakeTask=@{exists=$true;descriptor=$Effect.desired.descriptor;running=$false} }
-        if ($script:failure -ceq 'unknown') { $script:fakeTask.descriptor=@{bad='foreign'} }
-        if ($script:failure) { throw 'fixture native registration failure' }
-    }
     function Unregister-ScheduledTask { $script:fakeTask=@{exists=$false} }
-    $v1=OwnTaskEffect (Join-Path $Scratch ('Programs\windows-host-'+('1'*40))) $script:runIdentity.sid
-    $v2=OwnTaskEffect (Join-Path $Scratch ('Programs\windows-host-'+('2'*40))) $script:runIdentity.sid
-    $v3=OwnTaskEffect (Join-Path $Scratch ('Programs\windows-host-'+('3'*40))) $script:runIdentity.sid
-    $v4=OwnTaskEffect (Join-Path $Scratch ('Programs\windows-host-'+('4'*40))) $script:runIdentity.sid
+    function OwnTaskFixture([string]$Directory) {
+        $descriptor=[ordered]@{ sid=$script:runIdentity.sid; execute=(Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe')
+            arguments=('-NoProfile -NonInteractive -File "'+(Join-Path $Directory 'win.ps1')+'" -Mode OwnResume')
+            directory=$Directory; delay='PT30S'; logonType='InteractiveToken'; runLevel='LeastPrivilege'; settings=(Get-OwnTaskSettings); other=@() }
+        [ordered]@{ id=('scheduled-task:'+$script:runIdentity.sid); kind='scheduled-task'; target=('task:windows-own-logon:'+$script:runIdentity.sid)
+            prior=[ordered]@{exists=$false}; desired=[ordered]@{exists=$true;descriptor=$descriptor} }
+    }
+    function CommitOwnTask($Effect) {
+        WriteRecord 'intent' $Effect $null
+        $script:fakeTask=@{exists=$true;descriptor=$Effect.desired.descriptor;running=$false}
+        WriteRecord 'commit' $Effect (ObserveHostEffect $Effect)
+    }
+    function OwnTaskXml($Descriptor) {
+        $escape = { param($value) [Security.SecurityElement]::Escape([string]$value) }
+        $settings = @($Descriptor.settings.GetEnumerator() | ForEach-Object { '<' + $_.Key + '>' + $_.Value + '</' + $_.Key + '>' }) -join ''
+        '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Triggers><LogonTrigger><Enabled>true</Enabled><UserId>' +
+            (& $escape $Descriptor.sid) + '</UserId><Delay>PT30S</Delay></LogonTrigger></Triggers><Principals><Principal id="Author"><UserId>' +
+            (& $escape $Descriptor.sid) + '</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings>' +
+            $settings + '</Settings><Actions Context="Author"><Exec><Command>' + (& $escape $Descriptor.execute) + '</Command><Arguments>' +
+            (& $escape $Descriptor.arguments) + '</Arguments><WorkingDirectory>' + (& $escape $Descriptor.directory) + '</WorkingDirectory></Exec></Actions></Task>'
+    }
+    $taskDirectory=Join-Path $Scratch ('Programs\windows-host-'+('1'*40))
+    $v1=OwnTaskFixture $taskDirectory
     $xml=OwnTaskXml $v1.desired.descriptor
     Must (-not (Get-OwnTaskDescriptorProblem (ConvertFrom-OwnTaskXml $xml))) 'pure task XML roundtrip'
     # The renderer puts Enabled before UserId; restrict removal to the trigger,
@@ -2112,105 +2070,48 @@ static class Child { static int Main(string[] args) {
     $unknownXml=$namedXml.Replace('<UserId>'+$account+'</UserId>','<UserId>'+$unknownAccount+'</UserId>')
     Must ($null -ne (Get-OwnTaskDescriptorProblem (ConvertFrom-OwnTaskXml (ResolveOwnTaskTriggerUser $unknownXml)))) 'unresolvable actual trigger name stays conflicting'
     Must ($null -ne (Get-OwnTaskDescriptorProblem (ConvertFrom-OwnTaskXml ($xml.Replace('<StartWhenAvailable>true</StartWhenAvailable>',''))))) 'omitted setting does not fabricate desired value'
-    $policies=@('MachinePolicy','UserPolicy','CurrentUser','LocalMachine' | ForEach-Object { @{Scope=$_;ExecutionPolicy='Undefined'} })
-    Must ($null -ne (Get-OwnTaskPolicyProblem ($policies + @{Scope='Process';ExecutionPolicy='Bypass'}))) 'bootstrap Process bypass never proves future task policy'
-    $policies[-1].ExecutionPolicy='RemoteSigned'
-    Must ($null -eq (Get-OwnTaskPolicyProblem $policies)) 'current RemoteSigned supports new unmarked runtime'
-    $policies[0].ExecutionPolicy='AllSigned'
-    Must ($null -ne (Get-OwnTaskPolicyProblem $policies)) 'GroupPolicy takes precedence and is not changed'
-    $script:fakeTask=@{exists=$true;descriptor=$v1.desired.descriptor;running=$false}
-    $mark=$script:nextSeq
-    Refused { ConvergeOwnTask $v1 } '*Preexisting Task is unowned*'
-    Must ($script:registrations -eq 0 -and $script:nextSeq -eq $mark) 'equivalent unowned task neither registered nor adopted'
-    & {
-        function OwnResume { @{action='running';localStrictSsh=$true} }
-        function HostTaskPolicies { @('MachinePolicy','UserPolicy','CurrentUser','LocalMachine' | ForEach-Object { @{Scope=$_;ExecutionPolicy=$(if($_ -ceq 'LocalMachine'){'RemoteSigned'}else{'Undefined'})} }) }
-        function InstallHostTree { throw 'Unexpected runtime introduction' }
-        $foreign=OwnTaskEffect (Join-Path $Scratch ('Programs\windows-host-'+$manifest.source)) $script:runIdentity.sid
-        $script:fakeTask=@{exists=$true;descriptor=$foreign.desired.descriptor;running=$false}
-        Refused { HostLogon } '*foreign or indeterminate; no runtime installation*'
-    }
-    $script:fakeTask=@{exists=$false}
-    ConvergeOwnTask $v1
-    $script:failure='old'; Refused { ConvergeOwnTask $v2 } '*native registration failure*'
-    $before=$script:nextSeq
-    Must ((Get-EffectClass $null $script:fakeTask '' $null (AttemptOf $v1.id)).resolution -ceq 'pendingPrevious') 'old native outcome retained as pending-owned'
-    $script:failure=''; ConvergeOwnTask $v2
-    Must ($script:nextSeq -eq $before+1 -and -not (AttemptOf $v1.id).problem) 'retry same pending transition adds commit only'
-    $script:failure='new'; Refused { ConvergeOwnTask $v3 } '*native registration failure*'
-    Must (@(OpenAttempt $v1.id)[-1].phase -ceq 'commit') 'failed native call with new exact state records introduction'
-    $bad=@(RecordsOf $v1.id) | ConvertTo-Json -Depth 20 | ConvertFrom-Json
-    $bad[-2].previous=$v1.desired
-    Must ($null -ne (Get-EffectAttempt $bad).problem) 'malformed task previous chain refused'
-    $script:failure='unknown'; Refused { ConvergeOwnTask $v4 } '*native registration failure*'
-    Refused { HostUndoPlan @(OpenAttempt $v1.id) } '*differs or is indeterminate*'
-    $script:fakeTask=@{exists=$true;descriptor=$v3.desired.descriptor;running=$false}
-    UndoHostEffect (HostUndoPlan @(OpenAttempt $v1.id))
-    Must ((AttemptOf $v1.id).closed -and -not $script:fakeTask.exists -and @(OpenAttempt $v1.id).Count -eq 0) 'v1/v2/v3 pending switch undo returns initial absence, never old action'
 
-    # Default-stream installation drops a marked source's ADS without changing
-    # any Windows execution policy. Every four-file installed byte is owned.
-    $sources=@{}; $runtimeFiles=ConvertTo-FileMap $manifest.ownResume.files
-    $copySource=Join-Path $Scratch 'marked-source'; $null=[IO.Directory]::CreateDirectory($copySource)
-    foreach ($name in $runtimeFiles.Keys) {
-        $path=Join-Path $copySource $name; [IO.File]::WriteAllBytes($path,[IO.File]::ReadAllBytes((Join-Path $Root ('host-runtime/'+$name))))
-        $sources[$name]=$path
+    # HostRemove over the committed Task and two windows-host trees of earlier distributions. A running Task, a
+    # Disabled Task (Settings Enabled=false) and a changed tree are refused as drift with nothing written; then the
+    # exact Task and both trees are undone, and a Task already removed by hand is closed as undone.
+    $sources=@{}; $runtimeFiles=@{}
+    $copySource=Join-Path $Scratch 'runtime-source'; $null=[IO.Directory]::CreateDirectory($copySource)
+    foreach ($name in 'win.ps1','manifest.json') {
+        $path=Join-Path $copySource $name; [IO.File]::WriteAllText($path,"fixture $name`n")
+        $sources[$name]=$path; $runtimeFiles[$name]=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
     }
-    Set-Content -LiteralPath $sources['win.ps1'] -Stream Zone.Identifier -Value '[ZoneTransfer]`nZoneId=3'
-    $tree=HostTreeEffect (Join-Path $Scratch ('Programs\windows-host-'+$manifest.source)) $runtimeFiles
-    InstallHostTree $tree $sources
-    AssertHostRuntimeStreams $tree.target
-    Must ((Classify $tree).class -ceq 'owned-match') 'four-file runtime installed/owned without source ADS'
-    function SubsetRefused([string]$Mode,[string]$Pattern) {
-        $ErrorActionPreference='Continue'
-        $out=@(& (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -NoProfile -NonInteractive -File (Join-Path $tree.target 'win.ps1') -Mode $Mode 2>&1 | ForEach-Object {[string]$_})
-        $code=$LASTEXITCODE
-        $ErrorActionPreference='Stop'
-        Must ($code -ne 0 -and ($out -join ' ') -like $Pattern) 'installed subset rejects before host observers/effects'
-    }
-    SubsetRefused 'Apply' '*disallowed mode*'
-    [IO.File]::WriteAllText((Join-Path $tree.target 'extra.txt'),'x'); SubsetRefused 'OwnResumeTest' '*extra or case-mismatched*'; [IO.File]::Delete((Join-Path $tree.target 'extra.txt'))
-    [IO.File]::Move((Join-Path $tree.target 'manifest.json'),(Join-Path $tree.target 'case-manifest'))
-    [IO.File]::Move((Join-Path $tree.target 'case-manifest'),(Join-Path $tree.target 'Manifest.json'))
-    SubsetRefused 'OwnResumeTest' '*extra or case-mismatched*'
-    [IO.File]::Move((Join-Path $tree.target 'Manifest.json'),(Join-Path $tree.target 'case-manifest'))
-    [IO.File]::Move((Join-Path $tree.target 'case-manifest'),(Join-Path $tree.target 'manifest.json'))
-    [IO.File]::Move((Join-Path $tree.target 'package-view.ps1'),(Join-Path $tree.target 'held-package-view.ps1'))
-    SubsetRefused 'OwnResumeTest' '*Bundle content mismatch*'
-    [IO.File]::Move((Join-Path $tree.target 'held-package-view.ps1'),(Join-Path $tree.target 'package-view.ps1'))
-    # OwnRemove (I3): beside the owned rent alias, its pinned client and launcher, the Access slot, the client slot and
-    # the master prefix, only the own logon Task and the windows-host trees are planned and undone. A Disabled Task and
-    # a changed tree are refused as drift with nothing written; no exception is made for either.
-    $null=HostSsh; $null=PlaceRentAccess $value; $null=HostClientSsh
-    $ownTrees=@($tree) + @('5','6' | ForEach-Object { HostTreeEffect (Join-Path $Scratch ('Programs\windows-host-'+($_*40))) $runtimeFiles })
-    foreach ($t in $ownTrees[1..2]) { InstallHostTree $t $sources }
-    $task=OwnTaskEffect $tree.target $script:runIdentity.sid
-    $script:failure=''; ConvergeOwnTask $task
-    $ownIds=@($task.id) + @($ownTrees | ForEach-Object { $_.id })
-    $kept=@(LedgerIds | Where-Object { (IsHostEffect @(RecordsOf $_)[0]) -and $ownIds -cnotcontains $_ -and @(OpenAttempt $_).Count })
-    Must ($kept.Count -ge 5) 'the rent, client, Access and prefix effects are owned beside the own scope'
-    function KeptFiles { @(Get-ChildItem -LiteralPath (Join-Path $profile '.ssh'),(Join-Path $Scratch 'Programs') -Recurse -Force -File |
-        Where-Object { $_.FullName -notlike '*\windows-host-*' } | Sort-Object FullName | ForEach-Object { "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" }) -join "`n" }
-    $before=KeptFiles; $mark=$script:nextSeq
-    $disabled=OwnTaskEffect $tree.target $script:runIdentity.sid; $disabled.desired.descriptor.settings.Enabled='false'
+    $trees=@('1','2' | ForEach-Object { HostTreeEffect (Join-Path $Scratch ('Programs\windows-host-'+($_*40))) $runtimeFiles })
+    foreach ($t in $trees) { InstallHostTree $t $sources }
+    CommitOwnTask $v1
+    $taskIds=@($v1.id) + @($trees | ForEach-Object { $_.id })
+    $mark=$script:nextSeq
+    $script:fakeTask.running=$true
+    Refused { HostRemove } '*Owned Task is running*'
+    $disabled=OwnTaskFixture $taskDirectory; $disabled.desired.descriptor.settings.Enabled='false'
     $script:fakeTask=@{exists=$true;descriptor=$disabled.desired.descriptor;running=$false}
-    Refused { HostRemove -Own } '*Host effect differs or is indeterminate*'
-    $script:fakeTask=@{exists=$true;descriptor=$task.desired.descriptor;running=$false}
-    [IO.File]::WriteAllText((Join-Path $ownTrees[2].target 'extra.txt'),'x')
-    Refused { HostRemove -Own } '*foreign or changed files*'
-    [IO.File]::Delete((Join-Path $ownTrees[2].target 'extra.txt'))
-    Must ($script:nextSeq -eq $mark -and $script:fakeTask.exists -and -not @($ownTrees | Where-Object { -not (Test-Path -LiteralPath $_.target) }).Count) 'own-only removal refuses a Disabled Task and a changed tree, writing nothing'
-    $null=HostRemove -Own
+    Refused { HostRemove } '*Host effect differs or is indeterminate*'
+    $script:fakeTask=@{exists=$true;descriptor=$v1.desired.descriptor;running=$false}
+    [IO.File]::WriteAllText((Join-Path $trees[1].target 'extra.txt'),'x')
+    Refused { HostRemove } '*foreign or changed files*'
+    [IO.File]::Delete((Join-Path $trees[1].target 'extra.txt'))
+    Must ($script:nextSeq -eq $mark -and $script:fakeTask.exists -and -not @($trees | Where-Object { -not (Test-Path -LiteralPath $_.target) }).Count) 'a running or Disabled Task and a changed tree are refused, writing nothing'
+    $null=HostRemove
     $written=@($script:ledgerRecords | Where-Object { $_.seq -ge $mark })
-    Must ($written.Count -eq 4 -and -not @($written | Where-Object { $_.phase -cne 'undone' -or $ownIds -cnotcontains $_.id }).Count -and
-        -not $script:fakeTask.exists -and -not @($ownTrees | Where-Object { Test-Path -LiteralPath $_.target }).Count -and
-        -not @($kept | Where-Object { -not @(OpenAttempt $_).Count }).Count -and (KeptFiles) -ceq $before) 'own-only removal undoes only the Task and the three windows-host trees'
-    InstallHostTree $tree $sources
+    Must ($written.Count -eq 3 -and -not @($written | Where-Object { $_.phase -cne 'undone' -or $taskIds -cnotcontains $_.id }).Count -and
+        -not $script:fakeTask.exists -and -not @($trees | Where-Object { Test-Path -LiteralPath $_.target }).Count) 'HostRemove undoes the committed Task and both windows-host trees'
+    CommitOwnTask $v1
+    $script:fakeTask=@{exists=$false}; $mark=$script:nextSeq
+    $null=HostRemove
+    Must ($script:nextSeq -eq $mark+1 -and @(RecordsOf $v1.id)[-1].phase -ceq 'undone' -and -not @(OpenAttempt $v1.id).Count) 'a Task removed by hand is closed as undone'
+    InstallHostTree $trees[0] $sources
 
     if ($NativeTask) {
-        # Restore the actual native observer/register functions after fault fixtures.
-        foreach ($name in 'ObserveOwnTask','RegisterOwnTask') { . ([scriptblock]::Create($ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$false).Extent.Text)) }
-        $native=OwnTaskEffect $tree.target $script:runIdentity.sid
+        # Restore the actual native observer after the fault fixtures; register as the earlier distribution did.
+        . ([scriptblock]::Create($ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'ObserveOwnTask'},$false).Extent.Text))
+        function RegisterOwnTask($Effect) {
+            $null = Register-ScheduledTask -TaskName (OwnTaskName $Effect.target) -TaskPath '\' -Xml (OwnTaskXml $Effect.desired.descriptor) -Force -ErrorAction Stop
+        }
+        $native=OwnTaskFixture $taskDirectory
         Must (-not (ObserveOwnTask $native.target).exists) 'native disposable task initially absent'
         $registered=$false; $nativeFailure=$null; $cleanupFailure=$null
         try {

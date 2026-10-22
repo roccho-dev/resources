@@ -1,7 +1,7 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('Validate', 'Test', 'Apply', 'Restore', 'RestoreTest', 'Uninstall', 'RentSsh', 'RentSshTest', 'RentAccess', 'OwnSsh', 'OwnSshTest', 'QuickHttp', 'OwnLogon', 'OwnLogonTest', 'HostRemove', 'OwnRemove', 'OwnResume', 'OwnResumeTest', 'PlatformRestore', 'PlatformTest', 'ClientSsh', 'ClientSshTest')][string]$Mode = 'Validate',
+    [ValidateSet('Validate', 'Test', 'Apply', 'Restore', 'RestoreTest', 'Uninstall', 'RentSsh', 'RentSshTest', 'RentAccess', 'QuickHttp', 'HostRemove', 'PlatformRestore', 'PlatformTest', 'ClientSsh', 'ClientSshTest')][string]$Mode = 'Validate',
     # ClientSsh/ClientSshTest only: an explicit public SSH Host fragment and its host key pins (opt-in; never discovered).
     [string]$ClientConfig,
     [string]$ClientKnownHosts,
@@ -36,15 +36,7 @@ $ErrorActionPreference = 'Stop'
 if ($env:OS -ne 'Windows_NT') { throw 'This activation adapter requires Windows.' }
 $root = [IO.Path]::GetFullPath($PSScriptRoot) + [IO.Path]::DirectorySeparatorChar
 $manifest = Get-Content -LiteralPath (Join-Path $root 'manifest.json') -Raw -Encoding utf8 | ConvertFrom-Json
-$resumeRuntime = (Get-Member -InputObject $manifest -Name kind) -and $manifest.kind -ceq 'own-resume-runtime'
-if ($resumeRuntime) {
-    # The same script in the build-derived four-file subset may never run other product modes.
-    if ($Mode -cnotin @('OwnResume','OwnResumeTest') -or $manifest.schemaVersion -ne 1 -or
-        $manifest.source -cnotmatch '^[a-f0-9]{40}\z' -or
-        (@($manifest.files.PSObject.Properties.Name | Sort-Object) -join ',') -cne 'handoff-evaluate.ps1,package-view.ps1,win.ps1') {
-        throw 'Invalid startup runtime or disallowed mode; no host effects.'
-    }
-} elseif ($manifest.schemaVersion -ne 3 -or @($manifest.fonts).Count -eq 0 -or
+if ($manifest.schemaVersion -ne 3 -or @($manifest.fonts).Count -eq 0 -or
     @($manifest.packages).Count -eq 0 -or -not $manifest.noctty.version) {
     throw 'Invalid or empty distribution.'
 }
@@ -70,8 +62,6 @@ foreach ($entry in $manifest.files.PSObject.Properties) {
 }
 foreach ($file in Get-ChildItem -LiteralPath $root -Recurse -Force) {
     if ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Bundle cannot contain reparse points.' }
-    if ($resumeRuntime -and ($file.PSIsContainer -or
-        @('manifest.json','win.ps1','handoff-evaluate.ps1','package-view.ps1') -cnotcontains $file.Name)) { throw 'Startup runtime has an extra or case-mismatched entry.' }
     if ($file.PSIsContainer) { continue }
     $relative = $file.FullName.Substring($root.Length).Replace('\', '/')
     if ($relative -ne 'manifest.json' -and -not $inventory.ContainsKey($relative)) { throw "Unlisted bundle file: $relative" }
@@ -142,14 +132,6 @@ function Invoke-Native([string]$Exe, [string[]]$Arguments, [int]$Seconds, [int[]
     } finally { $process.Dispose() }
 }
 
-# These functions are shared by the full artifact and its generated startup-only subset.
-function OwnContract {
-    $contract = if ($resumeRuntime) { $manifest.contract } else { Get-Field (Get-Field $manifest 'ownResume') 'contract' }
-    $problem = Get-OwnResumeProblem $contract
-    if ($problem) { throw $problem }
-    return $contract
-}
-
 function AssertPlainPath([string]$Path, [switch]$Required) {
     $current = [IO.Path]::GetFullPath($Path)
     while ($current) {
@@ -162,126 +144,6 @@ function AssertPlainPath([string]$Path, [switch]$Required) {
 }
 
 function HostProfile { [Environment]::GetFolderPath('UserProfile') }
-function OwnContext($Contract) {
-    $problem = PackageContextProblem
-    if ($problem) { throw "Host mode refuses package context: $problem" }
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-    if ($identity.IsSystem -or $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) -or
-        [Environment]::MachineName -cne $Contract.expectHost) { throw 'Own startup requires the declared target host normal-user Limited context.' }
-    $username = $identity.Name.Split('\')[-1]
-    if ($Contract.session -cne ('wslc-cli-' + $username)) { throw 'The artifact is not bound to this normal-user default session.' }
-    $profile = HostProfile
-    $wslc = Join-Path (PlatformDirectory) 'wslc.exe'
-    $ssh = Join-Path ([Environment]::SystemDirectory) 'OpenSSH\ssh.exe'
-    foreach ($path in @($wslc,$ssh,(Join-Path $profile $Contract.ssh.identity),(Join-Path $profile $Contract.ssh.knownHosts))) {
-        AssertPlainPath $path -Required
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'WSLC, Windows OpenSSH or existing SSH authentication is missing.' }
-    }
-    $settings = Join-Path $localAppData 'wslc\settings.yaml'
-    AssertPlainPath $settings
-    if (Test-Path -LiteralPath $settings) { throw 'Custom WSLC settings are not adopted by the fixed default-storage resume.' }
-    $storage = Join-Path $localAppData ('wslc\sessions\' + $Contract.session + '\storage.vhdx')
-    AssertPlainPath $storage -Required
-    if (-not (Test-Path -LiteralPath $storage -PathType Leaf) -or (Get-Item -LiteralPath $storage).Length -eq 0) { throw 'Existing normal-user storage is missing; never create a replacement.' }
-    [ordered]@{ sid = $identity.User.Value; profile = $profile; wslc = $wslc; ssh = $ssh; storage = $storage }
-}
-
-function OwnInfo($Context) {
-    $info = Invoke-Native $Context.wslc @('info','--format','json') 30 | ConvertFrom-Json
-    if ([string](Get-Field (Get-Field $info 'Client') 'Version') -notmatch '^3\.' -or
-        $null -eq (Get-Fields (Get-Field $info 'Server') @('Sessions')).Sessions) { throw 'WSLC 3 info is unavailable or malformed.' }
-    return $info
-}
-
-function OwnInspect($Context, $Contract, [switch]$Default) {
-    $argv = @('container','inspect',$Contract.container,'--format','json')
-    if (-not $Default) { $argv = @('--session',$Contract.session) + $argv }
-    $items = @(Invoke-Native $Context.wslc $argv 60 | ConvertFrom-Json)
-    if ($items.Count -ne 1) { throw 'Own inspect did not return exactly one existing container.' }
-    return $items[0]
-}
-
-function OwnSshReady($Context, $Contract) {
-    # Explicit known key/identity, no Access login, no connection mutation and no default user config/Match exec.
-    $argv = @('-F','none','-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','StrictHostKeyChecking=yes',
-        '-o','UpdateHostKeys=no','-o','ConnectTimeout=5','-o',('UserKnownHostsFile=' + (Join-Path $Context.profile $Contract.ssh.knownHosts)),
-        '-i',(Join-Path $Context.profile $Contract.ssh.identity),
-        '-p',[string]$Contract.hostPort,'dev@127.0.0.1','true')
-    $null = Invoke-Native $Context.ssh $argv 10
-}
-
-function AssertOwnRuntime {
-    $directory = $root.TrimEnd('\')
-    if ([IO.Path]::GetDirectoryName($directory) -ne (Join-Path $localAppData 'Programs') -or
-        [IO.Path]::GetFileName($directory) -cne ('windows-host-' + $manifest.source)) { throw 'Startup runtime is not in its stable installed directory.' }
-    AssertPlainPath $directory -Required
-    AssertHostRuntimeStreams $directory
-    $id = 'tree-extracted:' + $directory.ToUpperInvariant()
-    $records = @()
-    $ledger = Join-Path $localAppData 'windows-iac\ledger'
-    AssertPlainPath $ledger -Required
-    foreach ($file in @(Get-ChildItem -LiteralPath $ledger -Force)) {
-        if ($file.Name -ceq '.lock' -and -not $file.PSIsContainer) { continue }
-        if ($file.PSIsContainer -or $file.Name -cnotmatch '^[0-9]{8}\.json\z' -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Startup ledger is unreadable or contains unsupported entries.' }
-        $record = [IO.File]::ReadAllText($file.FullName) | ConvertFrom-Json
-        if ((Get-Field $record 'seq') -ne [long]$file.Name.Substring(0,8)) { throw 'Startup ledger filename/sequence mismatch.' }
-        if ((Get-Field $record 'id') -ceq $id) { $records += $record }
-    }
-    $files = @{}
-    foreach ($file in @(Get-ChildItem -LiteralPath $directory -File)) { $files[$file.Name] = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
-    $state = [ordered]@{ exists = $true; files = $files; other = @() }
-    $class = Get-EffectClass $records $state 'tree-extracted' $state
-    if ($class.class -cne 'owned-match' -or $class.resolution) { throw 'Installed runtime including manifest is not the committed owned snapshot.' }
-}
-
-function OwnResume([switch]$Test) {
-    if ($resumeRuntime) { AssertOwnRuntime }
-    $contract = OwnContract
-    $context = OwnContext $contract
-    $info = OwnInfo $context
-    $sessions = @((Get-Field (Get-Field $info 'Server') 'Sessions') | Where-Object { (Get-Field $_ 'Name') -ceq $contract.session })
-    if ($sessions.Count -gt 1) { throw 'Normal session identity is ambiguous.' }
-    if (-not $sessions.Count -and $Test) {
-        return [ordered]@{ action = 'cold'; runtimeProof = 'unproven'; storage = $context.storage; effects = 0 }
-    }
-    if (-not $sessions.Count) {
-        # Published default CLI reopens the already guarded VHD. The Docker daemon
-        # may run other stored restart policies; no other container is directly started here.
-        $null = OwnContext $contract  # reobserve immediately before default resolution
-        $container = OwnInspect $context $contract -Default
-        $after = OwnInfo $context
-        if (@((Get-Field (Get-Field $after 'Server') 'Sessions') | Where-Object { (Get-Field $_ 'Name') -ceq $contract.session }).Count -ne 1) { throw 'Default resolution did not open the known normal session.' }
-    } else { $container = OwnInspect $context $contract }
-    $action = Get-OwnContainerAction $contract $container
-    if ($action -ceq 'start' -and -not $Test) {
-        $again = OwnInspect $context $contract
-        $latestAction = Get-OwnContainerAction $contract $again
-        if ($again.Id -cne $container.Id) { throw 'Own target changed before start.' }
-        if ($latestAction -ceq 'start') { $null = Invoke-Native $context.wslc @('--session',$contract.session,'container','start',$again.Id) 60 }
-        $container = OwnInspect $context $contract
-        if ($container.Id -cne $again.Id -or (Get-OwnContainerAction $contract $container) -cne 'running') { throw 'Own start did not reach Running; never repair/retry/recreate.' }
-    }
-    if (-not $Test -or $action -ceq 'running') { OwnSshReady $context $contract }
-    [ordered]@{ action = $action; source = $manifest.source; session = $contract.session; container = $contract.container
-        configured = $true; localStrictSsh = (-not $Test -or $action -ceq 'running'); rebootProof = 'unproven' }
-}
-
-function AssertHostRuntimeStreams([string]$Directory) {
-    $entries = @(Get-ChildItem -LiteralPath $Directory -Force)
-    if ($entries.Count -ne 4 -or @($entries | Where-Object { $_.PSIsContainer -or ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
-        @('win.ps1','handoff-evaluate.ps1','package-view.ps1','manifest.json') -cnotcontains $_.Name }).Count) { throw 'Startup runtime entry names/case differ; retained.' }
-    foreach ($name in 'win.ps1','handoff-evaluate.ps1','package-view.ps1','manifest.json') {
-        foreach ($stream in @(Get-Item -LiteralPath (Join-Path $Directory $name) -Stream '*' -ErrorAction Stop)) {
-            if ($stream.Stream -cne ':$DATA') { throw 'Startup runtime has an alternate stream; execution policy is preserved.' }
-        }
-    }
-}
-
-if ($Mode -cin @('OwnResume','OwnResumeTest')) {
-    OwnResume -Test:($Mode -ceq 'OwnResumeTest') | ConvertTo-Json -Depth 5 -Compress
-    return
-}
 
 # ---- Pinned release-asset packages (manifest schema 3) ----------------------
 # nix.nix owns each lock and pack.py validates all of it at build. Here only the
@@ -673,15 +535,6 @@ function WriteRecord([string]$Phase, $Effect, $Observed, [string]$Temp, [string]
     $script:recordsWritten++
 }
 
-# This artifact's declared own target (generated from its Binding), or $null when it declares none or none valid.
-function OwnDeclared {
-    $artifact = Get-Variable -Name manifest -ValueOnly -ErrorAction Ignore
-    $own = Get-Field (Get-Field $artifact 'ownResume') 'contract'
-    if ($null -eq $own) { $own = Get-Field $artifact 'contract' }
-    if ($null -eq $own -or (Get-OwnResumeProblem $own)) { return $null }
-    return $own
-}
-
 # Host effects have fixed paths and only explicit host modes recover or remove them.
 function IsHostEffect($Effect) {
     $kind, $target = [string](Get-Field $Effect 'kind'), [string](Get-Field $Effect 'target')
@@ -693,11 +546,8 @@ function IsHostEffect($Effect) {
         [IO.Path]::GetFileName($target) -cmatch '^(windows-host-[a-f0-9]{40}|cloudflared-[0-9.]+)\z') { return $true }
     $ssh = Join-Path (HostProfile) '.ssh'
     if ($kind -cnotin @('file-created','prefix-inserted')) { return $false }
-    # The declared own target's known hosts file and the backup name of its alias.
-    $own = Get-Field (OwnDeclared) 'ssh'
-    $ownFiles = if ($own) { @(('config.before-' + $own.alias), ([string]$own.knownHosts -replace '^\.ssh/', '')) } else { @() }
-    return @(@('config','config.before-windows-rent','windows-rent\config','windows-rent\known_hosts',
-        'windows-rent\access','windows-own\config','windows-client\config','windows-client\known_hosts') + $ownFiles |
+    return @('config','config.before-windows-rent','windows-rent\config','windows-rent\known_hosts',
+        'windows-rent\access','windows-own\config','windows-client\config','windows-client\known_hosts' |
         Where-Object { (Join-Path $ssh $_) -eq $target }).Count -gt 0
 }
 
@@ -735,74 +585,6 @@ function ObserveHostEffect($Effect) {
         'scheduled-task' { return ObserveOwnTask $Effect.target }
         'tree-extracted' { return ObserveTree $Effect.target }
         default { return ObserveFile $Effect.target }
-    }
-}
-
-function OwnTaskEffect([string]$Directory, [string]$Sid) {
-    $descriptor = [ordered]@{ sid = $Sid; execute = (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe')
-        arguments = '-NoProfile -NonInteractive -File "' + (Join-Path $Directory 'win.ps1') + '" -Mode OwnResume'
-        directory = $Directory; delay = 'PT30S'; logonType = 'InteractiveToken'; runLevel = 'LeastPrivilege'
-        settings = (Get-OwnTaskSettings); other = @() }
-    [ordered]@{ id = 'scheduled-task:' + $Sid; kind = 'scheduled-task'; target = 'task:windows-own-logon:' + $Sid
-        prior = [ordered]@{ exists = $false }; desired = [ordered]@{ exists = $true; descriptor = $descriptor } }
-}
-function OwnTaskXml($Descriptor) {
-    $escape = { param($value) [Security.SecurityElement]::Escape([string]$value) }
-    $settings = @($Descriptor.settings.GetEnumerator() | ForEach-Object { '<' + $_.Key + '>' + $_.Value + '</' + $_.Key + '>' }) -join ''
-    '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Triggers><LogonTrigger><Enabled>true</Enabled><UserId>' +
-        (& $escape $Descriptor.sid) + '</UserId><Delay>PT30S</Delay></LogonTrigger></Triggers><Principals><Principal id="Author"><UserId>' +
-        (& $escape $Descriptor.sid) + '</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings>' +
-        $settings + '</Settings><Actions Context="Author"><Exec><Command>' + (& $escape $Descriptor.execute) + '</Command><Arguments>' +
-        (& $escape $Descriptor.arguments) + '</Arguments><WorkingDirectory>' + (& $escape $Descriptor.directory) + '</WorkingDirectory></Exec></Actions></Task>'
-}
-function RegisterOwnTask($Effect) {
-    $null = Register-ScheduledTask -TaskName (OwnTaskName $Effect.target) -TaskPath '\' -Xml (OwnTaskXml $Effect.desired.descriptor) -Force -ErrorAction Stop
-}
-function ConvergeOwnTask($Selected) {
-    $attempt = AttemptOf $Selected.id
-    if ($attempt.problem) { throw $attempt.problem }
-    $current = ObserveHostEffect $Selected
-    if ($current.exists -and (Get-Field $current 'running')) { throw 'Owned Task is running; no switch or deletion.' }
-    $open = @(if (-not $attempt.closed) { $attempt.records })
-    if ($open.Count) {
-        $effect = $open[0]
-        $class = Get-EffectClass $null $current '' $null $attempt
-        if ($class.resolution -ceq 'confirm') {
-            WriteRecord 'commit' $effect $current; $attempt = AttemptOf $Selected.id; $open = @($attempt.records)
-            $class = Get-EffectClass $null $current '' $null $attempt
-        }
-        elseif ($class.resolution -cin @('void','undone')) { WriteRecord $class.resolution $effect $current; $open = @() }
-        elseif ($class.class -cne 'owned-match') { throw 'Task has unknown native state; both runtimes retained.' }
-        if ($open.Count) {
-            if (-not (Test-EffectStateEqual 'scheduled-task' $effect.desired $Selected.desired)) {
-                if ($class.resolution -ceq 'pendingPrevious') { throw 'Another task version remains pending; retry its original artifact or remove explicitly.' }
-                $Selected.previous = $effect.desired
-                WriteRecord 'intent' $Selected $null
-                $effect = $Selected
-            }
-            elseif (-not $class.resolution) { return }
-        }
-    }
-    if (-not $open.Count) {
-        if ($current.exists) {
-            throw 'Preexisting Task is unowned; nothing is registered.'
-        }
-        WriteRecord 'intent' $Selected $null; $effect = $Selected
-    }
-    $before = ObserveHostEffect $effect
-    if ((Get-Field $before 'running') -or -not ((Test-EffectStateEqual 'scheduled-task' $effect.prior $before) -or
-        (Test-EffectStateEqual 'scheduled-task' (Get-Field $effect 'previous') $before))) { throw 'Task changed before native registration; intent retained.' }
-    try {
-        RegisterOwnTask $effect
-        $after = ObserveHostEffect $effect
-        WriteRecord 'commit' $effect $after
-    } catch {
-        $failure = $_
-        $after = ObserveHostEffect $effect
-        if (Test-EffectStateEqual 'scheduled-task' $effect.desired $after) { WriteRecord 'commit' $effect $after }
-        elseif (Test-EffectStateEqual 'scheduled-task' $effect.prior $after) { WriteRecord 'void' $effect $after }
-        # Previous exact or unknown remains open; neither runtime is removed.
-        throw $failure
     }
 }
 
@@ -951,15 +733,12 @@ function SshPath([string]$Path, [string]$Profile) {
     if ($path.StartsWith('~\')) { $path = Join-Path $Profile $path.Substring(2) }
     return [IO.Path]::GetFullPath($path)
 }
-# LocalPort is the declared own target's loopback port for its local alias; empty for the rent Access alias.
-function AssertSshEffective($Values, [string]$Name, [string]$HostName, [string]$IdentityPath, [string]$KnownHosts, [string]$Proxy, [string]$Profile, [string]$LocalPort) {
+function AssertSshEffective($Values, [string]$Name, [string]$HostName, [string]$IdentityPath, [string]$KnownHosts, [string]$Proxy, [string]$Profile) {
     if (@($Values.hostname).Count -ne 1 -or $Values.hostname[0] -cne $HostName -or @($Values.user).Count -ne 1 -or $Values.user[0] -cne 'dev' -or
-        $Values.stricthostkeychecking[0] -cne 'true' -or (-not $LocalPort -and $Values.identitiesonly[0] -cne 'yes') -or @($Values.identityfile).Count -ne 1 -or
+        $Values.stricthostkeychecking[0] -cne 'true' -or $Values.identitiesonly[0] -cne 'yes' -or @($Values.identityfile).Count -ne 1 -or
         (SshPath $Values.identityfile[0] $Profile) -ne $IdentityPath -or @($Values.userknownhostsfile).Count -ne 1 -or
         (SshPath $Values.userknownhostsfile[0] $Profile) -ne $KnownHosts) { throw 'Existing SSH alias authentication/host binding differs; preserved.' }
-    if ($LocalPort) {
-        if ($Values.port[0] -cne $LocalPort -or ($Values.ContainsKey('proxycommand') -and $Values.proxycommand[0] -cne 'none')) { throw 'Local own alias has a different port/proxy.' }
-    } elseif (-not $Values.ContainsKey('hostkeyalias') -or $Values.hostkeyalias[0] -cne $Name -or
+    if (-not $Values.ContainsKey('hostkeyalias') -or $Values.hostkeyalias[0] -cne $Name -or
         -not $Values.ContainsKey('proxycommand') -or $Values.proxycommand[0] -cne $Proxy) { throw 'Rent Access ProxyCommand/host key alias differs.' }
 }
 # The one rent ProxyCommand: Windows PowerShell runs the packaged launcher beside the pinned client. Every
@@ -972,9 +751,9 @@ function HostCaller {
     $problem = PackageContextProblem
     if ($problem) { throw "Scoped host mode refuses: $problem" }
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $expectHost = Get-Field (OwnDeclared) 'expectHost'
-    if ($identity.IsSystem -or [Security.Principal.WindowsPrincipal]::new($identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) -or
-        -not $expectHost -or [Environment]::MachineName -cne $expectHost) { throw 'Scoped host mode requires the declared target host normal-user context.' }
+    # No declared host name (#61 I3): the scope is this normal user's own ledger and explicit inputs.
+    if ($identity.IsSystem -or
+        [Security.Principal.WindowsPrincipal]::new($identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Scoped host mode requires the normal-user context.' }
     return $identity.User.Value
 }
 function AssertOwnedSsh([string[]]$Paths, [switch]$Test) {
@@ -989,41 +768,32 @@ function AssertOwnedSsh([string[]]$Paths, [switch]$Test) {
         if ($first.kind -ceq 'prefix-inserted') { $null = HostUndoPlan $open }
     }
 }
-function HostSsh([switch]$Test, [switch]$Local) {
+function HostSsh([switch]$Test) {
     $null = HostCaller
     $profile = HostProfile
     $directory = Join-Path $profile '.ssh'
     $ssh = Join-Path ([Environment]::SystemDirectory) 'OpenSSH\ssh.exe'
     AssertPlainPath $ssh -Required
     $files = @(SshConfigFiles $directory)
-    if ($Local) {
-        $contract = OwnContract; $name = $contract.ssh.alias; $hostName = '127.0.0.1'; $localPort = [string]$contract.hostPort
-        $identityPath = Join-Path $profile $contract.ssh.identity; $knownHosts = Join-Path $profile $contract.ssh.knownHosts
-        $fragment = Join-Path $directory 'windows-own\config'; $clientExe = $null; $proxy = $null
-    } else {
-        if ($Alias -cne 'windows-rent' -or $Hostname -cnotmatch '^(?=.{1,253}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+\z') { throw 'Explicit windows-rent Access hostname is required.' }
-        $name = $Alias; $hostName = $Hostname; $identityPath = [IO.Path]::GetFullPath($Identity); $localPort = ''
-        $knownHosts = Join-Path $directory 'windows-rent\known_hosts'; $fragment = Join-Path $directory 'windows-rent\config'
-        $clientDirectory = Join-Path $localAppData ('Programs\cloudflared-' + $manifest.cloudflared.version)
-        $clientExe = Join-Path $clientDirectory 'cloudflared.exe'
-        # The pinned client and the packaged launcher are one owned tree; the launcher reads the RentAccess slot.
-        $clientFiles = @{ 'cloudflared.exe' = $manifest.cloudflared.sha256; 'rent-access.ps1' = $manifest.files.'rent-access.ps1' }
-        $proxy = RentProxyCommand (Join-Path $clientDirectory 'rent-access.ps1')
-    }
+    if ($Alias -cne 'windows-rent' -or $Hostname -cnotmatch '^(?=.{1,253}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+\z') { throw 'Explicit windows-rent Access hostname is required.' }
+    $name = $Alias; $hostName = $Hostname; $identityPath = [IO.Path]::GetFullPath($Identity)
+    $knownHosts = Join-Path $directory 'windows-rent\known_hosts'; $fragment = Join-Path $directory 'windows-rent\config'
+    $clientDirectory = Join-Path $localAppData ('Programs\cloudflared-' + $manifest.cloudflared.version)
+    $clientExe = Join-Path $clientDirectory 'cloudflared.exe'
+    # The pinned client and the packaged launcher are one owned tree; the launcher reads the RentAccess slot.
+    $clientFiles = @{ 'cloudflared.exe' = $manifest.cloudflared.sha256; 'rent-access.ps1' = $manifest.files.'rent-access.ps1' }
+    $proxy = RentProxyCommand (Join-Path $clientDirectory 'rent-access.ps1')
     AssertPlainPath $identityPath -Required
     AssertOwnedSsh @((Join-Path $directory 'config'),$fragment,$knownHosts) -Test:$Test
     $count = SshDeclaredCount $files $name
     if ($count -gt 1) { throw 'SSH alias is declared more than once; preserved.' }
     if ($count -eq 1) {
         AssertPlainPath $knownHosts -Required
-        AssertSshEffective (SshEffective $ssh $name) $name $hostName $identityPath $knownHosts $proxy $profile $localPort
-        if ($Local) { return [ordered]@{ alias = $name; configured = $true; ownership = 'existing'; authenticationProof = 'unproven' } }
+        AssertSshEffective (SshEffective $ssh $name) $name $hostName $identityPath $knownHosts $proxy $profile
     } elseif ($Test) { throw 'SSH alias is absent.' }
     if ($count -eq 0) { $null = SshDeclaredCount $files $name -Creating }
     if ($HostKey -cnotmatch '^ssh-ed25519 [A-Za-z0-9+/]+={0,2}\z') { throw 'An explicitly authorized public SSH host key is required; never discovered as trust.' }
-    $text = "Host $name`n  HostName $hostName`n  User dev`n"
-    if ($Local) { $text += "  Port $localPort`n"; $known = "[127.0.0.1]:$localPort $HostKey`n" }
-    else { $text += "  ProxyCommand $proxy`n  HostKeyAlias $name`n"; $known = "$name $HostKey`n" }
+    $text = "Host $name`n  HostName $hostName`n  User dev`n  ProxyCommand $proxy`n  HostKeyAlias $name`n"; $known = "$name $HostKey`n"
     if ($identityPath -match '["\r\n]' -or $knownHosts -match '["\r\n]') { throw 'Unsupported SSH path quoting.' }
     $text += "  IdentityFile `"$identityPath`"`n  IdentitiesOnly yes`n  StrictHostKeyChecking yes`n  UserKnownHostsFile `"$knownHosts`"`n  UpdateHostKeys no`n"
     $utf8 = [Text.UTF8Encoding]::new($false)
@@ -1043,17 +813,15 @@ function HostSsh([switch]$Test, [switch]$Local) {
         (ObserveFile (Join-Path $directory 'config.before-windows-rent')).exists -and
         -not @(OpenAttempt ('file-created:' + (Join-Path $directory 'config.before-windows-rent').ToUpperInvariant())).Count) { throw 'Unowned SSH backup exists; no deployment.' }
     if (-not $Test) {
-        if (-not $Local) {
-            $client = HostTreeEffect $clientDirectory $clientFiles
-            InstallHostTree $client @{ 'cloudflared.exe' = (BundlePath $manifest.cloudflared.file); 'rent-access.ps1' = (BundlePath 'rent-access.ps1') }
-        }
+        $client = HostTreeEffect $clientDirectory $clientFiles
+        InstallHostTree $client @{ 'cloudflared.exe' = (BundlePath $manifest.cloudflared.file); 'rent-access.ps1' = (BundlePath 'rent-access.ps1') }
         ConvergeHostBytes $fragment $utf8.GetBytes($text)
         ConvergeHostBytes $knownHosts $utf8.GetBytes($known)
         if ($count -eq 0) { HostPrefix $config (Join-Path $directory 'config.before-windows-rent') $include }
     }
     $null = SshConfigFiles $directory
-    AssertSshEffective (SshEffective $ssh $name) $name $hostName $identityPath $knownHosts $proxy $profile $localPort
-    if (-not $Local -and -not (Test-EffectStateEqual 'tree-extracted' (HostTreeEffect $clientDirectory $clientFiles).desired (ObserveTree $clientDirectory))) { throw 'Pinned cloudflared client or rent launcher differs.' }
+    AssertSshEffective (SshEffective $ssh $name) $name $hostName $identityPath $knownHosts $proxy $profile
+    if (-not (Test-EffectStateEqual 'tree-extracted' (HostTreeEffect $clientDirectory $clientFiles).desired (ObserveTree $clientDirectory))) { throw 'Pinned cloudflared client or rent launcher differs.' }
     [ordered]@{ alias = $name; configured = $true; client = $clientExe; launcher = (Join-Path $clientDirectory 'rent-access.ps1')
         credential = 'RentAccess stdin slot; never written here'; authenticationProof = 'unproven'; rebootProof = 'unproven' }
 }
@@ -1128,7 +896,7 @@ function ClientPrefixState([string]$Config, [string]$Line) {
 }
 # ClientSsh (explicit opt-in): the declared public fragment and pins become the owned windows-client slot, and the
 # master's one owned Include line moves from the legacy two paths to three, so ~/.ssh/config (the file Codex App
-# reads) resolves the aliases. Legacy RentSsh/OwnSsh keep writing two paths. Every refusal precedes the first write;
+# reads) resolves the aliases. Legacy RentSsh keeps writing two paths. Every refusal precedes the first write;
 # an interruption between the legacy undo and the new line leaves the original master, and a rerun completes.
 function HostClientSsh([switch]$Test) {
     $null = HostCaller
@@ -1314,15 +1082,11 @@ function UndoHostEffect($Plan) {
     WriteRecord 'undone' $effect (ObserveHostEffect $effect)
     $script:removed++
 }
-# -Own (Mode OwnRemove): only the own logon Task and the windows-host runtime trees; every other host effect (the rent
-# alias, client and Access slots, the master prefix, the pinned client) is left as it is.
-function HostRemove([switch]$Own) {
+function HostRemove {
     $plans = @()
     foreach ($id in @(LedgerIds)) {
         $records = @(RecordsOf $id)
         if (-not (IsHostEffect $records[0])) { continue }
-        if ($Own -and -not ($records[0].kind -ceq 'scheduled-task' -or
-            ($records[0].kind -ceq 'tree-extracted' -and [IO.Path]::GetFileName($records[0].target).StartsWith('windows-host-')))) { continue }
         $open = @(OpenAttempt $id)
         if ($open.Count) { $plans += HostUndoPlan $open }
     }
@@ -1335,66 +1099,6 @@ function HostRemove([switch]$Own) {
     $rank = @{ 'scheduled-task' = 0; 'prefix-inserted' = 1; 'file-created' = 2; 'tree-extracted' = 3 }
     foreach ($plan in @($plans | Sort-Object { $rank[$_.effect.kind] })) { UndoHostEffect $plan }
     [ordered]@{ mode = $Mode; removed = $script:removed; recordsWritten = $script:recordsWritten; source = $manifest.source; runtimeProof = 'unproven' }
-}
-function CollectHostRuntime([string]$SelectedDirectory) {
-    foreach ($id in @(LedgerIds)) {
-        $records = @(RecordsOf $id)
-        $first = $records[0]
-        if (-not (IsHostEffect $first) -or $first.kind -cne 'tree-extracted' -or
-            -not [IO.Path]::GetFileName($first.target).StartsWith('windows-host-') -or $first.target -eq $SelectedDirectory) { continue }
-        $open = @(OpenAttempt $id)
-        if (-not $open.Count) { continue }
-        # A failed/ambiguous switch never reaches collection. Any other native reference keeps the tree.
-        UndoHostEffect (HostUndoPlan $open)
-    }
-}
-function HostTaskPolicies {
-    $exe = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
-    $policies = Invoke-Native $exe @('-NoProfile','-NonInteractive','-Command',
-        'Get-ExecutionPolicy -List | Select-Object Scope,ExecutionPolicy | ForEach-Object { @{ Scope=[string]$_.Scope; ExecutionPolicy=[string]$_.ExecutionPolicy } } | ConvertTo-Json -Compress') 10
-    # Windows PowerShell 5.1 writes a top-level JSON array as one object (PowerShell 7 enumerates it unless -NoEnumerate):
-    # parse into a variable, then emit its rows, so both return one item per policy scope.
-    $rows = if ($PSVersionTable.PSVersion.Major -ge 7) { ConvertFrom-Json $policies -NoEnumerate } else { ConvertFrom-Json $policies }
-    $rows
-}
-function HostLogon([switch]$Test) {
-    $sid = HostCaller
-    $problem = Get-OwnTaskPolicyProblem @(HostTaskPolicies)
-    if ($problem) { throw $problem }
-    $contract = OwnContract
-    $context = OwnContext $contract
-    $state = OwnResume -Test
-    if ($state.action -cne 'running' -or -not $state.localStrictSsh) { throw 'Logon activation requires the accepted exact own target Running and strict local SSH; legacy/cold/start state remains unproven.' }
-    $selection = $manifest.ownResume
-    if ($selection.directory -cne 'host-runtime') { throw 'Invalid generated runtime directory.' }
-    $files = ConvertTo-FileMap $selection.files
-    if ($null -eq $files -or (@($files.Keys | Sort-Object) -join ',') -cne 'handoff-evaluate.ps1,manifest.json,package-view.ps1,win.ps1') { throw 'Startup runtime must contain exactly four generated files.' }
-    $sources = @{}
-    foreach ($name in $files.Keys) { $sources[$name] = BundlePath ('host-runtime/' + $name) }
-    $directory = Join-Path $localAppData ('Programs\windows-host-' + $manifest.source)
-    $tree = HostTreeEffect $directory $files
-    $task = OwnTaskEffect $directory $sid
-    $current = ObserveHostEffect $task
-    $attempt = AttemptOf $task.id
-    if ($attempt.problem) { throw $attempt.problem }
-    $class = Get-EffectClass $null $current 'scheduled-task' $task.desired $attempt
-    if ((Get-Field $current 'running') -or $class.class -cin @('owned-drift','preexisting-match','preexisting-drift','indeterminate')) { throw 'Task is running, foreign or indeterminate; no runtime installation.' }
-    if ($class.resolution -ceq 'pendingPrevious' -and
-        -not (Test-EffectStateEqual 'scheduled-task' @($attempt.records)[0].desired $task.desired)) { throw 'Another task version is pending; no runtime installation.' }
-    if ($Test) {
-        if ($class.class -cne 'owned-match' -or $class.resolution -or -not (Test-EffectStateEqual 'scheduled-task' $task.desired $current) -or
-            -not (Test-EffectStateEqual 'tree-extracted' $tree.desired (ObserveHostEffect $tree))) { throw 'Selected logon Task/runtime is not configured.' }
-        AssertHostRuntimeStreams $directory
-    } else {
-        InstallHostTree $tree $sources
-        AssertHostRuntimeStreams $directory
-        ConvergeOwnTask $task
-        $after = ObserveHostEffect $task
-        if (-not (Test-EffectStateEqual 'scheduled-task' $task.desired $after)) { throw 'Task did not select the verified runtime.' }
-        CollectHostRuntime $directory
-    }
-    [ordered]@{ mode = $Mode; source = $manifest.source; task = (OwnTaskName $task.target); runtime = $directory; configured = $true
-        rebootProof = 'unproven'; taskUxProof = 'unproven'; rentAuthenticationProof = 'unproven' }
 }
 function StartQuickHttp([string]$Client, [string[]]$Arguments) {
     & $Client @Arguments
@@ -3833,7 +3537,7 @@ function Uninstall {
 
 $script:runIdentity = RunIdentity
 try {
-    if ($Mode -cin @('RentSsh','RentSshTest','RentAccess','OwnSsh','OwnSshTest','OwnLogon','OwnLogonTest','HostRemove','OwnRemove','QuickHttp','ClientSsh','ClientSshTest')) {
+    if ($Mode -cin @('RentSsh','RentSshTest','RentAccess','HostRemove','QuickHttp','ClientSsh','ClientSshTest')) {
         $null = HostCaller
         if ($Mode -ceq 'QuickHttp') { QuickHttp; return }
         $test = $Mode.EndsWith('Test')
@@ -3843,14 +3547,9 @@ try {
             'RentSsh' { HostSsh }
             'RentSshTest' { HostSsh -Test }
             'RentAccess' { RentAccess }
-            'OwnSsh' { HostSsh -Local }
-            'OwnSshTest' { HostSsh -Local -Test }
             'ClientSsh' { HostClientSsh }
             'ClientSshTest' { HostClientSsh -Test }
-            'OwnLogon' { HostLogon }
-            'OwnLogonTest' { HostLogon -Test }
             'HostRemove' { HostRemove }
-            'OwnRemove' { HostRemove -Own }
         }
         $answer | ConvertTo-Json -Depth 8 -Compress
         return

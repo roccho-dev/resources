@@ -16,24 +16,11 @@
       gitState = import ./extensions/git-state/nix.nix { inherit pkgs; };
       githubRoot = import ./extensions/github/nix.nix { inherit pkgs; backend = gitState.backend; };
       ownSpec = builtins.fromJSON (builtins.readFile ./oci/own/spec.json);
-      # The target's declared owner names own's stable gh helper (rent keeps the default); each repository's principal
-      # is the one its own binding declares (profile/gh.nix).
-      # Explicit nonsecret envs input; the Windows library has no target-specific default.
+      # The owner only names own's stable gh helper; it selects no namespace, principal or slot (each repository's
+      # principal is the one its own binding declares, profile/gh.nix), so the build reads it from no binding.
+      ownOwner = "roccho-dev";
+      # Explicit nonsecret envs input, for the CI binding inputs only; no build output reads a binding.
       bindingRoot = "${host-bindings}/contracts/host-bindings";
-      ownBinding = builtins.fromJSON (builtins.readFile "${bindingRoot}/own/G6I3.json");
-      ownOwner = ownBinding.owner;
-      # CI only, never published or applied: another declared own target. Every site value, the credential owner
-      # included, differs from the G6I3 sample; the role and the image publisher are the own role's invariants.
-      ciAltBinding = {
-        role = "own"; site = "ALTSITE"; expectHost = "ALTHOST"; owner = "alt-owner"; session = "wslc-cli-alt";
-        sshAlias = "alt-own"; container = "alt-own"; hostPort = 2224;
-        volume = "alt-own-home"; workVolume = "alt-own-work"; nixVolume = "alt-own-nix";
-        publicKeyFile = "%USERPROFILE%\\.ssh\\id_alt_wslc.pub"; privateKeyFile = "/work/repos/.auth/ssh/alt-own/id_ed25519";
-        knownHostsFile = "%USERPROFILE%\\.ssh\\known_hosts_alt"; windowsIdentityFile = "%USERPROFILE%\\.ssh\\id_alt";
-        image = "ghcr.io/roccho-dev/windows-own@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        imageFrom = "CI-only alternate target fixture";
-      };
-      ciAlt = import ./windows/nix.nix { inherit pkgs; source = "uncommitted"; ownBinding = ciAltBinding; };
       # B receives only core/service inputs, never the current T or its app pins.
       ownFor = { core, tag }: import ./oci/own/nix.nix {
         inherit pkgs core tag mountLib;
@@ -78,7 +65,7 @@
       versaOwnBase = mkOwn { piTarget = versaOwnPiTarget; };
       versaTypeLLMOwn = mkOwn { extra = [ versaTypeLLM ]; piTarget = versaOwnPiTarget; };
       common = import ./windows/nix.nix {
-        inherit pkgs ownBinding;
+        inherit pkgs;
         source = self.rev or "uncommitted";
       };
       ownConfig = own.config;
@@ -630,7 +617,6 @@
       lib.${system}.mkOwn = mkOwn;
       packages.${system} = {
         binding-inputs = pkgs.linkFarm "host-binding-inputs" [
-          { name = "own.json"; path = "${bindingRoot}/own/G6I3.json"; }
           { name = "dev.json"; path = "${bindingRoot}/dev/G6I3.json"; }
         ];
         own-image = own.image;
@@ -663,11 +649,9 @@
           tag = "next";
           tunnel = rentTunnelStub;
         };
-        # CI only, never published: the same principal routing and bind under the alternate target's helper name,
-        # without an image; and that target's Binding as JSON for the own Windows script's strict reader.
-        ci-alt-owner-gh = let alt = import ./profile/gh.nix { inherit pkgs; inherit (ciAltBinding) owner; }; in
+        # CI only, never published: the same principal routing and bind under another helper name, without an image.
+        ci-alt-owner-gh = let alt = import ./profile/gh.nix { inherit pkgs; owner = "alt-owner"; }; in
           pkgs.buildEnv { name = "ci-alt-owner-gh"; paths = [ alt.wrapper alt.helper ]; pathsToLink = [ "/bin" ]; };
-        ci-alt-own-binding = pkgs.writeText "ci-alt-own-binding.json" (builtins.toJSON ciAltBinding);
         git-state-backend = gitState.backend;
         dev-profile = dev.profile;
         dev-image = dev.image;
@@ -885,37 +869,6 @@
         windows-dist = common.check;
         git-state-finite-poc = gitState.fixture;
         github-root-source = githubRoot.check;
-        # The alternate Binding through the production projection (windows/nix.nix) and the existing pack.py
-        # validators: its own values only, none of the sample's, and no distribution or image is built.
-        own-alt-binding = pkgs.runCommand "own-alt-binding-check" {
-          nativeBuildInputs = [ ciAlt.python ];
-          projection = builtins.toJSON ciAlt.ownProjection;
-          binding = builtins.toJSON ciAltBinding;
-          production = builtins.toJSON common.ownProjection.launch;
-        } ''
-          set -eu
-          export PYTHONDONTWRITEBYTECODE=1
-          python - <<'EOF'
-          import sys
-          sys.path[:0] = ["${./windows}", "${./profile}"]
-          import json, os, pack
-          p, b = json.loads(os.environ["projection"]), json.loads(os.environ["binding"])
-          launch = pack.noctty_launch(p["launch"])
-          own = pack.own_resume(p["ownResume"])
-          # The Noctty entry (VersaPro's native dev) is the production one for every own Binding.
-          assert launch == json.loads(os.environ["production"]), launch
-          assert own == {"expectHost": b["expectHost"], "container": b["container"], "hostPort": b["hostPort"],
-                         "image": b["image"], "session": b["session"],
-                         "volumes": [{"name": b["volume"], "destination": "/home/dev"},
-                                     {"name": b["workVolume"], "destination": "/work/repos"},
-                                     {"name": b["nixVolume"], "destination": "/nix"}],
-                         "ssh": {"alias": b["sshAlias"], "identity": ".ssh/id_alt", "knownHosts": ".ssh/known_hosts_alt"}}, own
-          text = json.dumps(p)
-          for sample in ("G6I3", "wslc-cli-resta", "g6i3-own", "windows_own", "windows-own-"):
-              assert sample not in text, sample
-          EOF
-          touch $out
-        '';
         # Fails when the own image or its scripts disagree with oci/own/spec.json.
         own-spec = pkgs.runCommand "own-spec-check" {
           nativeBuildInputs = [ pkgs.jq ];
