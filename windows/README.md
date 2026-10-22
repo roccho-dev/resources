@@ -689,10 +689,11 @@ title.
 - **When it takes effect:** Windows reads these values at sign-in, so the faces apply
   after the user's next normal sign-in. Running applications are not notified.
   - Each slot is reported as `pendingLogon` (persisted, not yet in use), `active` (in
-    use; read through `ui-font.ahk get`), `liveUnknown` (no interpreter to read with)
-    or `drift`.
-  - `ui-font.ahk` is now read-only and advisory. It runs on the locked AutoHotkey, never
-    sets anything, and is needed for no write.
+    use; read through native `SystemParametersInfoW` GET calls), `liveUnknown`
+    (the native read failed) or `drift`.
+  - Live observation installs no interpreter. It reads NONCLIENTMETRICS and the
+    icon LOGFONT only; no SET call, broadcast, signout or process restart occurs.
+    `ui-font.ahk` remains a legacy read-only proof input, not a deployment prerequisite.
 - **Unproven:** this layout is not a documented API contract. It is tested on Windows 11
   build 26200 (the host, read only) and the CI runner's Windows Server; it is proven only
   once a real user's sign-in shows the faces `active`. If something calls the SPI SET

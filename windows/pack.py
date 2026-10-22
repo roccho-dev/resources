@@ -331,24 +331,21 @@ def archive(root: Path, destination: Path) -> None:
 
 
 def typography(value: object, entries: list[dict], packages: list[dict]) -> dict | None:
-    """The desktop UI font face win.ps1 sets through ui-font.ahk: {desktop: <role>, interpreter:
-    <package name>} becomes {face: <that role's family>, interpreter, script}. The face fits a
-    LOGFONTW lfFaceName (1 to 31 UTF-16 units, no control or surrogate), as Test-UiFontFace checks."""
+    """Resolve the desktop font role. Native Windows GET APIs observe live faces;
+    no optional application is a prerequisite for font deployment or observation."""
     if value is None:
         return None
-    if not isinstance(value, dict) or set(value) != {"desktop", "interpreter"}:
-        raise ValueError("typography is not {desktop, interpreter}")
+    if not isinstance(value, dict) or set(value) != {"desktop"}:
+        raise ValueError("typography is not {desktop}")
     families = {e["role"]: e["family"] for e in entries}
     if value["desktop"] not in families:
         raise ValueError(f"typography role is not selected by common fonts: {value['desktop']!r}")
     face = families[value["desktop"]]
     units = len(face.encode("utf-16-le")) // 2
-    # A str holds code points, so a character beyond the BMP is caught by ord, not by a surrogate range.
     if not 1 <= units <= 31 or re.search(r"[\x00-\x1f\x7f\ud800-\udfff]", face) or any(ord(c) > 0xFFFF for c in face):
         raise ValueError(f"typography face does not fit a LOGFONTW: {face!r}")
-    if [p["name"] for p in packages].count(value["interpreter"]) != 1:
-        raise ValueError(f"typography interpreter is not one locked package: {value['interpreter']!r}")
-    return {"face": face, "interpreter": value["interpreter"], "script": "ui-font.ahk"}
+    return {"face": face, "observer": "SystemParametersInfoW"}
+
 
 
 APP_KEYS = {"name", "source", "id", "package", "publisherId"}

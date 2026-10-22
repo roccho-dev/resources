@@ -176,7 +176,7 @@ let
     packages = map (lock: lock // { inventory = "${inventory lock}"; }) packageLocks;
     # The desktop UI font face: the family of this role, set face-only in the six Win32 UI font slots
     # in HKCU WindowMetrics; ui-font.ahk reads the live faces only (no setter or compiler).
-    typography = { desktop = "ui"; interpreter = "AutoHotkey"; };
+    typography = { desktop = "ui"; };
     # Microsoft Store apps Restore installs when absent, by the official WinGet from the msstore source.
     # Not pinned: the Store serves and updates its current version, and installing needs the network.
     # An app present is never reinstalled or owned. A newly introduced package is ledgered;

@@ -448,14 +448,14 @@ class CompilerTests(unittest.TestCase):
         fonts = self.payload()
         noctty, cloudflared, choices, scripts = self.inputs()
         selected = json.loads(choices.read_text())
-        selected["typography"] = {"desktop": "fixture", "interpreter": "Fixture"}
+        selected["typography"] = {"desktop": "fixture"}
         selected["apps"] = [{**self.APP, "appearance": self.appearance()}]
         choices.write_text(json.dumps(selected))
         pack.distribution(fonts, noctty, cloudflared, choices, scripts, "test", self.root / "out")
         with zipfile.ZipFile(self.root / "out" / "windows-dist.zip") as z:
             manifest = json.loads(z.read("manifest.json"))
             self.assertIn("ui-font.ahk", manifest["files"])
-        self.assertEqual(manifest["typography"], {"face": "Test Font", "interpreter": "Fixture", "script": "ui-font.ahk"})
+        self.assertEqual(manifest["typography"], {"face": "Test Font", "observer": "SystemParametersInfoW"})
         self.assertEqual(manifest["apps"], [{**self.APP, "appearance": {"fonts": {k: '"Test Font"' for k in ("ui", "code", "content")},
                                                                           "defaults": self.appearance()["defaults"]}}])
         # Without either, the manifest says so and win.ps1 converges neither.
@@ -467,19 +467,19 @@ class CompilerTests(unittest.TestCase):
 
     def test_typography_contract(self):
         entries = [{"role": "ui", "family": "IBM Plex Sans JP"}]
-        packages = [{"name": "AutoHotkey"}]
-        self.assertEqual(pack.typography({"desktop": "ui", "interpreter": "AutoHotkey"}, entries, packages),
-                         {"face": "IBM Plex Sans JP", "interpreter": "AutoHotkey", "script": "ui-font.ahk"})
-        self.assertEqual(pack.typography({"desktop": "ui", "interpreter": "AutoHotkey"},
+        packages = []  # Font observation must not install a sixth core product.
+        self.assertEqual(pack.typography({"desktop": "ui"}, entries, packages),
+                         {"face": "IBM Plex Sans JP", "observer": "SystemParametersInfoW"})
+        self.assertEqual(pack.typography({"desktop": "ui"},
                                          [{"role": "ui", "family": "x" * 31}], packages)["face"], "x" * 31)
         bad = {
             "not a dict": ("ui", entries),
-            "extra key": ({"desktop": "ui", "interpreter": "AutoHotkey", "face": "x"}, entries),
-            "unknown role": ({"desktop": "terminal", "interpreter": "AutoHotkey"}, entries),
+            "extra key": ({"desktop": "ui", "face": "x"}, entries),
+            "unknown role": ({"desktop": "terminal"}, entries),
             "unknown interpreter": ({"desktop": "ui", "interpreter": "Python"}, entries),
-            "face too long": ({"desktop": "ui", "interpreter": "AutoHotkey"}, [{"role": "ui", "family": "x" * 32}]),
-            "face beyond the BMP": ({"desktop": "ui", "interpreter": "AutoHotkey"}, [{"role": "ui", "family": "x\U0001F600"}]),
-            "face with a control": ({"desktop": "ui", "interpreter": "AutoHotkey"}, [{"role": "ui", "family": "a\tb"}]),
+            "face too long": ({"desktop": "ui"}, [{"role": "ui", "family": "x" * 32}]),
+            "face beyond the BMP": ({"desktop": "ui"}, [{"role": "ui", "family": "x\U0001F600"}]),
+            "face with a control": ({"desktop": "ui"}, [{"role": "ui", "family": "a\tb"}]),
         }
         for case, (value, fonts) in bad.items():
             with self.subTest(case=case), self.assertRaisesRegex(ValueError, "typography"):

@@ -217,11 +217,11 @@ if (($Mode -cin @('ClientSsh','ClientSshTest')) -ne ($PSBoundParameters.Contains
     ($Mode -cnotin @('ClientSsh','ClientSshTest') -and ($PSBoundParameters.ContainsKey('ClientConfig') -or $PSBoundParameters.ContainsKey('ClientKnownHosts')))) {
     throw '-ClientConfig and -ClientKnownHosts are both required by, and only for, -Mode ClientSsh/ClientSshTest.'
 }
-# The desktop UI font face (a selected family, pack.py) set through ui-font.ahk by the locked interpreter package.
+# The desktop UI font face is observed with the Windows native read-only API.
 $uiTypography = Get-Field $manifest 'typography'
-if ($null -ne $uiTypography -and (-not (Test-UiFontFace (Get-Field $uiTypography 'face')) -or (Get-Field $uiTypography 'script') -cne 'ui-font.ahk' -or
-        @($manifest.packages | Where-Object { $_.name -ceq (Get-Field $uiTypography 'interpreter') }).Count -ne 1)) {
-    throw 'Invalid typography in manifest.'
+if ($null -ne $uiTypography -and (-not (Test-UiFontFace (Get-Field $uiTypography 'face')) -or
+        (Get-Field $uiTypography 'observer') -cne 'SystemParametersInfoW')) {
+    throw 'Invalid desktop UI font selection.'
 }
 if ($Typography -and $null -eq $uiTypography) { throw 'This distribution selects no UI font face.' }
 # Store apps Restore installs when absent; introduced identities are ledgered with removal held.
@@ -1795,8 +1795,8 @@ function AssertFonts {
 # the window geometry (CaptionWidth and more) too. Every other byte of each font, and every other WindowMetrics value,
 # stays. Observation, recovery and Uninstall read the same values. A face the user changed after this wrote it is
 # owned-drift: reported, never written. The raw value layout is not a documented API contract: proven on the builds
-# README names, and in effect only after the user's next sign-in (ui-font.ahk's read-only get tells pendingLogon from active).
-$script:uiFontDrift, $script:uiInterpreter = @(), $null
+# README names; the native GET-only observer distinguishes pendingLogon from active.
+$script:uiFontDrift = @()
 $windowMetricsSubkey = 'Control Panel\Desktop\WindowMetrics'
 $uiFontValues = @{ caption = 'CaptionFont'; smCaption = 'SmCaptionFont'; menu = 'MenuFont'; status = 'StatusFont'; message = 'MessageFont'; icon = 'IconFont' }
 
@@ -1864,35 +1864,43 @@ function UiFontEffects {
     }
 }
 
-# The interpreter package's executable with its locked SHA-256 (the owned tree, or an exact existing install), for the
-# advisory live reading only; $null when there is none.
-function UiFontInterpreter {
-    if ($null -ne $script:uiInterpreter) { return $script:uiInterpreter }
-    $package = $manifest.packages | Where-Object { $_.name -ceq (Get-Field $uiTypography 'interpreter') } | Select-Object -First 1
-    if ($null -eq $package) { return $null }
-    $state = ClassifyPackage $package
-    if ($state.class -cnotin @('owned-match', 'preexisting-match')) { return $null }
-    $want = (ConvertTo-FileMap $package.files)[$package.executable]
-    $candidates = @(Join-Path $state.effect.target $package.executable.Replace('/', '\')) + @(FindUninstallEntries $package.existing |
-        Where-Object { $_.installLocation -is [string] -and $_.installLocation.Trim() } |
-        ForEach-Object { Join-Path ([Environment]::ExpandEnvironmentVariables($_.installLocation.Trim().Trim('"'))) $package.existing.executable.Replace('/', '\') })
-    foreach ($exe in $candidates) {
-        if ((Test-Path -LiteralPath $exe -PathType Leaf) -and (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash -eq $want) {
-            $script:uiInterpreter = $exe
-            return $exe
-        }
-    }
-    $null
-}
-
-# Advisory: the faces this session uses (ui-font.ahk get), slot -> face; $null when they cannot be read.
+# Read-only and advisory: the same two GET operations as ui-font.ahk, without
+# installing an interpreter. A failed native read remains liveUnknown; no SET,
+# broadcast, logoff or process restart is used to force activation.
 function UiLiveFaces {
-    $exe = UiFontInterpreter
-    if ($null -eq $exe) { return $null }
-    try { $slots = (Invoke-Native $exe @('/ErrorStdOut', (BundlePath 'ui-font.ahk'), 'get') 60 | ConvertFrom-Json).slots } catch { return $null }
-    $live = @{}
-    foreach ($slot in Get-UiFontSlots) { $live[$slot] = [string]$slots.$slot.face }
-    $live
+    try {
+        if (-not ('WindowsIacUiFontReader' -as [type])) {
+            Add-Type -TypeDefinition @"
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class WindowsIacUiFontReader {
+    [DllImport("user32.dll", EntryPoint="SystemParametersInfoW", SetLastError=true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool Get(uint action, uint size, [In, Out] byte[] buffer, uint flags);
+    public static byte[] Read(uint action, int size) {
+        var buffer = new byte[size];
+        if (action == 0x29) Array.Copy(BitConverter.GetBytes(size), buffer, 4);
+        if (!Get(action, (uint)size, buffer, 0)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        return buffer;
+    }
+}
+"@
+        }
+        [byte[]]$ncm = [WindowsIacUiFontReader]::Read(0x29, 504)
+        [byte[]]$icon = [WindowsIacUiFontReader]::Read(0x1F, 92)
+        $offsets = @{ caption = 24; smCaption = 124; menu = 224; status = 316; message = 408; icon = 0 }
+        $live = @{}
+        foreach ($slot in Get-UiFontSlots) {
+            [byte[]]$font = New-Object byte[] 92
+            $source = if ($slot -ceq 'icon') { $icon } else { $ncm }
+            [Array]::Copy($source, $offsets[$slot], $font, 0, 92)
+            $face = Get-LogFontFace $font
+            if ($null -eq $face) { return $null }
+            $live[$slot] = $face
+        }
+        return $live
+    } catch { return $null }
 }
 
 # Apply -Typography and Restore, once the selected fonts are exact: the context is checked, every slot is classified;
@@ -3602,7 +3610,6 @@ try {
             $nocttyPlan = PlanNoctty -Restore:($Mode -eq 'Restore')
             # Packages (all for Restore, those named by -Packages for Apply), classified after recovery;
             # every package refusal comes before the first effect, then installs, then old versions go.
-            # The UI font interpreter is a package, so Restore installs it before the faces are set.
             $packageStates = @(SelectedPackages | ForEach-Object { ClassifyPackage $_ })
             PreflightPackages $packageStates
             foreach ($state in @($packageStates | Where-Object { $_.install })) { InstallPackage $state }
