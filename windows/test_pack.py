@@ -368,7 +368,7 @@ class CompilerTests(unittest.TestCase):
         scripts = self.root / "scripts"
         scripts.mkdir(exist_ok=True)
         for name in ("win.ps1", "proof.ps1", "handoff-proof.ps1", "handoff-evaluate.ps1",
-                     "package-view.ps1", "ui-font.ahk", "rent-access.ps1", "README.md"):
+                     "package-view.ps1", "ui-font.ahk", "rent-access.ps1", "host-state.ps1", "README.md"):
             (scripts / name).write_text("fixture")
         (scripts / "ssh").mkdir(exist_ok=True)
         for name in ("versapro.config", "versapro.known_hosts"):

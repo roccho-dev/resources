@@ -175,7 +175,7 @@ let
     inherit wingetBootstrap wslPlatform;
     packages = map (lock: lock // { inventory = "${inventory lock}"; }) packageLocks;
     # The desktop UI font face: the family of this role, set face-only in the six Win32 UI font slots
-    # in HKCU WindowMetrics; ui-font.ahk reads the live faces only (no setter or compiler).
+    # in HKCU WindowMetrics; the native getter reads live faces without another package.
     typography = { desktop = "ui"; };
     # Microsoft Store apps Restore installs when absent, by the official WinGet from the msstore source.
     # Not pinned: the Store serves and updates its current version, and installing needs the network.

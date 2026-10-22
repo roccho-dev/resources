@@ -578,7 +578,7 @@ def distribution(fonts: Path, noctty: Path, cloudflared: Path, choices: Path,
             raise ValueError("Declared Store apps require absent-AppInstaller recovery metadata")
         # rent-access.ps1 is the rent ProxyCommand launcher RentSsh installs beside the pinned client.
         for name in ("win.ps1", "proof.ps1", "handoff-proof.ps1", "handoff-evaluate.ps1",
-                     "package-view.ps1", "ui-font.ahk", "rent-access.ps1", "README.md"):
+                     "package-view.ps1", "ui-font.ahk", "rent-access.ps1", "host-state.ps1", "README.md"):
             shutil.copyfile(scripts / name, root / name)
         # The SSH entries and host key pin Noctty's command reads; win.ps1 writes them beside its configuration.
         (root / "ssh").mkdir()
