@@ -3052,12 +3052,13 @@ function PlanNoctty([switch]$Restore) {
         $foreign = @(Get-ForeignKeyContent $declared $contents @{})
         if ($foreign.Count) { throw "$($foreign -join '; '); nothing was changed." }
     }
+    $view = $null
     if ($Restore) {
         if (-not (TestTerminalPackage)) { throw 'Noctty default-terminal handoff requires Windows Terminal 1.24 or newer; nothing was changed.' }
         $view = Test-PackageTerminalSelection -ScratchRoot (Get-Variable PackageScratchRoot -ValueOnly -ErrorAction SilentlyContinue)
         if ($view.state -eq 'mismatch') { throw "$($view.failure) Nothing was changed." }
     }
-    [pscustomobject]@{ effects = $effects; classes = $classes; com = $com }
+    [pscustomobject]@{ effects = $effects; classes = $classes; com = $com; packageView = $view }
 }
 
 # Creates what the plan found absent, in order: the tree, the configuration, the %%Startup key,
@@ -3629,7 +3630,7 @@ try {
         [ordered]@{ mode = 'Plan'; source = $manifest.source; identity = $script:runIdentity
             target = (Get-Field $manifest 'target'); coreSelection = (Get-Field $manifest 'core')
             fonts = $fontPlan; uiFontFaces = $uiPlan; liveUiFont = $(if ($null -ne $uiTypography) { UiFontReport } else { $null })
-            noctty = $nocttyPlan; terminalSelection = (StartupPair)
+            noctty = $nocttyPlan; terminalSelection = (StartupPair); terminalPackageView = $nativeNoctty.packageView
             terminalMinimumVersionMet = (TestTerminalPackage)
             packages = @($nativePackages | ForEach-Object { [ordered]@{ name = $_.package.name; version = $_.package.version
                 target = $_.effect.target; class = $_.class; install = $_.install; converged = $_.converged; reason = $_.reason } })
