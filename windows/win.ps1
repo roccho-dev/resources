@@ -1031,7 +1031,8 @@ function HostUndoPlan($Open) {
 function HostTreeReferences([string]$Tree, [string[]]$RemovedIds = @()) {
     $references = @()
     foreach ($task in @(Get-ScheduledTask -ErrorAction Stop)) {
-        foreach ($action in @($task.Actions)) {
+        # Only an Exec action names a program or directory; a COM handler action (MSFT_TaskComHandlerAction) has no Execute.
+        foreach ($action in @($task.Actions | Where-Object { $_ -is [Microsoft.Management.Infrastructure.CimInstance] -and $_.CimSystemProperties.ClassName -ceq 'MSFT_TaskExecAction' })) {
             $id = if ($task.TaskPath -ceq '\' -and $task.TaskName -ceq (OwnTaskName ('task:windows-own-logon:' + $script:runIdentity.sid))) { 'scheduled-task:' + $script:runIdentity.sid } else { 'foreign-task' }
             $references += @{ label = 'native Task action'; id = $id; data = [string]$action.Execute }
             $references += @{ label = 'native Task arguments'; id = $id; data = [string]$action.Arguments }
