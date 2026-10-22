@@ -928,6 +928,11 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
     $script:ledgerById = NewLedgerIndex
     $null = New-Item -ItemType Directory -Path $ledgerDirectory, (Join-Path $Scratch 'Programs'), (Split-Path -Parent $nocttyConfig) -Force
     $selected = NocttyEffects
+    & {
+        $Package = @{ emptyDirectories = @('foreign/','foreign/nested/') }
+        $isolatedNoctty = NocttyEffects
+        Must (@(Get-Field $isolatedNoctty.tree.desired 'other' | Where-Object { $null -ne $_ }).Count -eq 0) 'Noctty inventory is independent of ambient package bindings'
+    }
 
     # PreserveIncomplete keeps an actual failed tree's bytes/intent and blocks
     # both recovery cleanup and whole-tree undo before the first removal step.

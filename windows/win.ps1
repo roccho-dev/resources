@@ -1172,7 +1172,7 @@ function NocttyEffects {
     $config = [Security.Cryptography.SHA256]::Create().ComputeHash([Text.UTF8Encoding]::new($false).GetBytes($nocttyConfigText))
     [ordered]@{
         tree = [ordered]@{ id = 'tree-extracted:' + $nocttyDirectory.ToUpperInvariant(); kind = 'tree-extracted'; target = $nocttyDirectory
-            prior = [ordered]@{ exists = $false }; desired = [ordered]@{ exists = $true; files = $files; other = @(Get-Field $Package 'emptyDirectories' | Where-Object { $null -ne $_ }) } }
+            prior = [ordered]@{ exists = $false }; desired = [ordered]@{ exists = $true; files = $files } }
         config = FileEffect $nocttyConfig (-join ($config | ForEach-Object { $_.ToString('x2') }))
         files = @(foreach ($path in $nocttyFiles.Keys) {
             FileEffect $path (-join ([Security.Cryptography.SHA256]::Create().ComputeHash($nocttyFiles[$path]) | ForEach-Object { $_.ToString('x2') })) })
