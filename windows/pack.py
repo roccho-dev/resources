@@ -1,7 +1,7 @@
 """Compile pinned Windows selections into a portable, deterministic distribution.
 
 This module does not choose products, versions, URLs, or host/site values.
-Those inputs belong to nix.nix; Windows effects belong to win.ps1, the native
+Those inputs belong to core/host definitions and the legacy nix.nix consumer; Windows effects belong to win.ps1, the native
 activation adapter.
 """
 from __future__ import annotations
@@ -13,6 +13,7 @@ import json
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import stat
 import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
@@ -174,13 +175,64 @@ def verify_asset(package: dict, path: Path) -> None:
         raise ValueError(f"Asset differs from the {package['name']} lock")
 
 
+def archive_windows_path(name: str) -> str:
+    """Parse archive names with Windows separator semantics; never collapse dots/empty parts."""
+    if name.endswith(("/", "\\")):
+        name = name[:-1]
+    return windows_path(name.replace("\\", "/"))
+
+
+def extract_windows_zip(archive_path: Path, destination: Path) -> None:
+    """Materialize a Windows ZIP on Linux after validating every entry, before any write.
+    7-Zip on Linux treats backslash ZIP names as literal filenames; Windows does not.
+    The locked original archive is unchanged. No symlinks or path aliases are allowed.
+    """
+    with zipfile.ZipFile(archive_path) as archive:
+        entries, seen, spellings = [], set(), {}
+        for info in archive.infolist():
+            raw = info.orig_filename
+            name = archive_windows_path(raw)
+            mode = stat.S_IFMT(info.external_attr >> 16)
+            if mode not in (0, stat.S_IFREG, stat.S_IFDIR):
+                raise ValueError(f"Non-regular ZIP entry: {raw!r}")
+            directory = info.is_dir() or raw.endswith("\\") or bool(info.external_attr & 0x10)
+            if directory and info.file_size:
+                raise ValueError(f"Nonempty ZIP directory entry: {raw!r}")
+            key = name.casefold()
+            if key in seen:
+                raise ValueError(f"Windows ZIP path collision: {raw!r}")
+            seen.add(key)
+            parts = name.split("/")
+            for i in range(1, len(parts) + 1):
+                prefix = "/".join(parts[:i])
+                if spellings.setdefault(prefix.casefold(), prefix) != prefix:
+                    raise ValueError(f"Windows ZIP parent case collision: {raw!r}")
+            entries.append((info, name, directory))
+        if not entries:
+            raise ValueError("Empty Windows ZIP")
+        kinds = {name.casefold(): directory for _, name, directory in entries}
+        for _, name, _ in entries:
+            parts = name.split("/")
+            if any(kinds.get("/".join(parts[:i]).casefold()) is False for i in range(1, len(parts))):
+                raise ValueError(f"ZIP file is also a parent directory: {name!r}")
+        destination.mkdir(parents=False, exist_ok=False)
+        for info, name, directory in entries:
+            path = destination / name
+            if directory:
+                path.mkdir(parents=True, exist_ok=True)
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(info) as source, path.open("xb") as target:
+                    shutil.copyfileobj(source, target)
+
+
 def listed_paths(listing: str) -> list[str]:
     """Entry paths of a `7zz l -slt` listing, each a Windows path, unique without case.
     Run on the listing before extraction."""
     _, separator, entries = listing.partition("\n----------\n")
     if not separator:
         raise ValueError("Not a 7-Zip technical listing")
-    paths = [windows_path(line[len("Path = "):]) for line in entries.splitlines() if line.startswith("Path = ")]
+    paths = [archive_windows_path(line[len("Path = "):]) for line in entries.splitlines() if line.startswith("Path = ")]
     if not paths or len({p.casefold() for p in paths}) != len(paths):
         raise ValueError("Empty listing or case-insensitive duplicate archive path")
     return paths
@@ -628,6 +680,9 @@ if __name__ == "__main__":
         dist_parser.add_argument(argument, type=Path)
     dist_parser.add_argument("source")
     dist_parser.add_argument("out", type=Path)
+    zip_parser = sub.add_parser("extract-zip")
+    zip_parser.add_argument("archive", type=Path)
+    zip_parser.add_argument("destination", type=Path)
     listing_parser = sub.add_parser("listing")
     listing_parser.add_argument("listing", type=Path)
     inventory_parser = sub.add_parser("inventory")
@@ -642,6 +697,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.command == "fonts":
         prepare_fonts(json.loads(args.policy.read_text()), args.out)
+    elif args.command == "extract-zip":
+        extract_windows_zip(args.archive, args.destination)
     elif args.command == "listing":
         listed_paths(args.listing.read_text(encoding="utf-8"))
     elif args.command == "inventory":

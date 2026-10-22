@@ -144,8 +144,12 @@ let
   in pkgs.runCommand "package-inventory-${lock.name}" { nativeBuildInputs = [ python pkgs._7zz ]; PYTHONPATH = "${../profile}"; } ''
     7zz l -slt ${archive} > listing.txt
     python ${./pack.py} listing listing.txt
-    mkdir tree
-    7zz x -y -otree ${archive} > /dev/null
+    ${if lock.format == "zip" then ''
+      python ${./pack.py} extract-zip ${archive} tree
+    '' else ''
+      mkdir tree
+      7zz x -y -otree ${archive} > /dev/null
+    ''}
     python ${./pack.py} inventory ${pkgs.writeText "${lock.name}-lock.json" (builtins.toJSON upstream)} ${archive} listing.txt tree "$out"
   '';
   windowsChoices = pkgs.writeText "windows-restore-selection.json" (builtins.toJSON {
@@ -175,7 +179,7 @@ let
     packages = map (lock: lock // { inventory = "${inventory lock}"; }) packageLocks;
     # The desktop UI font face: the family of this role, set face-only in the six Win32 UI font slots
     # in HKCU WindowMetrics; the native getter reads live faces without another package.
-    typography = { desktop = "ui"; };
+    typography = core.typography;
     # Microsoft Store apps Restore installs when absent, by the official WinGet from the msstore source.
     # Not pinned: the Store serves and updates its current version, and installing needs the network.
     # An app present is never reinstalled or owned. A newly introduced package is ledgered;

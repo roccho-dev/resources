@@ -320,6 +320,40 @@ class CompilerTests(unittest.TestCase):
             with self.subTest(case=case), self.assertRaises(ValueError):
                 pack.listed_paths(text)
 
+    def test_windows_zip_separators_materialize_the_same_inventory(self):
+        archive = self.root / "windows.zip"
+        with zipfile.ZipFile(archive, "w") as z:
+            z.writestr("app\\nested\\", b"")
+            z.writestr("app\\nested\\fixture.exe", b"MZ fixture")
+        tree = self.root / "windows-tree"
+        pack.extract_windows_zip(archive, tree)
+        listing = "--\n----------\nPath = app\\nested\\\nPath = app\\nested\\fixture.exe\n"
+        inventory = pack.tree_inventory(tree, pack.listed_paths(listing), "app/nested/fixture.exe")
+        self.assertEqual(inventory, {"app/nested/fixture.exe": pack.digest(tree / "app/nested/fixture.exe")})
+        self.assertFalse(any("\\" in p.name for p in tree.rglob("*")))
+
+    def test_windows_zip_rejects_unsafe_names_before_creating_output(self):
+        cases = [["..\\escape"], ["C:\\escape"], ["\\\\server\\share"], ["app\\\\file"],
+                 ["app\\file", "app/file"], ["app/File", "app/file"], ["App/a", "app/b"],
+                 ["app/file:stream"], ["app/NUL"], ["app/file."]]
+        for i, names in enumerate(cases):
+            archive, tree = self.root / f"unsafe-{i}.zip", self.root / f"unsafe-{i}"
+            with zipfile.ZipFile(archive, "w") as z:
+                for name in names:
+                    z.writestr(name, b"fixture")
+            with self.subTest(names=names), self.assertRaises(ValueError):
+                pack.extract_windows_zip(archive, tree)
+            self.assertFalse(tree.exists())
+        link = zipfile.ZipInfo("app/link")
+        link.create_system = 3
+        link.external_attr = 0o120777 << 16
+        archive, tree = self.root / "link.zip", self.root / "link-tree"
+        with zipfile.ZipFile(archive, "w") as z:
+            z.writestr(link, "target")
+        with self.assertRaises(ValueError):
+            pack.extract_windows_zip(archive, tree)
+        self.assertFalse(tree.exists())
+
     def extracted(self):
         tree = self.root / "tree"
         (tree / "bin").mkdir(parents=True)

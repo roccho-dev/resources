@@ -901,6 +901,35 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
     $null = New-Item -ItemType Directory -Path $ledgerDirectory, (Join-Path $Scratch 'Programs'), (Split-Path -Parent $nocttyConfig) -Force
     $selected = NocttyEffects
 
+    # PreserveIncomplete keeps an actual failed tree's bytes/intent and blocks
+    # both recovery cleanup and whole-tree undo before the first removal step.
+    $savedLedger = $ledgerDirectory
+    $savedRecords, $savedIndex, $savedSeq = $script:ledgerRecords, $script:ledgerById, $script:nextSeq
+    $savedWritten, $savedCopied, $savedChanged, $savedRemoved = $script:recordsWritten, $script:copied, $script:changed, $script:removed
+    try {
+        $PreserveIncomplete = $true
+        $ledgerDirectory = Join-Path $Scratch 'preserved-ledger'
+        $null = [IO.Directory]::CreateDirectory($ledgerDirectory)
+        $script:ledgerRecords, $script:nextSeq, $script:recordsWritten = @(), 1, 0
+        $script:ledgerById = NewLedgerIndex
+        $held = Tree 'preserved-1' @{ 'keep.txt' = (Sha 'keep') }
+        $stage = Staging $held
+        $null = [IO.Directory]::CreateDirectory($stage)
+        [IO.File]::WriteAllText((Join-Path $stage 'keep.txt'), 'keep', [Text.UTF8Encoding]::new($false))
+        WriteRecord 'intent' $held $null $stage
+        Refused { Recovering $held { throw 'expected preserved failure' } } '*expected preserved failure*'
+        Refused { RecoverId $held.id } '*retained by PreserveIncomplete*'
+        Refused { CleanStaging @(RecordsOf $held.id)[0] } '*retained by PreserveIncomplete*'
+        Refused { UndoOwnedSteps @(@{ id = $held.id; kind = 'tree-extracted'; action = 'delete-file'; path = (Join-Path $stage 'keep.txt') }) } '*Owned tree removal retained*'
+        Must ((Phases $held) -ceq 'intent' -and $script:recordsWritten -eq 1 -and
+            [IO.File]::ReadAllText((Join-Path $stage 'keep.txt')) -ceq 'keep') 'failed tree and unresolved intent remain unchanged'
+    } finally {
+        $PreserveIncomplete = $false
+        $ledgerDirectory = $savedLedger
+        $script:ledgerRecords, $script:ledgerById, $script:nextSeq = $savedRecords, $savedIndex, $savedSeq
+        $script:recordsWritten, $script:copied, $script:changed, $script:removed = $savedWritten, $savedCopied, $savedChanged, $savedRemoved
+    }
+
     # The whole entry list is checked before anything is written.
     $two = @{ 'noctty/a.txt' = (Sha 'a'); 'noctty/d/b.txt' = (Sha 'b') }
     Must ($null -eq (Get-ZipEntryProblem @('noctty/', 'noctty/a.txt', 'noctty/d/', 'noctty/d/b.txt') $two)) 'an exact entry list'
@@ -2732,6 +2761,41 @@ $second = Run 'Apply'
 if ($second.copied -ne 0 -or $second.changedProperties -ne 0 -or $second.removed -ne 0 -or $second.recordsWritten -ne 0) { throw 'Second apply changed state.' }
 MustNotClaimHandoff $first
 MustNotClaimHandoff (Run 'Test')
+
+# Actual entry-point guards, on a copy of this artifact: wrong target/SID/arch
+# or unresolved bindings fail before a ledger lock/effect. A font-only Test must
+# not claim that the unrelated selected products have been verified.
+$guardRoot = Join-Path $env:RUNNER_TEMP ('host-guards-' + [guid]::NewGuid().ToString('N'))
+$guardManifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'manifest.json') -Raw -Encoding utf8 | ConvertFrom-Json
+foreach ($name in $guardManifest.files.PSObject.Properties.Name) {
+    $path = Join-Path $guardRoot $name
+    $null = [IO.Directory]::CreateDirectory((Split-Path -Parent $path))
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $path
+}
+$guardManifest.core = [pscustomobject]@{ declared = @('fonts','Noctty','Notepads','Meltype','Chromium Beta'); selected = @('fonts','Noctty','Notepads','Meltype'); pending = @('Chromium Beta') }
+$validTarget = @{ name = $env:COMPUTERNAME; user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; architecture = 'x64'; unresolved = @() }
+foreach ($bad in @(@{ name = 'wrong-host-proof' }, @{ sid = 'S-1-0-0' }, @{ architecture = 'x86' }, @{ unresolved = @('missing binding') })) {
+    $case = @{}; foreach ($key in $validTarget.Keys) { $case[$key] = $validTarget[$key] }
+    foreach ($key in $bad.Keys) { $case[$key] = $bad[$key] }
+    $guardManifest.target = [pscustomobject]$case
+    [IO.File]::WriteAllText((Join-Path $guardRoot 'manifest.json'), ($guardManifest | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
+    $beforeGuard = @(Ledger).Count
+    $lines = @(& $windowsPowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $guardRoot 'win.ps1') -Mode Apply -PreserveIncomplete 2>&1)
+    Must ($LASTEXITCODE -ne 0 -and ($lines -join ' ') -like '*not bound to this resolved host*' -and @(Ledger).Count -eq $beforeGuard) 'target mismatch refuses before ledger/effects'
+}
+$guardManifest.target = [pscustomobject]$validTarget
+[IO.File]::WriteAllText((Join-Path $guardRoot 'manifest.json'), ($guardManifest | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
+$lines = @(& $windowsPowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $guardRoot 'win.ps1') -Mode Test 2>&1)
+Must ($LASTEXITCODE -eq 0) 'limited Test succeeds on the installed font bytes'
+$limited = ($lines -join "`n") | ConvertFrom-Json
+Must ($null -eq $limited.selectedScopeInDesiredState -and -not $limited.inDesiredState -and
+    $limited.actualTestScope.fontFiles -and -not $limited.actualTestScope.noctty -and
+    @($limited.actualTestScope.packages).Count -eq 0 -and @($limited.actualTestScope.storeApps).Count -eq 0) 'font-only Test does not claim all selected products'
+$lines = @(& $windowsPowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $guardRoot 'win.ps1') -Mode Apply -NocttyConfigOnly -PreserveIncomplete 2>&1)
+Must ($LASTEXITCODE -eq 0) 'config-only no-op succeeds'
+$configOnly = ($lines -join "`n") | ConvertFrom-Json
+Must ($configOnly.scopeInDesiredState -and -not $configOnly.inDesiredState -and $configOnly.recordsWritten -eq 0) 'config-only no-op does not claim the complete core'
 
 # A2: independent readback from the selection (manifest.fonts), not from win.ps1.
 foreach ($font in $fonts) {

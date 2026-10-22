@@ -15,8 +15,8 @@ ungoogled, Stable, and an arbitrary snapshot sharing a milestone are not fallbac
 products. The full `windows-pc7337-dist` output is unavailable while any required
 core input is pending. `nix build .#windows-pc7337-partial-dist` produces only the
 four available core selections and records the missing Beta selection in the
-manifest and native report. `selectedScopeInDesiredState` describes those selected
-effects; `inDesiredState` stays false while a required core product is pending.
+manifest and native report. `selectedScopeInDesiredState` is true only when Restore/RestoreTest actually
+check the whole selected scope; narrower modes report `actualTestScope` instead; `inDesiredState` stays false while a required core product is pending.
 
 Only that explicitly selected PC7337 artifact may be restored on PC7337, from
 its normal unelevated user context. Its host/SID/architecture guard runs before
@@ -33,6 +33,18 @@ are checked. Its upstream installer, keyboard hooks, startup registration and
 self-test are not invoked by restoring the portable tree. User data stays outside
 the owned tree. Any live functional check must disclose its actual effects.
 
+Use `-Mode Plan -PreserveIncomplete` to read the same native classifiers as Restore
+(fonts, UI faces, Noctty/COM, packages, Store registration and prior ledger), without
+a lock, recovery or managed product/ledger effects. The existing terminal-package
+reader may use a finite GUID scratch directory and nonrecursive cleanup; its
+context read is not a UI/handoff proof. For the first PC7337 application use
+`-Mode Restore -PreserveIncomplete` after
+normal-user preflight confirms no unresolved ledger effects or old owned trees.
+This option preserves failed effects and refuses automatic staging/owned-tree
+removal. It does not authorize cleanup: inspect the exact retained paths and seek
+per-occurrence approval before any equivalent recursive removal. No-op validation
+uses `-Mode RestoreTest`; a sign-in requirement remains pending activation.
+
 `host-state.ps1` is a finite read-only font observation entry for a machine whose
 fonts are not installed yet. It verifies the same distribution's script inventory
 and calls the exact native getter, reports live/persisted/unknown separately, and
@@ -40,8 +52,9 @@ changes nothing. No reboot, signout or running-application termination is used.
 A pending sign-in remains pending activation, not full active host equality.
 
 
-Issue #7 implementation slice. `nix.nix` is the only authority for selections,
-pins and package locks; `win.ps1` is a small native Windows activation adapter
+Issue #7 legacy implementation slice. Core selections belong to `core.nix` and
+the existing shared font definition; `nix.nix` materializes those inputs and
+retains selections/locks only for legacy products outside this core; `win.ps1` is a small native Windows activation adapter
 that realizes them. No DSC backend, WinGet catalog, per-product installer, or new
 top-level directory is used. (The DSC `Microsoft.Windows/Registry` resource is a
 proof-of-concept example that Microsoft says not to use in production, so the
