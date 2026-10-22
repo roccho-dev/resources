@@ -721,7 +721,8 @@ $tree = @{ exists = $true; files = @{ 'a.txt' = (Sha a) } }
 Must ((Test-EffectStateEqual tree-extracted $tree @{ exists = $true; files = @{ 'A.TXT' = (Sha a) }; other = @() }) -and
     -not (Test-EffectStateEqual tree-extracted $tree @{ exists = $true; files = @{ 'a.txt' = (Sha a) }; other = @('e/') }) -and
     (Get-UnownedClass tree-extracted $tree @{ exists = $true; files = $tree.files; other = @('j') } $null).class -ceq 'preexisting-drift') 'tree other entries'
-Must ($null -ne (Get-EffectRecordProblem (PureRecord 1 intent tree-extracted 'C:\u\t' $absent @{ exists = $true; files = $tree.files; other = @('e/') } $null $null))) 'a desired tree has no other entries'
+Must ($null -eq (Get-EffectRecordProblem (PureRecord 1 intent tree-extracted 'C:\u\t' $absent @{ exists = $true; files = $tree.files; other = @('e/') } $null $null))) 'a desired tree may declare an exact plain empty directory'
+Must ($null -ne (Get-EffectRecordProblem (PureRecord 1 intent tree-extracted 'C:\u\t' $absent @{ exists = $true; files = $tree.files; other = @('e') } $null $null))) 'a desired tree never declares an unmarked or reparse-like path'
 # D1: a partly removed owned tree resumes while its files are exact and only inventory directories
 # are left empty; anything else is refused. The whole tree keeps its order.
 $treeOwned = @{ kind = 'tree-extracted'; target = 'C:\u\t'; desired = @{ exists = $true; files = @{ 'a.txt' = (Sha a); 'd/b.txt' = (Sha b); 'd/e/c.txt' = (Sha c) } } }
