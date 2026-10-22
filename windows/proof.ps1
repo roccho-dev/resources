@@ -332,6 +332,14 @@ $manualText = Get-NocttyConfigText $manifest.noctty 'C:\Windows\System32\OpenSSH
 Must ($manualText -ceq ('font-family = ' + $manifest.noctty.fontFamily + "`n" +
     'command = direct:C:\Windows\System32\OpenSSH\ssh.exe -F "C:\Users\a b\AppData\Local\noctty\versapro.config" -t ' + $manifest.noctty.launch.alias +
     ' zmx attach ' + $manifest.noctty.launch.session + "`nwindow-save-state = never`n")) 'Noctty direct SSH into the declared zmx session through its own SSH configuration alone, quoted native paths'
+# A local adapter uses the normal native shell without SSH or an arbitrary command.
+$localNoctty = @{ fontFamily = $manifest.noctty.fontFamily; launch = @{ mode = 'local'; shell = 'powershell'; windowSaveState = 'never' } }
+$localText = Get-NocttyConfigText $localNoctty 'C:\Windows\System32\OpenSSH\ssh.exe' 'C:\Users\unused\config'
+Must ($localText -ceq ('font-family = ' + $manifest.noctty.fontFamily + "`ncommand = direct:C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoLogo`nwindow-save-state = never`n")) 'local Noctty launch uses only the declared native shell'
+foreach ($badLocal in @(@{ mode = 'local'; shell = 'cmd'; windowSaveState = 'never' },
+        @{ mode = 'local'; shell = 'powershell'; windowSaveState = 'never'; command = 'injected' })) {
+    Must ($null -ne (Get-NocttyLaunchProblem $badLocal)) 'local launch rejects unapproved shells and extra commands'
+}
 # The SSH configuration Noctty reads: the bundled entries with every UserKnownHostsFile bound to the bundled pin's
 # absolute path and nothing else changed, never the ClientSsh slot; the declared alias is there, each HostKeyAlias pinned.
 $bundledSsh, $bundledPins = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'ssh\versapro.config')), [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'ssh\versapro.known_hosts'))

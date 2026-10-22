@@ -1,18 +1,15 @@
-{ pkgs, source }:
+{ pkgs, source, core ? import ./core.nix { inherit pkgs; }, host ? null }:
 let
   # VersaPro's native own (#72) as dev, in its persistent zmx session (#75): an alias of ssh/versapro.config, which
   # the distribution bundles with its pin and win.ps1 writes beside the Noctty configuration.
-  nocttyLaunch = let alias = "versapro-dev"; in
+  nocttyLaunch = if host != null then host.nocttyLaunch else let alias = "versapro-dev"; in
     assert builtins.elem "Host ${alias}" (pkgs.lib.splitString "\n" (builtins.readFile ./ssh/versapro.config));
     { inherit alias; session = "own"; windowSaveState = "never"; };
-  # One implementation, shared with the NixOS console.
-  fonts = (import ../profile/fonts.nix { inherit pkgs; }).commonFonts;
+  # The legacy consumer and both host compositions share these same pins.
+  fonts = core.fonts;
   python = pkgs.python3.withPackages (ps: [ ps.fonttools ]);
-  nocttyVersion = "1.3.131";
-  noctty = pkgs.fetchurl {
-    url = "https://github.com/amanthanvi/noctty/releases/download/v${nocttyVersion}/noctty-${nocttyVersion}-windows-x64-portable.zip";
-    sha256 = "d776bd0e4507abd3a3d6e4a4b347d089960ad5171d0caeeb783e01dd4b0e15fd";
-  };
+  nocttyVersion = core.noctty.version;
+  noctty = core.noctty.archive;
   # The Windows OpenSSH ProxyCommand client: the official release of exactly the cloudflared version the rent image
   # runs (the locked nixpkgs), pinned by hash. A nixpkgs bump fails here until this pin is moved with it.
   cloudflaredVersion = assert pkgs.cloudflared.version == "2026.6.1"; pkgs.cloudflared.version;
@@ -88,7 +85,7 @@ let
   #   appPath     optional: the one HKCU App Paths name (<name>.exe, lowercase .exe) that launches the
   #               owned executable by name (Win+R); never the executable's own name when another
   #               product owns it (chrome.exe is Google Chrome's)
-  packageLocks = [
+  packageLocks = if host != null then core.packages else [
     {
       # Hibbiki third-party build (the approved exception). sha256 is GitHub's
       # asset digest; sha1 is the one the publisher states on the release page.
@@ -171,6 +168,8 @@ let
         { key = ''Software\Classes\Interface\{AA6B364F-4A50-4176-9002-0AE755E7B5EF}\ProxyStubClsid32''; name = ""; data = "{1D349824-21FB-46C7-ACF3-746EDC991D52}"; }
       ];
     };
+    target = if host == null then null else builtins.removeAttrs host [ "nocttyLaunch" ];
+    core = if host == null then null else { inherit (core) declared selected pending; };
     cloudflared.version = cloudflaredVersion;
     inherit wingetBootstrap wslPlatform;
     packages = map (lock: lock // { inventory = "${inventory lock}"; }) packageLocks;
@@ -187,7 +186,7 @@ let
     # defaults are the app's own complete themes (initial.js `jq` of 26.928.1915.0, with accentSource), written
     # only where a theme is absent: a theme with fonts alone is invalid and dropped by the app. Of an existing
     # theme only the font leaves change (and a font Face, which would override the family, is removed).
-    apps = [
+    apps = if host != null then core.apps else [
       {
         name = "ChatGPT"; source = "msstore"; id = "9PLM9XGG6VKS"; package = "OpenAI.Codex"; publisherId = "2p2nqsd0c76g0";
         appearance = {
@@ -202,7 +201,7 @@ let
       }
     ];
   });
-  dist = pkgs.runCommand "windows-dist" { nativeBuildInputs = [ python ]; PYTHONPATH = "${../profile}"; } ''
+  dist = assert host == null || host.unresolved == []; pkgs.runCommand "windows-dist" { nativeBuildInputs = [ python ]; PYTHONPATH = "${../profile}"; } ''
     python ${./pack.py} platform ${pkgs.writeText "wsl-platform.json" (builtins.toJSON wslPlatform)} \
       ${pkgs.fetchurl { inherit (wslPlatform) url sha256; }}
     python ${./pack.py} bootstrap ${pkgs.writeText "winget-bootstrap.json" (builtins.toJSON wingetBootstrap)} \
@@ -212,6 +211,12 @@ let
   '';
 in {
   inherit fonts dist python;
+  plan = if host == null then { mode = "legacy"; } else {
+    inherit host; inherit (core) declared selected pending;
+    ready = host.unresolved == [];
+    complete = host.unresolved == [] && core.pending == [];
+  };
+  fullDist = assert host != null && host.unresolved == [] && core.pending == []; dist;
   check = pkgs.runCommand "windows-dist-check" {
     nativeBuildInputs = [ python pkgs.unzip ];
   } ''

@@ -1349,6 +1349,14 @@ function ConvertFrom-TarListing($Lines, $Files) {
 # white space or '"' is quoted, a '"' is escaped, and backslashes before a '"' or the closing
 # quote are doubled. A NUL cannot be passed and stops the run.
 function Get-NocttyLaunchProblem($Launch) {
+    if ((Get-Field $Launch 'mode') -ceq 'local') {
+        $keys = if ($Launch -is [Collections.IDictionary]) { @($Launch.Keys) } else { @($Launch.PSObject.Properties.Name) }
+        if (($keys | Sort-Object) -join ',' -cne 'mode,shell,windowSaveState' -or
+            (Get-Field $Launch 'shell') -cne 'powershell' -or (Get-Field $Launch 'windowSaveState') -cne 'never') {
+            return 'Invalid Noctty local shell selection.'
+        }
+        return $null
+    }
     $keys = if ($Launch -is [Collections.IDictionary]) { @($Launch.Keys) } elseif ($null -ne $Launch) { @($Launch.PSObject.Properties.Name) } else { @() }
     if ($keys.Count -ne 3 -or @($keys | Where-Object { $_ -cnotin @('alias','session','windowSaveState') }).Count) { return 'Noctty launch keys differ.' }
     foreach ($name in 'alias','session') {
@@ -1370,7 +1378,12 @@ function Get-NocttyConfigText($Noctty, [string]$Ssh, [string]$Config) {
     foreach ($path in $Ssh, $Config) {
         if ($path -cnotmatch '^[A-Za-z]:\\' -or $path -match '[\r\n\x00"]') { throw 'Noctty requires absolute native OpenSSH and client slot paths.' }
     }
+    if ((Get-Field $launch 'mode') -ceq 'local') {
+        $system = [IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($Ssh))
+        $arguments = @((Join-Path $system 'WindowsPowerShell\v1.0\powershell.exe'), '-NoLogo')
+    } else {
     $arguments = @($Ssh, '-F', $Config, '-t', $launch.alias, 'zmx', 'attach', $launch.session)
+    }
     return 'font-family = ' + $face + "`ncommand = direct:" + (Join-NativeArguments $arguments) + "`nwindow-save-state = never`n"
 }
 

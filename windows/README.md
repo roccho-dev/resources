@@ -1,5 +1,45 @@
 # Common selection → Windows recovery
 
+## Explicit host compositions
+
+`windows/core.nix` owns the Windows core once: Notepads, Noctty, the existing
+shared fonts, Chromium itself Beta, and the roccho-dev Meltype fork. Host files
+in `windows/hosts` contain only local bindings; they do not repeat product pins
+or deployment logic. `nix eval --json .#windowsHosts` reports both compositions.
+PC7337 is bound to its observed user/SID and x64 context, with a local PowerShell
+Noctty launch. G6I3 deliberately reports its unobserved user, architecture and
+launch as unresolved; this is structural support, not a deployed G6I3 claim.
+
+Chromium Beta has no accepted Windows artifact supplier/build yet. Chrome,
+ungoogled, Stable, and an arbitrary snapshot sharing a milestone are not fallback
+products. The full `windows-pc7337-dist` output is unavailable while any required
+core input is pending. `nix build .#windows-pc7337-partial-dist` produces only the
+four available core selections and records the missing Beta selection in the
+manifest and native report. `selectedScopeInDesiredState` describes those selected
+effects; `inDesiredState` stays false while a required core product is pending.
+
+Only that explicitly selected PC7337 artifact may be restored on PC7337, from
+its normal unelevated user context. Its host/SID/architecture guard runs before
+any ledger lock/effect. Its Restore does not install or alter AutoHotkey,
+ChatGPT, or Stable Chromium. The old `windows-dist` output is an explicit legacy
+proof consumer, not the PC7337 deployment entry. Existing unrelated installations
+and application data are not adopted or removed.
+
+Notepads uses its official Store identity. A matching existing installation is
+retained and its observed version reported; mutable Store supply is not a promise
+of bit-for-bit historical reproduction. Meltype's Windows asset follows the
+version of the existing locked fork source; its digest and extracted inventory
+are checked. Its upstream installer, keyboard hooks, startup registration and
+self-test are not invoked by restoring the portable tree. User data stays outside
+the owned tree. Any live functional check must disclose its actual effects.
+
+`host-state.ps1` is a finite read-only font observation entry for a machine whose
+fonts are not installed yet. It verifies the same distribution's script inventory
+and calls the exact native getter, reports live/persisted/unknown separately, and
+changes nothing. No reboot, signout or running-application termination is used.
+A pending sign-in remains pending activation, not full active host equality.
+
+
 Issue #7 implementation slice. `nix.nix` is the only authority for selections,
 pins and package locks; `win.ps1` is a small native Windows activation adapter
 that realizes them. No DSC backend, WinGet catalog, per-product installer, or new

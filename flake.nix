@@ -64,8 +64,14 @@
       };
       versaOwnBase = mkOwn { piTarget = versaOwnPiTarget; };
       versaTypeLLMOwn = mkOwn { extra = [ versaTypeLLM ]; piTarget = versaOwnPiTarget; };
+      windowsCore = import ./windows/core.nix { inherit pkgs; meltypeSrc = meltype-src; };
+      windowsFor = host: import ./windows/nix.nix {
+        inherit pkgs host; core = windowsCore; source = self.rev or "uncommitted";
+      };
+      windowsPc7337 = windowsFor (import ./windows/hosts/pc7337.nix);
+      windowsG6i3 = windowsFor (import ./windows/hosts/g6i3.nix);
       common = import ./windows/nix.nix {
-        inherit pkgs;
+        inherit pkgs; core = windowsCore;
         source = self.rev or "uncommitted";
       };
       ownConfig = own.config;
@@ -656,8 +662,12 @@
         dev-profile = dev.profile;
         dev-image = dev.image;
         common-fonts = common.fonts;
-        windows-dist = common.dist;
+        windows-dist = common.dist; # Existing legacy proof consumer; never the PC7337 apply entry.
+        windows-pc7337-partial-dist = windowsPc7337.dist;
+      } // pkgs.lib.optionalAttrs windowsPc7337.plan.complete {
+        windows-pc7337-dist = windowsPc7337.fullDist;
       };
+      windowsHosts = { pc7337 = windowsPc7337.plan; g6i3 = windowsG6i3.plan; };
       apps.${system}.github-root = {
         type = "app";
         program = "${githubRoot.app}/bin/github-root";

@@ -328,9 +328,11 @@ $nocttyShortcut = Join-Path ([Environment]::GetFolderPath('StartMenu')) 'Program
 # configuration: the bundled VersaPro SSH entries, their UserKnownHostsFile bound to the bundled host key pin written
 # next to them (Get-NocttySshConfigText). Nothing here runs SSH.
 $nocttySshConfig, $nocttyKnownHosts = (Join-Path $localAppData 'noctty\versapro.config'), (Join-Path $localAppData 'noctty\versapro.known_hosts')
-$nocttyFiles = [ordered]@{
-    $nocttySshConfig = [Text.UTF8Encoding]::new($false).GetBytes((Get-NocttySshConfigText ([IO.File]::ReadAllText((BundlePath 'ssh/versapro.config'))) $nocttyKnownHosts))
-    $nocttyKnownHosts = [IO.File]::ReadAllBytes((BundlePath 'ssh/versapro.known_hosts')) }
+$nocttyFiles = [ordered]@{}
+if ((Get-Field $manifest.noctty.launch 'mode') -cne 'local') {
+    $nocttyFiles[$nocttySshConfig] = [Text.UTF8Encoding]::new($false).GetBytes((Get-NocttySshConfigText ([IO.File]::ReadAllText((BundlePath 'ssh/versapro.config'))) $nocttyKnownHosts))
+    $nocttyFiles[$nocttyKnownHosts] = [IO.File]::ReadAllBytes((BundlePath 'ssh/versapro.known_hosts'))
+}
 $nocttyConfigText = Get-NocttyConfigText $manifest.noctty (Join-Path ([Environment]::SystemDirectory) 'OpenSSH\ssh.exe') $nocttySshConfig
 $terminalStartup = 'HKCU:\Console\%%Startup'
 $startupSubkey = 'Console\%%Startup'
@@ -3544,6 +3546,15 @@ function Uninstall {
 }
 
 $script:runIdentity = RunIdentity
+# Host-specific artifacts refuse a different user/context before any lock or effect.
+$target = Get-Field $manifest 'target'
+if ($null -ne $target) {
+    if ($target.unresolved.Count -ne 0 -or $target.name -ine $env:COMPUTERNAME -or
+        $target.sid -cne $script:runIdentity.sid -or $target.user -ine [Security.Principal.WindowsIdentity]::GetCurrent().Name -or
+        $target.architecture -cne 'x64' -or $env:PROCESSOR_ARCHITECTURE -ine 'AMD64') {
+        throw 'This artifact is not bound to this resolved host/user/architecture; nothing written.'
+    }
+}
 try {
     if ($Mode -cin @('RentSsh','RentSshTest','RentAccess','HostRemove','QuickHttp','ClientSsh','ClientSshTest')) {
         $null = HostCaller
@@ -3689,7 +3700,10 @@ try {
             $state = @($appStates | Where-Object { $_.app.package -ceq $package })
             [ordered]@{ name = $_.name; package = $package; id = $_.id
                 version = $(if ($state.Count -and $state[0].action -ceq 'present') { $state[0].found[0].version } else { 'notEvaluated' }) } });
-        inDesiredState = ($Mode -ne 'Validate');
+        selectedScope = (Get-Field $manifest 'core');
+        selectedScopeInDesiredState = ($Mode -ne 'Validate');
+        inDesiredState = ($Mode -ne 'Validate' -and ($null -eq (Get-Field $manifest 'core') -or @($manifest.core.pending).Count -eq 0));
+        # A partial core cannot report the whole declared core in desired state; active UX is separate.
         registrationState = $(if (TestNocttyRegistration) { 'registered' } else { 'unregistered' });
         handoffProof = 'unproven' } | ConvertTo-Json -Compress -Depth 4
 }

@@ -36,6 +36,29 @@ REGISTRATION = [
 
 
 class CompilerTests(unittest.TestCase):
+    def test_noctty_local_selection_is_explicit_and_bounded(self):
+        selected = {"mode": "local", "shell": "powershell", "windowSaveState": "never"}
+        self.assertEqual(pack.noctty_launch(selected), selected)
+        for bad in [dict(selected, shell="cmd"), dict(selected, command="injected"), dict(selected, windowSaveState="default")]:
+            with self.assertRaises(ValueError):
+                pack.noctty_launch(bad)
+
+    def test_local_host_selection_and_pending_reach_the_artifact(self):
+        fonts = self.payload()
+        noctty, cloudflared, choices, scripts = self.inputs()
+        selected = json.loads(choices.read_text())
+        selected["noctty"]["launch"] = {"mode": "local", "shell": "powershell", "windowSaveState": "never"}
+        selected["target"] = {"name": "fixture-host", "unresolved": []}
+        selected["core"] = {"declared": ["Browser"], "selected": [], "pending": [{"product": "Browser"}]}
+        choices.write_text(json.dumps(selected))
+        pack.distribution(fonts, noctty, cloudflared, choices, scripts, "test", self.root / "out")
+        with zipfile.ZipFile(self.root / "out/windows-dist.zip") as z:
+            manifest = json.loads(z.read("manifest.json"))
+            self.assertEqual(manifest["target"], selected["target"])
+            self.assertEqual(manifest["core"], selected["core"])
+            self.assertEqual(manifest["noctty"]["launch"], selected["noctty"]["launch"])
+            self.assertFalse(any(n.startswith("ssh/") for n in z.namelist()))
+
     def test_noctty_ssh_session_selection(self):
         launch = {"alias": "versapro-dev", "session": "own", "windowSaveState": "never"}
         self.assertEqual(pack.noctty_launch(launch), launch)

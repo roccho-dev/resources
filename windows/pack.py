@@ -541,7 +541,11 @@ def verify_platform(lock: object, asset: Path) -> None:
 
 
 def noctty_launch(value: object) -> dict:
-    """Bounded SSH alias and zmx session selection; no other remote command or fallback."""
+    """A bounded local shell or the existing SSH/zmx launch, never a guessed fallback."""
+    if isinstance(value, dict) and value.get("mode") == "local":
+        if set(value) != {"mode", "shell", "windowSaveState"} or value["shell"] != "powershell" or value["windowSaveState"] != "never":
+            raise ValueError("Invalid Noctty local shell selection")
+        return dict(value)
     if (not isinstance(value, dict) or set(value) != {"alias", "session", "windowSaveState"}
             or any(not isinstance(value.get(k), str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]+", value[k])
                    for k in ("alias", "session"))
@@ -582,8 +586,9 @@ def distribution(fonts: Path, noctty: Path, cloudflared: Path, choices: Path,
             shutil.copyfile(scripts / name, root / name)
         # The SSH entries and host key pin Noctty's command reads; win.ps1 writes them beside its configuration.
         (root / "ssh").mkdir()
-        for name in ("versapro.config", "versapro.known_hosts"):
-            shutil.copyfile(scripts / "ssh" / name, root / "ssh" / name)
+        if launch.get("mode") != "local":
+            for name in ("versapro.config", "versapro.known_hosts"):
+                shutil.copyfile(scripts / "ssh" / name, root / "ssh" / name)
         (root / "payload").mkdir()
         shutil.copyfile(noctty, root / "payload/noctty.zip")
         # The pinned official client, installed only by the explicit RentSsh mode, never by Restore.
@@ -606,7 +611,7 @@ def distribution(fonts: Path, noctty: Path, cloudflared: Path, choices: Path,
                    "cloudflared": {"version": selected["cloudflared"]["version"], "file": "payload/cloudflared.exe",
                                    "sha256": files["payload/cloudflared.exe"]},
                    "packages": packages, "typography": ui, "apps": apps, "wingetBootstrap": bootstrap,
-                   "wslPlatform": platform, "files": files})
+                   "wslPlatform": platform, "files": files, "target": selected.get("target"), "core": selected.get("core")})
         output = out / "windows-dist.zip"
         archive(root, output)
         (out / "windows-dist.zip.sha256").write_text(digest(output) + "  windows-dist.zip\n", encoding="ascii")
