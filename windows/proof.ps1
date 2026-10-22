@@ -917,6 +917,7 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
     $Mode, $localAppData, $ledgerDirectory, $zip = 'Apply', $Scratch, (Join-Path $Scratch 'ledger'), (Join-Path $Root 'payload\noctty.zip')
     $fontDirectory, $fontSubkey = (Join-Path $Scratch 'fonts'), 'Software\Microsoft\Windows NT\CurrentVersion\Fonts'
     $fontKey = 'HKCU\' + $fontSubkey
+    $appPathsSubkey = 'Software\Microsoft\Windows\CurrentVersion\App Paths'
     $nocttyDirectory = Join-Path $Scratch ('Programs\noctty-' + $manifest.noctty.version)
     $nocttySshConfig, $nocttyKnownHosts = (Join-Path $Scratch 'noctty\versapro.config'), (Join-Path $Scratch 'noctty\versapro.known_hosts')
     $nocttyFiles = [ordered]@{
@@ -946,7 +947,7 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
         $null = [IO.Directory]::CreateDirectory($ledgerDirectory)
         $script:ledgerRecords, $script:nextSeq, $script:recordsWritten = @(), 1, 0
         $script:ledgerById = NewLedgerIndex
-        $held = Tree 'preserved-1' @{ 'keep.txt' = (Sha 'keep') }
+        $held = Tree 'noctty-preserved-1' @{ 'keep.txt' = (Sha 'keep') }
         $held.desired.other = @('empty/','empty/nested/')
         $stage = Staging $held
         $null = [IO.Directory]::CreateDirectory((Join-Path $stage 'empty\nested'))
@@ -1197,7 +1198,6 @@ public static string[] Split(string cmd) {
     # re-point to a new version; the value names its tree (reference guard); A3 keeps a retired key holding
     # foreign content; a retired name is collected value then key, but not while a seed would overwrite a profile.
     $registryViews = @(@('HKCU', 'CurrentUser', 'Default'), @('HKLM', 'LocalMachine', 'Registry64'), @('HKLM32', 'LocalMachine', 'Registry32'))
-    $appPathsSubkey = 'Software\Microsoft\Windows\CurrentVersion\App Paths'
     $script:packageDrift, $script:sharedCreated = @(), @()
     $appName = 'proof-' + [guid]::NewGuid().ToString('N') + '.exe'
     $appSubkey = "$appPathsSubkey\$appName"
