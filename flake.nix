@@ -13,6 +13,7 @@
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
+      versaPreview = import ./profile/versa-preview.nix { inherit pkgs; };
       gitState = import ./extensions/git-state/nix.nix { inherit pkgs; };
       githubRoot = import ./extensions/github/nix.nix { inherit pkgs; backend = gitState.backend; };
       ownSpec = builtins.fromJSON (builtins.readFile ./oci/own/spec.json);
@@ -637,6 +638,8 @@
         ];
         own-image = own.image;
         own-core = own.core;
+        versa-preview = versaPreview.app;
+        versa-preview-cloudflared = versaPreview.cloudflared;
         own-profile = own.profile;
         own-typellm-versa = versaTypeLLM;
         own-semlint-versa = versaSemlint;
@@ -683,7 +686,40 @@
         type = "app";
         program = "${githubRoot.app}/bin/github-root";
       };
+      apps.${system}.versa-preview = {
+        type = "app";
+        program = "${versaPreview.app}/bin/versa-preview";
+      };
       checks.${system} = {
+        versa-preview = pkgs.runCommand "versa-preview-check" {} ''
+          set -eu
+          ${versaPreview.cloudflared}/bin/cloudflared --version | grep -F '2026.10.3'
+          ${versaPreview.cloudflared}/bin/cloudflared tunnel --help | grep -F -- '--allowed-mail'
+          refuse() {
+            set +e
+            ${versaPreview.app}/bin/versa-preview "$@" >output 2>&1
+            result=$?
+            set -e
+            test "$result" = 64
+            grep -q '^usage: versa-preview ' output
+            test "$(wc -l <output)" = 1
+          }
+          refuse
+          refuse 18090
+          refuse 18090 ""
+          refuse 0 user@example.com
+          refuse 65536 user@example.com
+          refuse 018090 user@example.com
+          refuse http://localhost user@example.com
+          refuse 18090 '*@example.com'
+          refuse 18090 'one@example.com,two@example.com'
+          refuse 18090 'one@example.com two@example.com'
+          refuse 18090 'one@-example.com'
+          refuse 18090 'one@example.com.'
+          refuse 18090 'one..two@example.com'
+          refuse 18090 user@example.com --url http://example.com
+          touch "$out"
+        '';
         # Actual fixed-input composition: changing T/extra must not change B's drv.
         # Existing rent-image remains combined for its existing smoke/Windows consumers; no live cutover here.
         rent-composition =
