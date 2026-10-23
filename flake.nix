@@ -935,7 +935,7 @@
             machine.succeed("install -d -m0700 -o chromium-proof -g users /home/chromium-proof /home/chromium-proof/.generated")
             machine.succeed("install -m0444 -o root -g root ${marker} /etc/chromium-snapshot-cdp-guest.json")
             command = "su -s /bin/sh chromium-proof -c '${hostVmPkgs.python3}/bin/python ${browser}/share/chromium/chromium-proof.py --package ${browser} --result /home/chromium-proof/.generated/chromium-cdp-ci-attempt-1.json > /home/chromium-proof/.generated/invoke.log 2>&1'"
-            status = None
+            status, evidence_errors = None, []
             try:
                 status, output = machine.execute(command, timeout=900)
                 print(output)
@@ -947,12 +947,18 @@
                     try:
                         exists, _ = machine.execute("test -f " + path)
                         if exists == 0:
-                            _, text = machine.execute("cat " + path)
+                            read_status, text = machine.execute("cat " + path)
                             print(name + ": " + text)
+                            if read_status != 0:
+                                raise RuntimeError(f"Evidence read exited {read_status}")
                             machine.copy_from_machine(path, "chromium-evidence")
+                        else:
+                            evidence_errors.append(name + ": absent")
                     except Exception as evidence_error:
-                        print("Evidence readback unavailable: " + name + ": " + repr(evidence_error))
+                        evidence_errors.append(name + ": " + repr(evidence_error))
+                        print("Evidence readback unavailable: " + evidence_errors[-1])
             assert status == 0, f"Chromium default-sandbox guest proof failed: {status}"
+            assert not evidence_errors, f"Chromium proof evidence incomplete: {evidence_errors}"
           '';
         };
         windows-dist = common.check;
