@@ -56,6 +56,15 @@
         identity = "/work/repos/.auth/roccho-dev/age/versapro-own-oci.key";
         typellmTarget = "versapro-own-oci";
       }).semlint;
+      # Static voice consumer: the typed voice entry over the own identity and the own Jev and TypeLLM ciphertexts.
+      versaVoiceTyped = (dev.jevTools {
+        envsRemote = "https://github.com/roccho-org/envs";
+        appsRemote = "https://github.com/roccho-dev/apps";
+        opsRemote = "https://github.com/roccho-org/ops";
+        identity = "/work/repos/.auth/roccho-dev/age/versapro-own-oci.key";
+        typellmTarget = "versapro-own-oci";
+        jevTarget = "versapro-own-oci";
+      }).typedLaunch;
       versaOwnPiTarget = {
         bindingId = "opencode-go.versapro-own-oci";
         target = { repository = "roccho-dev/resources"; host = "versapro-own-oci"; kind = "pi_auth_command"; };
@@ -630,6 +639,7 @@
         own-profile = own.profile;
         own-typellm-versa = versaTypeLLM;
         own-semlint-versa = versaSemlint;
+        voice-ui-typed-versa = versaVoiceTyped;
         own-profile-versa-typellm = versaTypeLLMOwn.profile;
         own-profile-next = (mkOwn { extra = [ pkgs.hello ]; }).profile;
         # The existing legacy profile is an explicit migration input, never seeded by B.
@@ -860,6 +870,22 @@
           if grep -qF "TYPELLM_API_KEY" "$tool"; then exit 1; fi
           test ! -e ${own.profile}/bin/ops-semlint-owner
           test ! -e ${own.core}/bin/ops-semlint-owner
+          touch $out
+        '';
+        voice-own-target = pkgs.runCommand "voice-own-target-check" {} ''
+          set -eu
+          tool=${versaVoiceTyped}/bin/voice-ui-typed-dev
+          test -x "$tool"
+          grep -qF "identity=/work/repos/.auth/roccho-dev/age/versapro-own-oci.key" "$tool"
+          grep -qF "cipher_path=ciphertexts/dev-jev-api.versapro-own-oci.sops.yaml" "$tool"
+          grep -qF "type_path=ciphertexts/dev-typellm-api.versapro-own-oci.sops.yaml" "$tool"
+          grep -qF "envs_remote=https://github.com/roccho-org/envs" "$tool"
+          grep -qF "apps_remote=https://github.com/roccho-dev/apps" "$tool"
+          grep -qF 'LC_ALL=C' "$tool"
+          grep -qF 'IFS= read -r -u 5 TYPELLM_API_KEY' "$tool"
+          if grep -qF ".oci-dev.sops.yaml" "$tool"; then exit 1; fi
+          test ! -e ${own.profile}/bin/voice-ui-typed-dev
+          test ! -e ${own.core}/bin/voice-ui-typed-dev
           touch $out
         '';
         release-watch = pkgs.runCommand "release-watch-check" {
