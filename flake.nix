@@ -13,6 +13,7 @@
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
+      hostVmPkgs = import host-nixpkgs { inherit system; };
       gitState = import ./extensions/git-state/nix.nix { inherit pkgs; };
       githubRoot = import ./extensions/github/nix.nix { inherit pkgs; backend = gitState.backend; };
       ownSpec = builtins.fromJSON (builtins.readFile ./oci/own/spec.json);
@@ -907,29 +908,53 @@
           test "$(node watch.mjs validate "$registry")" = "$expected"
           touch $out
         '';
-        # Same fixed browser proof on the existing native Linux CI runner;
-        # no workflow, privileged sandbox setup or skip-on-failure path.
-        chromium-snapshot-cdp = pkgs.runCommand "chromium-snapshot-cdp" {
-          nativeBuildInputs = [ pkgs.python3 ];
-        } ''
-          mkdir -p .generated
-          set +e
-          python ${chromiumSnapshot.linux}/share/chromium/chromium-proof.py \
-            --package ${chromiumSnapshot.linux} \
-            --result "$NIX_BUILD_TOP/.generated/chromium-cdp-ci-attempt-1.json" > invoke.log 2>&1
-          status=$?
-          set -e
-          cat invoke.log
-          for evidence in .generated/*.json .generated/*.stderr; do
-            if [ -f "$evidence" ]; then cat "$evidence"; fi
-          done
-          # Nix's disposable builder owns its scratch lifecycle, including on
-          # FAIL. The helper never deletes profiles or kills another instance.
-          [ "$status" -eq 0 ] || exit "$status"
-          mkdir "$out"
-          cp .generated/*.json .generated/*.stdout .generated/*.stderr "$out/"
-          cp ${chromiumSnapshot.linux}/share/chromium/snapshot.json "$out/snapshot.json"
-        '';
+        # Reuse the existing locked NixOS test framework. The browser runs as a
+        # dedicated nonroot user with standard guest sandbox/security defaults.
+        chromium-snapshot-cdp = let
+          browser = chromiumSnapshot.linux;
+          marker = hostVmPkgs.writeText "chromium-snapshot-cdp-guest.json" (builtins.toJSON {
+            purpose = "resources-chromium-snapshot-cdp-guest-v1";
+            package = "${browser}";
+            proofSha256 = builtins.hashFile "sha256" ./profile/chromium-proof.py;
+          });
+        in hostVmPkgs.testers.runNixOSTest {
+          name = "chromium-snapshot-cdp";
+          nodes.machine = { ... }: {
+            users.users.chromium-proof = {
+              isNormalUser = true;
+              uid = 1000;
+              home = "/home/chromium-proof";
+            };
+            environment.systemPackages = [ browser hostVmPkgs.python3 ];
+            virtualisation.memorySize = 2048;
+            system.stateVersion = "26.05";
+          };
+          testScript = ''
+            machine.start()
+            machine.wait_for_unit("multi-user.target")
+            machine.succeed("install -d -m0700 -o chromium-proof -g users /home/chromium-proof /home/chromium-proof/.generated")
+            machine.succeed("install -m0444 -o root -g root ${marker} /etc/chromium-snapshot-cdp-guest.json")
+            command = "su -s /bin/sh chromium-proof -c '${hostVmPkgs.python3}/bin/python ${browser}/share/chromium/chromium-proof.py --package ${browser} --result /home/chromium-proof/.generated/chromium-cdp-ci-attempt-1.json > /home/chromium-proof/.generated/invoke.log 2>&1'"
+            status = None
+            try:
+                status, output = machine.execute(command, timeout=900)
+                print(output)
+            finally:
+                # Attempt original evidence readback even on timeout/transport
+                # failure. Preserve the original exception and FAIL outcome.
+                for name in ["invoke.log", "chromium-cdp-ci-attempt-1.json", "chromium-cdp-ci-attempt-1.stdout", "chromium-cdp-ci-attempt-1.stderr"]:
+                    path = "/home/chromium-proof/.generated/" + name
+                    try:
+                        exists, _ = machine.execute("test -f " + path)
+                        if exists == 0:
+                            _, text = machine.execute("cat " + path)
+                            print(name + ": " + text)
+                            machine.copy_from_machine(path, "chromium-evidence")
+                    except Exception as evidence_error:
+                        print("Evidence readback unavailable: " + name + ": " + repr(evidence_error))
+            assert status == 0, f"Chromium default-sandbox guest proof failed: {status}"
+          '';
+        };
         windows-dist = common.check;
         git-state-finite-poc = gitState.fixture;
         github-root-source = githubRoot.check;

@@ -5,6 +5,8 @@ import base64
 import hashlib
 import json
 import os
+import pwd
+import stat
 from pathlib import Path
 import re
 import socket
@@ -126,8 +128,32 @@ def main():
         plain_ancestors(build_top)
         if Path.cwd().resolve() == build_top.resolve():
             allowed_parents.add(build_top.resolve()/".generated")
+    guest_parent = Path("/home/chromium-proof/.generated")
+    guest_context = None
+    if result.parent == guest_parent:
+        # Only this existing test framework's source-bound, nonroot guest.
+        account = pwd.getpwuid(os.getuid())
+        if os.getuid() == 0 or account.pw_name != "chromium-proof" or account.pw_dir != "/home/chromium-proof":
+            raise ValueError("Guest proof requires its dedicated nonroot user")
+        for directory in [Path(account.pw_dir), guest_parent]:
+            plain_ancestors(directory)
+            metadata = directory.stat()
+            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o700:
+                raise ValueError("Guest home/result parent ownership or mode differs")
+        marker = Path("/etc/chromium-snapshot-cdp-guest.json")
+        plain_ancestors(marker)
+        metadata = marker.stat()
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
+            raise ValueError("Guest source marker is not root-owned and protected")
+        expected = dict(purpose="resources-chromium-snapshot-cdp-guest-v1",
+                        package=str(package), proofSha256=sha(Path(__file__)))
+        if json.loads(marker.read_text()) != expected:
+            raise ValueError("Guest source marker differs")
+        allowed_parents.add(guest_parent)
+        guest_context = dict(uid=os.getuid(), user=account.pw_name, home=account.pw_dir,
+                             marker=str(marker), markerSha256=sha(marker))
     if result.parent.resolve() not in allowed_parents or ".." in result.parts:
-        raise ValueError("Result must be new in the dedicated worktree .generated")
+        raise ValueError("Result must be new in an exact source-bound proof namespace")
     plain_ancestors(result.parent)
     profile = result.with_suffix(".profile")
     stdout, stderr = result.with_suffix(".stdout"), result.with_suffix(".stderr")
@@ -142,7 +168,8 @@ def main():
     if header[:5] != b"\x7fELF\x02" or header[18:20] != b"\x3e\x00":
         raise ValueError("Not an x86_64 ELF")
     record = dict(state="not-started", snapshot=manifest, profile=str(profile),
-                  package=str(package), sandbox="enabled; no disabling flags", cleanup="none")
+                  package=str(package), sandbox="enabled; no disabling flags", cleanup="none",
+                  guestContext=guest_context)
     process, cdp = None, None
     owned_endpoint, close_requested = False, False
     code = 1

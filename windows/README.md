@@ -1224,17 +1224,30 @@ font acceptance. The six pending Windows font activations, GUI/handoff and G6I3
 actual binding remain separately unproven until observed. Real browser update and
 return also require exact old-tree inventory and usage/reference checks. Old-layout
 executables are checked from their recorded inventory, not the new layout.
-PreserveIncomplete still stops whole-tree cleanup; a needed deletion must receive
-the existing per-occurrence exact-path permission rather than silently weakening
-the guard. A first installation is not an actual update/rollback proof.
+PreserveIncomplete still stops whole-tree cleanup. Only successful old committed
+package GC accepts the three optional inputs `-SuccessfulGcTarget`,
+`-SuccessfulGcEffectId` and `-SuccessfulGcIntentSeq`, together with
+`-PreserveIncomplete` and a package-converging Restore/Apply. These are a canonical
+existing absolute path and its current open attempt's effect ID/first intent seq,
+with a corresponding commit and exact inventory. They describe one separately
+approved occurrence, not permission by themselves. All old-tree candidates are
+checked before any removal; a blocked, mixed, stale or reused approval refuses.
+The input never authorizes staging/failure cleanup, recovery or generic Uninstall.
+Each real host removal still requires fresh User permission for that existing
+generation; a recreated same path is another occurrence. A first installation
+is not an actual update/rollback proof.
 
-The existing Linux `nix flake check` jobs also run the installed, hash-bound
-helper as checks.x86_64-linux.chromium-snapshot-cdp. Its only additional result
-parent is the exact NIX_BUILD_TOP/.generated of that disposable normal builder.
-Failure remains a failed check, with receipt/stderr printed to the check log.
-Nix controls disposable builder scratch retention; this does not promise the
-same persistent profile preservation as an actual host/OCI proof attempt.
-No new workflow/job or sandbox-policy override is introduced.
+The existing Linux `nix flake check` jobs run the installed, hash-bound helper as
+checks.x86_64-linux.chromium-snapshot-cdp using the repository's locked
+host-nixpkgs NixOS VM test framework. A disposable guest runs the browser as the
+dedicated nonroot `chromium-proof` user with standard sandbox/security defaults.
+Only `/home/chromium-proof/.generated` is added as a guest result namespace,
+after checking its owner/mode and a root-owned regular marker tied to the exact
+browser output and helper hash. No fabricated NIX_BUILD_TOP or security override
+is used. Failure remains a failed check; receipt/stderr readback is attempted even
+on a driver exception, and available evidence is copied to the normal test output.
+The framework owns disposable guest retention; helper-side profile cleanup and
+process killing are absent. Existing host/OCI evidence retains its own context.
 
 Fresh browser probes also bound their diagnostic state. Linux gives only the
 version/browser child new config/cache/crash directories inside the new proof

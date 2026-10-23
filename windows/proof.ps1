@@ -893,7 +893,8 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
         'StepText', 'IsPackageTree', 'RemovePackageAsset', 'IndexRecord', 'ReadLedger', 'LedgerIds', 'NewLedgerIndex', 'AttemptOf',
         'PackageEffect', 'SeedHazard', 'WriteSeed', 'AppPathEffects', 'IsAppPathEffect', 'MachineAppPath', 'EffectClass', 'AppPathState',
         'ConvergeAppPath', 'CollectAppPathGarbage', 'ConvergeEffect', 'Classify', 'UndoOwned', 'SharedKey', 'ObserveKeyContent',
-        'ConvergeNocttyConfig','ApplyNocttyConfigOnly','PlatformDirectory','SharedDirectory','PackageInUse','ExistingProblems','AssertPackageShape','TestWindowsRelative','PathsOverlap'
+        'ConvergeNocttyConfig','ApplyNocttyConfigOnly','PlatformDirectory','SharedDirectory','PackageInUse','ExistingProblems','AssertPackageShape','TestWindowsRelative','PathsOverlap',
+        'AssertSuccessfulPackageGc','CollectPackageGarbage','TreeReferenceProblems'
     $names += 'AppxEffect', 'ObserveAppx', 'IntroduceAppx', 'ConvergeApps', 'FetchBootstrap', 'AssertAppxManifest', 'AssertMicrosoftSignature'
     $names += 'PlatformEffect','ObservePlatformEffect','IntroducePlatform','IsPlatformEffect','IsHostEffect','HostProfile'
     $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $Root 'win.ps1'), [ref]$null, [ref]$null)
@@ -918,6 +919,7 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
     $fontDirectory, $fontSubkey = (Join-Path $Scratch 'fonts'), 'Software\Microsoft\Windows NT\CurrentVersion\Fonts'
     $fontKey = 'HKCU\' + $fontSubkey
     $appPathsSubkey = 'Software\Microsoft\Windows\CurrentVersion\App Paths'
+    $registryViews = @(@('HKCU', 'CurrentUser', 'Default'), @('HKLM', 'LocalMachine', 'Registry64'), @('HKLM32', 'LocalMachine', 'Registry32'))
     $nocttyDirectory = Join-Path $Scratch ('Programs\noctty-' + $manifest.noctty.version)
     $nocttySshConfig, $nocttyKnownHosts = (Join-Path $Scratch 'noctty\versapro.config'), (Join-Path $Scratch 'noctty\versapro.known_hosts')
     $nocttyFiles = [ordered]@{
@@ -1009,6 +1011,107 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
         $ledgerDirectory = $savedLedger
         $script:ledgerRecords, $script:ledgerById, $script:nextSeq = $savedRecords, $savedIndex, $savedSeq
         $script:recordsWritten, $script:copied, $script:changed, $script:removed = $savedWritten, $savedCopied, $savedChanged, $savedRemoved
+    }
+
+    # A GC approval applies to a successful current committed generation only.
+    # Synthetic trees/ledger live in this disposable proof scratch, never host apps.
+    $savedLedger, $savedRecords, $savedIndex = $ledgerDirectory, $script:ledgerRecords, $script:ledgerById
+    $savedSeq, $savedWritten, $savedRemoved = $script:nextSeq, $script:recordsWritten, $script:removed
+    $savedPackages = @($manifest.packages)
+    $savedDrift = @(Get-Variable packageDrift -Scope Script -ValueOnly -ErrorAction SilentlyContinue)
+    $gcAppName = 'gc-proof-' + [guid]::NewGuid().ToString('N') + '.exe'
+    $gcAppKey = "$appPathsSubkey\$gcAppName"
+    try {
+        $PreserveIncomplete = $true
+        $SuccessfulGcTarget, $SuccessfulGcEffectId, $SuccessfulGcIntentSeq = '', '', 0
+        $script:successfulGcConsumed, $script:packageDrift = $false, @()
+        $ledgerDirectory = Join-Path $Scratch 'successful-gc-ledger'
+        $null = [IO.Directory]::CreateDirectory($ledgerDirectory)
+        $script:ledgerRecords, $script:nextSeq, $script:recordsWritten, $script:removed = @(), 1, 0, 0
+        $script:ledgerById = NewLedgerIndex
+        $gcPackage = [pscustomobject]@{ name='GcProof'; executable='chrome-win/chrome.exe'; appPath=$gcAppName }
+        $manifest.packages = @($savedPackages) + @($gcPackage)
+        # This unrelated valid record is not ownership this collector handles.
+        # Filtering by package metadata must precede OpenAttempt's prior guard.
+        $unrelatedPath = Join-Path $Scratch 'unrelated-replaced.txt'
+        $unrelated = [ordered]@{ id=('file-replaced:' + $unrelatedPath.ToUpperInvariant()); kind='file-replaced'; target=$unrelatedPath
+            prior=@{ exists=$true; sha256=(Sha 'before'); backup=(Join-Path $Scratch 'unrelated-backup.txt') }
+            desired=@{ exists=$true; sha256=(Sha 'after') } }
+        WriteRecord 'intent' $unrelated $null
+        Refused { OpenAttempt $unrelated.id } '*target that existed before*'
+        function GcTree([string]$Version, [string]$Content, [switch]$Pending) {
+            $effect = Tree "gcproof-$Version" @{ 'old.txt'=(Sha $Content); 'loaded.dll'=(Sha 'library') }
+            WriteRecord 'intent' $effect $null (Staging $effect)
+            $null = [IO.Directory]::CreateDirectory($effect.target)
+            [IO.File]::WriteAllText((Join-Path $effect.target 'old.txt'), $Content, [Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText((Join-Path $effect.target 'loaded.dll'), 'library', [Text.UTF8Encoding]::new($false))
+            if (-not $Pending) { WriteRecord 'commit' $effect (ObserveTree $effect.target) }
+            $effect
+        }
+        $selectedGc = GcTree '2' 'selected'
+        $oldGc = GcTree '1' 'original' -Pending
+        $gcState = [pscustomobject]@{ package=$gcPackage; effect=$selectedGc }
+        $SuccessfulGcTarget, $SuccessfulGcEffectId = $oldGc.target, $oldGc.id
+        $SuccessfulGcIntentSeq = @(OpenAttempt $oldGc.id)[0].seq
+        Refused { CollectPackageGarbage $gcState } '*not committed*'
+        WriteRecord 'commit' $oldGc (ObserveTree $oldGc.target)
+        $savedApprovalTarget = $SuccessfulGcTarget
+        $SuccessfulGcTarget = ''
+        Refused { CollectPackageGarbage $gcState } '*approval is absent*'
+        $SuccessfulGcTarget = $savedApprovalTarget
+        $approvedSeq = $SuccessfulGcIntentSeq
+        $SuccessfulGcIntentSeq++
+        Refused { CollectPackageGarbage $gcState } '*identity/committed generation differs*'
+        $SuccessfulGcIntentSeq = $approvedSeq
+        $SuccessfulGcEffectId = $selectedGc.id
+        Refused { CollectPackageGarbage $gcState } '*identity/committed generation differs*'
+        $SuccessfulGcEffectId = $oldGc.id
+        $SuccessfulGcTarget = Join-Path $oldGc.target '..\gcproof-1'
+        Refused { CollectPackageGarbage $gcState } '*identity/committed generation differs*'
+        $SuccessfulGcTarget = $oldGc.target
+        $lock = [IO.File]::Open((Join-Path $oldGc.target 'loaded.dll'), 'Open', 'Read', 'None')
+        try { Refused { CollectPackageGarbage $gcState } '*blocked old generation*' }
+        finally { $lock.Dispose() }
+        $foreign = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($gcAppKey)
+        try { $foreign.SetValue('', (Join-Path $oldGc.target 'old.txt')) } finally { $foreign.Close() }
+        try { Refused { CollectPackageGarbage $gcState } '*blocked old generation*' }
+        finally { [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKey($gcAppKey) }
+        [IO.File]::WriteAllText((Join-Path $oldGc.target 'foreign.txt'), 'foreign')
+        Refused { CollectPackageGarbage $gcState } '*blocked old generation*'
+        [IO.File]::Delete((Join-Path $oldGc.target 'foreign.txt'))
+        Must ([IO.File]::ReadAllText((Join-Path $oldGc.target 'old.txt')) -ceq 'original') 'refusals precede any old-tree removal'
+        $script:packageDrift = @()
+        $openFirst = @(OpenAttempt $oldGc.id)[0]
+        $observations = @{}; $observations[$oldGc.id] = ObserveTree $oldGc.target
+        $gcPlan = Get-UninstallPlan @(RecordsOf $oldGc.id) $observations
+        Refused { UndoOwnedSteps @(OrderedSteps $gcPlan) } '*Owned tree removal retained*'
+        CollectPackageGarbage $gcState
+        Must ($script:successfulGcConsumed -and -not [IO.Directory]::Exists($oldGc.target) -and
+            @(OpenAttempt $oldGc.id).Count -eq 0) 'one approved successful old generation is removed and closed'
+        Refused { AssertSuccessfulPackageGc $openFirst @(OrderedSteps $gcPlan) } '*already consumed*'
+        # Same path/id, new contents and first intent seq: an old approval never
+        # authorizes its reappearance, and the current inventory must be used.
+        $again = GcTree '1' 'recreated'
+        $script:successfulGcConsumed = $false
+        Refused { CollectPackageGarbage $gcState } '*identity/committed generation differs*'
+        $SuccessfulGcIntentSeq = @(OpenAttempt $again.id)[0].seq
+        $secondOld = GcTree '3' 'another old generation'
+        Refused { CollectPackageGarbage $gcState } '*identity/committed generation differs*'
+        Must ([IO.File]::ReadAllText((Join-Path $again.target 'old.txt')) -ceq 'recreated' -and
+            [IO.Directory]::Exists($secondOld.target)) 'a mixed unapproved tree stops before the first deletion'
+        # The same existing plan remains usable for normal legacy GC when
+        # PreserveIncomplete was never requested.
+        $PreserveIncomplete = $false
+        CollectPackageGarbage $gcState
+        Must (-not [IO.Directory]::Exists($again.target) -and -not [IO.Directory]::Exists($secondOld.target)) 'legacy successful GC retains its default behavior and current inventories'
+    } finally {
+        $PreserveIncomplete = $false
+        $SuccessfulGcTarget, $SuccessfulGcEffectId, $SuccessfulGcIntentSeq = '', '', 0
+        $script:successfulGcConsumed = $false
+        $manifest.packages = $savedPackages
+        $ledgerDirectory = $savedLedger
+        $script:ledgerRecords, $script:ledgerById, $script:nextSeq = $savedRecords, $savedIndex, $savedSeq
+        $script:recordsWritten, $script:removed, $script:packageDrift = $savedWritten, $savedRemoved, $savedDrift
     }
 
     # The whole entry list is checked before anything is written.

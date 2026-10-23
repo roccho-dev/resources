@@ -31,12 +31,22 @@ param(
     # Keep incomplete effects and tree-removal plans for explicit scoped recovery; no automatic cleanup.
     [switch]$PreserveIncomplete,
     # Existing terminal-package reader scratch only; no change to the host/user identity.
-    [string]$PackageScratchRoot
+    [string]$PackageScratchRoot,
+    # Successful old committed package GC only: one separately approved existing occurrence.
+    [string]$SuccessfulGcTarget,
+    [string]$SuccessfulGcEffectId,
+    [long]$SuccessfulGcIntentSeq = 0
 )
 
 # The native Windows activation adapter. Product selection belongs to the built distribution (Nix).
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$script:successfulGcConsumed = $false
+$gcInputCount = @(@($SuccessfulGcTarget, $SuccessfulGcEffectId, $SuccessfulGcIntentSeq) | Where-Object { $_ }).Count
+if ($gcInputCount -and ($gcInputCount -ne 3 -or $SuccessfulGcIntentSeq -lt 1 -or -not $PreserveIncomplete -or
+    $Mode -cnotin @('Restore', 'Apply') -or ($Mode -ceq 'Apply' -and -not $Packages))) {
+    throw 'Successful GC requires one complete occurrence identity, PreserveIncomplete, and a package-converging mode.'
+}
 if ($env:OS -ne 'Windows_NT') { throw 'This activation adapter requires Windows.' }
 $root = [IO.Path]::GetFullPath($PSScriptRoot) + [IO.Path]::DirectorySeparatorChar
 $manifest = Get-Content -LiteralPath (Join-Path $root 'manifest.json') -Raw -Encoding utf8 | ConvertFrom-Json
@@ -1691,10 +1701,15 @@ function OrderedSteps($Plan) {
 # Runs ordered undo steps, each id's consecutive steps together, then writes that id's one
 # undone record. A tree's files are read back just before removal and its directories go only
 # when empty (already gone: skipped, as in a resumed plan); nothing is removed recursively.
-function UndoOwnedSteps($Steps) {
+function UndoOwnedSteps($Steps, $SuccessfulPackageGc = $null) {
     if ((Get-Variable PreserveIncomplete -ValueOnly -ErrorAction SilentlyContinue) -and
         @($Steps | Where-Object { $_.kind -ceq 'tree-extracted' }).Count) {
-        throw 'Owned tree removal retained by PreserveIncomplete; an exact per-occurrence recovery decision is required.'
+        if ($null -eq $SuccessfulPackageGc) {
+            throw 'Owned tree removal retained by PreserveIncomplete; an exact per-occurrence recovery decision is required.'
+        }
+        AssertSuccessfulPackageGc $SuccessfulPackageGc $Steps
+        # Consume before the first removal. A failed occurrence cannot reuse the approval.
+        $script:successfulGcConsumed = $true
     }
     $run = @()
     foreach ($step in @($Steps) + @($null)) {
@@ -3467,22 +3482,82 @@ function InstallPackage($State) {
 # Once the selected version of a package is owned and exact: removes the owned trees of its other
 # versions through the same plan as Uninstall (file by file, D1-resumable), each only when its
 # executable is not in use and nothing else refers to it; anything kept stays owned and is reported.
-function CollectPackageGarbage($State) {
-    $programs = Join-Path $localAppData 'Programs'
-    foreach ($id in @(LedgerIds)) {
-        $first = @(RecordsOf $id)[0]
-        $target = [string](Get-Field $first 'target')
-        if ($id -ceq $State.effect.id -or (Get-Field $first 'kind') -cne 'tree-extracted' -or -not (Test-PackageTarget $target $State.package.name $programs) -or
-            -not @(OpenAttempt $id).Count) { continue }
-        $oldFiles = Get-Field (Get-Field $first 'desired') 'files'
-        if ($null -eq $oldFiles) { throw "Old package inventory is unknown: $target" }
-        if (PackageInUse $State.package $target $oldFiles) { $script:packageDrift += "$target is in use; kept"; continue }
-        $observations = @{}
-        $observations[$id] = Observe $first
-        $plan = Get-UninstallPlan @(RecordsOf $id) $observations
-        $problems = @($plan.refused | ForEach-Object { $_.reason }) + @(if ($plan.ok) { TreeReferenceProblems @(OrderedSteps $plan) })
-        if ($problems.Count) { $script:packageDrift += "$target cannot be collected: $($problems -join '; ')"; continue }
-        UndoOwnedSteps @(OrderedSteps $plan)
+# Only the successful collector passes this record to UndoOwnedSteps. Other
+# undo/recovery routes never receive the exception, even with CLI inputs present.
+function AssertSuccessfulPackageGc($First, $Steps) {
+    $approvedTarget = Get-Variable SuccessfulGcTarget -ValueOnly -ErrorAction SilentlyContinue
+    $approvedId = Get-Variable SuccessfulGcEffectId -ValueOnly -ErrorAction SilentlyContinue
+    $approvedSeq = Get-Variable SuccessfulGcIntentSeq -ValueOnly -ErrorAction SilentlyContinue
+    if ((Get-Variable successfulGcConsumed -Scope Script -ValueOnly -ErrorAction SilentlyContinue) -or
+        -not $approvedTarget -or -not $approvedId -or -not $approvedSeq) {
+        throw 'Successful package GC occurrence approval is absent or already consumed.'
+    }
+    $target, $id = [string]$First.target, [string]$First.id
+    $open = @(OpenAttempt $id)
+    if ($First.kind -cne 'tree-extracted' -or -not $open.Count -or $open[0].seq -ne $First.seq -or
+        $open[0].seq -ne $approvedSeq -or $id -cne $approvedId -or $target -cne $approvedTarget -or
+        -not @($open | Where-Object { $_.phase -ceq 'commit' }).Count -or
+        -not [IO.Path]::IsPathRooted($target) -or [IO.Path]::GetFullPath($target) -cne $target) {
+        throw 'Successful package GC occurrence identity/committed generation differs.'
+    }
+    if (-not @($Steps).Count -or @($Steps | Where-Object { $_.id -cne $id -or $_.kind -cne 'tree-extracted' }).Count) {
+        throw 'Successful package GC approval cannot cover another effect or tree.'
+    }
+    $directory = Get-Item -LiteralPath $target -Force -ErrorAction Stop
+    if (-not $directory.PSIsContainer -or $directory.FullName -cne $target) { throw 'Successful GC target is not the exact existing directory.' }
+    for ($ancestor = $directory; $null -ne $ancestor; $ancestor = $ancestor.Parent) {
+        if ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Successful GC target has a reparse ancestor.' }
+    }
+    if (-not (Test-EffectStateEqual 'tree-extracted' $open[0].desired (ObserveTree $target))) {
+        throw 'Successful package GC requires the complete current committed inventory.'
+    }
+}
+
+function CollectPackageGarbage($States) {
+    $programs, $candidates, $blocked = (Join-Path $localAppData 'Programs'), @(), @()
+    foreach ($state in @($States | Where-Object { $null -ne $_ })) {
+        $selectedOpen = @(OpenAttempt $state.effect.id)
+        if (-not $selectedOpen.Count -or -not @($selectedOpen | Where-Object { $_.phase -ceq 'commit' }).Count -or
+            -not (Test-EffectStateEqual 'tree-extracted' $state.effect.desired (ObserveTree $state.effect.target))) {
+            throw 'Successful package GC requires the selected committed tree to be exact.'
+        }
+        foreach ($id in @(LedgerIds)) {
+            # Filter unrelated effects by metadata before invoking ownership
+            # rules. Only then inspect this package's current generation.
+            $metadata = @(RecordsOf $id)[-1]
+            if ($id -ceq $state.effect.id -or (Get-Field $metadata 'kind') -cne 'tree-extracted' -or
+                -not (Test-PackageTarget ([string](Get-Field $metadata 'target')) $state.package.name $programs)) { continue }
+            $open = @(OpenAttempt $id)
+            if (-not $open.Count) { continue }
+            $first = $open[0]
+            $target = [string](Get-Field $first 'target')
+            if (-not @($open | Where-Object { $_.phase -ceq 'commit' }).Count) { throw "Old package generation is not committed: $target" }
+            $oldFiles = Get-Field (Get-Field $first 'desired') 'files'
+            if ($null -eq $oldFiles) { throw "Old package inventory is unknown: $target" }
+            if (PackageInUse $state.package $target $oldFiles) { $script:packageDrift += "$target is in use; kept"; $blocked += $target; continue }
+            $observations = @{}
+            $observations[$id] = Observe $first
+            $plan = Get-UninstallPlan @(RecordsOf $id) $observations
+            $steps = @(if ($plan.ok) { OrderedSteps $plan })
+            $problems = @($plan.refused | ForEach-Object { $_.reason }) + @(if ($plan.ok) { TreeReferenceProblems $steps })
+            if ($problems.Count) { $script:packageDrift += "$target cannot be collected: $($problems -join '; ')"; $blocked += $target; continue }
+            $candidates += [pscustomobject]@{ first = $first; steps = $steps }
+        }
+    }
+    if (Get-Variable PreserveIncomplete -ValueOnly -ErrorAction SilentlyContinue) {
+        # Validate every candidate before deleting any. One approval covers one
+        # actual occurrence only; mixed/unapproved generations remain untouched.
+        if ($blocked.Count) { throw 'Successful package GC has a blocked old generation; all trees retained.' }
+        foreach ($candidate in $candidates) { AssertSuccessfulPackageGc $candidate.first $candidate.steps }
+        if ($candidates.Count -gt 1) { throw 'A successful package GC approval covers only one old tree occurrence.' }
+        if ((Get-Variable SuccessfulGcTarget -ValueOnly -ErrorAction SilentlyContinue) -and -not $candidates.Count) {
+            throw 'Successful package GC approval has no exact collectible generation.'
+        }
+    }
+    foreach ($candidate in $candidates) {
+        if (Get-Variable PreserveIncomplete -ValueOnly -ErrorAction SilentlyContinue) {
+            UndoOwnedSteps $candidate.steps $candidate.first
+        } else { UndoOwnedSteps $candidate.steps }
     }
 }
 
@@ -3728,7 +3803,7 @@ try {
             # in a run that handles packages (Restore, or Apply with -Packages): without them no package state is touched.
             foreach ($appPath in @($packageStates | ForEach-Object { AppPathState $_ } | Where-Object { $null -ne $_ -and $_.write })) { ConvergeAppPath $appPath }
             if ($packageStates.Count) { CollectAppPathGarbage $packageStates }
-            foreach ($state in @($packageStates | Where-Object { $_.install -or $_.class -ceq 'owned-match' })) { CollectPackageGarbage $state }
+            CollectPackageGarbage @($packageStates | Where-Object { $_.install -or $_.class -ceq 'owned-match' })
             if ($Mode -eq 'Restore') { ConvergeApps }
         }
         if (-not $ChromiumFonts -and -not $AppFonts) {
