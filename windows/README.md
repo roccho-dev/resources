@@ -3,20 +3,60 @@
 ## Explicit host compositions
 
 `windows/core.nix` owns the Windows core once: Notepads, Noctty, the existing
-shared fonts, Chromium itself Beta, and the roccho-dev Meltype fork. Host files
+shared fonts, Chromium itself, and the roccho-dev Meltype fork. Host files
 in `windows/hosts` contain only local bindings; they do not repeat product pins
 or deployment logic. `nix eval --json .#windowsHosts` reports both compositions.
 PC7337 is bound to its observed user/SID and x64 context, with a local PowerShell
 Noctty launch. G6I3 deliberately reports its unobserved user, architecture and
 launch as unresolved; this is structural support, not a deployed G6I3 claim.
 
-Chromium Beta has no accepted Windows artifact supplier/build yet. Chrome,
-ungoogled, Stable, and an arbitrary snapshot sharing a milestone are not fallback
-products. The full `windows-pc7337-dist` output is unavailable while any required
-core input is pending. `nix build .#windows-pc7337-partial-dist` produces only the
-four available core selections and records the missing Beta selection in the
-manifest and native report. `selectedScopeInDesiredState` is true only when Restore/RestoreTest actually
-check the whole selected scope; narrower modes report `actualTestScope` instead; `inDesiredState` stays false while a required core product is pending.
+The browser selection is now an official Chromium Snapshot, without a Beta or
+Stable-channel guarantee. Google Chrome, Chrome for Testing and ungoogled builds
+are excluded. `profile/chromium.nix` is the one owner of the OS-specific fixed
+revision, URL, SHA256, actual product version and source revision; both Windows
+consumers and the standalone Linux materialization use it. LAST_CHANGE was only
+candidate discovery: evaluation, builds and deployment never resolve latest.
+
+`nix build .#chromium-snapshot` materializes the Linux binary and its Nix runtime
+closure; autoPatchelf changes its derived executable hash, recorded alongside the
+unchanged raw archive hash in share/chromium/snapshot.json. This does not install
+it into an existing Linux profile or implement the rest of cross-OS issue #92.
+The BSD notice and unmodified browser resources are retained in both distributions.
+These fixed official Snapshots compile the upstream sample Credits page, not a full
+third-party notice listing. The representative proof verifies that exact sample
+and reports sample-only / fullCreditsAvailable=false; it does not claim a complete
+license audit or generate missing notices. Unknown/empty credits pages fail.
+Normal sandbox, actual browser identity, synthetic DOM behavior and owned-instance
+graceful close remain mandatory.
+
+Snapshot artifact identity is `<productVersion>.r<revision>`, including the owned
+directory. The optional productVersion field is the four-part actual PE version;
+without it older package locks retain their original version semantics. The
+compiler and native adapter bind all three of productVersion, artifact revision
+and exact official Win_x64 URL. An external Chromium installation with unknown
+revision/inventory is refused, even when its displayed four-part version matches.
+Protected Chromium/User Data, its existing history, and App Paths chromium.exe
+remain the same product. No existing Chrome executable or personal profile is
+used by the bounded representative proofs.
+
+Windows official Snapshot installation also reproduces the upstream install-files
+capabilities: only its freshly and atomically created owned staging receives the
+two named capability read/execute ACEs, inherited by the extracted public files.
+Existing ACL entries and ordinary inheritance are retained. No Programs parent,
+private profile, other package or existing tree is granted access. The expected
+SIDs/mask/inheritance and observed public file/directory ACEs are reported
+separately from effective sandbox execution. Missing or unreadable access on an
+existing owned tree is drift and is never repaired in place; repeated matching
+observation writes no ACL or ledger records. A changed native access condition
+requires a fresh normal-user Plan and current native/runtime evidence. First GUI
+normal close is separately observed within its existing 45-second budget,
+including late windows; forced CI cleanup never proves normal close.
+
+The full `windows-pc7337-dist` output becomes available when all source inputs are
+selected. Its availability and native inDesiredState describe declared persistent
+state only: they do not prove active font faces, GUI use, default-terminal handoff
+or actual host update/rollback. Those need independent evidence. Selected-scope
+reports remain separate from actualTestScope in narrower modes.
 
 Notepads has one accepted Appx version in the core. Existing and newly fetched
 packages must match product, publisher and that version. Another version is drift
@@ -27,7 +67,7 @@ recreation. A matching existing package is preserved.
 Only that explicitly selected PC7337 artifact may be restored on PC7337, from
 its normal unelevated user context. Its host/SID/architecture guard runs before
 any ledger lock/effect. Its Restore does not install or alter AutoHotkey,
-ChatGPT, or Stable Chromium. The old `windows-dist` output is an explicit legacy
+ChatGPT or Google Chrome. The old `windows-dist` output is an explicit legacy
 proof consumer, not the PC7337 deployment entry. Existing unrelated installations
 and application data are not adopted or removed.
 
@@ -1181,3 +1221,75 @@ it. Native `nix.exe` is not a prerequisite.
 
 Hosted CI success does not authorize dependency merges, issue closure, or real-PC
 changes. Keep #7 open until its remaining acceptance is demonstrated.
+
+
+## Fixed browser proof and remaining gates
+
+Linux: run the materialized share/chromium/chromium-proof.py with --package set to
+that Nix output and --result a new JSON path in the dedicated worktree .generated.
+Windows: chromium-proof.ps1 takes ExpectedSource, ExpectedManifest and a new bounded
+Result name chromium-cdp-<source8>-attempt-N.json. It verifies normal target context
+and the installed executable before starting exactly one dedicated headless
+instance. Neither proof uses existing profiles, debug ports or browser instances.
+They use a new bounded profile, loopback autoport, a fixed data page (DOM/arithmetic),
+and chrome://credits. Browser.close is sent only to that new instance. Results and
+profiles remain for inspection; no recursive cleanup is performed. Timeout or
+uncertain process effects are HOLD/UNKNOWN, never a reason to retry or kill another
+application. Linux must run with its normal sandbox; no --no-sandbox workaround.
+
+These are representative CDP checks, not P's GUI experience or existing-profile
+font acceptance. The six pending Windows font activations, GUI/handoff and G6I3
+actual binding remain separately unproven until observed. Real browser update and
+return also require exact old-tree inventory and usage/reference checks. Old-layout
+executables are checked from their recorded inventory, not the new layout.
+PreserveIncomplete still stops whole-tree cleanup. Only successful old committed
+package GC accepts the three optional inputs `-SuccessfulGcTarget`,
+`-SuccessfulGcEffectId` and `-SuccessfulGcIntentSeq`, together with
+`-PreserveIncomplete` and a package-converging Restore/Apply. These are a canonical
+existing absolute path and its current open attempt's effect ID/first intent seq,
+with a corresponding commit and exact inventory. They describe one separately
+approved occurrence, not permission by themselves. All old-tree candidates are
+checked before any removal; a blocked, mixed, stale or reused approval refuses.
+The input never authorizes staging/failure cleanup, recovery or generic Uninstall.
+Each real host removal still requires fresh User permission for that existing
+generation; a recreated same path is another occurrence. A first installation
+is not an actual update/rollback proof.
+
+The existing Linux `nix flake check` jobs run the installed, hash-bound helper as
+checks.x86_64-linux.chromium-snapshot-cdp using the repository's locked
+host-nixpkgs NixOS VM test framework. A disposable guest runs the browser as the
+dedicated nonroot `chromium-proof` user with standard sandbox/security defaults.
+Only `/home/chromium-proof/.generated` is added as a guest result namespace,
+after checking its owner/mode and a root-owned regular marker tied to the exact
+browser output and helper hash. No fabricated NIX_BUILD_TOP or security override
+is used. Failure remains a failed check; receipt/stderr readback is attempted even
+on a driver exception, and available evidence is copied to the normal test output.
+The framework owns disposable guest retention; helper-side profile cleanup and
+process killing are absent. Existing host/OCI evidence retains its own context.
+
+Fresh browser probes also bound their diagnostic state. Linux gives only the
+version/browser child new config/cache/crash directories inside the new proof
+profile; HOME and the global environment are unchanged. Windows refuses an
+existing/unreadable Chromium UserDataDir policy before startup, pre-creates and
+checks its new profile, and directs only that child's crash dumps into it.
+Crash reporting and the browser sandbox remain enabled.
+
+
+A CDP revision of exactly `@` followed by forty zeros is upstream's
+`build/util/LASTCHANGE.dummy`, used by non-official-build version metadata.
+This build flag is separate from the official Snapshot download origin. The
+Linux proof records it as `unavailable-upstream-dummy`, never as the selected
+source commit. A real matching source hash is recorded separately; other,
+empty or malformed revisions refuse. Fixed archive URL/hash and REVISIONS
+provenance, derived executable/hash/architecture and actual product version remain
+the source identity evidence. Windows retains raw CDP metadata alongside its
+existing owned-file/PE/product checks; neither CDP branding nor a dummy revision
+substitutes for that identity. No Windows CDP result is claimed before execution.
+
+The fixed credits check follows the bundled upstream WebUI structure: exact
+chrome://credits/ URL, complete readiness, Credits document/page title, one
+nonempty license pre per named product, and a nontrivial combined license
+textContent length/hash. CSS hides these license bodies, and the Chromium word
+in the template is an HTML comment; visible innerText is not a license-presence
+test. Only counts/readiness and the license text digest are retained in receipts,
+including partial structural diagnostics on failure.

@@ -86,32 +86,7 @@ let
   #               owned executable by name (Win+R); never the executable's own name when another
   #               product owns it (chrome.exe is Google Chrome's)
   packageLocks = if host != null then core.packages else [
-    {
-      # Hibbiki third-party build (the approved exception). sha256 is GitHub's
-      # asset digest; sha1 is the one the publisher states on the release page.
-      name = "Chromium";
-      version = "154.0.8037.58";
-      url = "https://github.com/Hibbiki/chromium-win64/releases/download/v154.0.8037.58-r1689415/chrome.7z";
-      format = "7z";
-      size = 443675526;
-      sha256 = "c1b9d1384fe5e342d834c36e40aec905e6c534ca1292026a16293bc36d8b732c";
-      sha1 = "b154facbc2e76d781c162a504953a81d8062c8ea";
-      scope = "user";
-      effect = "tree-extracted";
-      directory = "Programs/chromium-154.0.8037.58";
-      executable = "Chrome-bin/chrome.exe";
-      existing = {
-        uninstallKey = "Chromium";
-        displayName = "Chromium";
-        publisher = "The Chromium Authors";
-        installLocation = "Chromium/Application";
-        executable = "chrome.exe";
-      };
-      # Without --user-data-dir this build uses the synced profile's location.
-      protected = [ "Chromium/User Data" ];
-      seed = { path = "Chrome-bin/initial_preferences"; fonts = { proportional = "ui"; fixed = "terminal"; }; };
-      appPath = "chromium.exe";
-    }
+    core.chromium.windowsPackage
     {
       # Official release; publisher SHA256 equals GitHub's asset digest.
       name = "AutoHotkey";
@@ -176,6 +151,7 @@ let
     core = if host == null then null else { inherit (core) declared selected pending; };
     cloudflared.version = cloudflaredVersion;
     inherit wingetBootstrap wslPlatform;
+    chromiumLicense = core.chromium.license;
     packages = map (lock: lock // { inventory = "${inventory lock}"; }) packageLocks;
     # The desktop UI font face: the family of this role, set face-only in the six Win32 UI font slots
     # in HKCU WindowMetrics; the native getter reads live faces without another package.

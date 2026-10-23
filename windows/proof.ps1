@@ -61,6 +61,29 @@ function MustReject([scriptblock]$Action, [string]$Pattern) {
 }
 $validated = Run 'Validate'
 if ($validated.source -ne $ExpectedSource -or $ExpectedSource -notmatch '^[0-9a-f]{40}$') { throw 'Source mismatch.' }
+# Exercise the actual proof's path assignments without starting it or touching any path.
+# A comma combined with concatenation once collapsed all three values into one string.
+$cdpAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'chromium-proof.ps1'), [ref]$null, [ref]$null)
+$cdpPaths = @($cdpAst.FindAll({param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and
+    $n.Left -is [Management.Automation.Language.VariableExpressionAst] -and $n.Left.VariablePath.UserPath -cin @('profile','outPath','errPath')}, $false))
+if ($cdpPaths.Count -ne 3) { throw 'Expected three separate Chromium proof path assignments.' }
+$cdpSocketInit = @($cdpAst.FindAll({param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and
+    ($n.Left.Extent.Text -ceq '$socket.Options.Proxy' -or
+        ($n.Left.Extent.Text -ceq '$socket' -and $n.Right.Extent.Text -ceq '[Net.WebSockets.ClientWebSocket]::new()'))}, $true))
+if ($cdpSocketInit.Count -ne 2) { throw 'Expected one Chromium loopback socket and its local proxy override.' }
+$cdpPathCheck = '$Result = ''C:\fixed proof\chromium-cdp-01234567-attempt-1.json''' + "`n" + ($cdpPaths.Extent.Text -join "`n") + "`n" + ($cdpSocketInit.Extent.Text -join "`n") + @'
+
+try {
+    if ($profile -cne ($Result + '.profile') -or $outPath -cne ($Result + '.stdout') -or $errPath -cne ($Result + '.stderr') -or $null -ne $socket.Options.Proxy) {
+        throw 'Chromium proof paths or direct loopback socket configuration differ.'
+    }
+} finally { $socket.Dispose() }
+'@
+& ([scriptblock]::Create($cdpPathCheck))
+& $windowsPowerShell -NoProfile -NonInteractive -EncodedCommand ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cdpPathCheck)))
+if ($LASTEXITCODE -ne 0) { throw 'Native5.1 Chromium proof path assignment failed.' }
+Write-Host 'PASS Chromium proof paths/direct loopback configuration PowerShell7 and5.1; no network/browser/file effects'
+
 # An app appearance is optional: the same bundle validates with apps that have none, and with no apps at all. A copy of the
 # listed files gets each variant's manifest.json (outside the inventory), run as the real one is (5.1, -File).
 foreach ($variant in 'without appearance', 'without apps') {
@@ -893,7 +916,9 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
         'StepText', 'IsPackageTree', 'RemovePackageAsset', 'IndexRecord', 'ReadLedger', 'LedgerIds', 'NewLedgerIndex', 'AttemptOf',
         'PackageEffect', 'SeedHazard', 'WriteSeed', 'AppPathEffects', 'IsAppPathEffect', 'MachineAppPath', 'EffectClass', 'AppPathState',
         'ConvergeAppPath', 'CollectAppPathGarbage', 'ConvergeEffect', 'Classify', 'UndoOwned', 'SharedKey', 'ObserveKeyContent',
-        'ConvergeNocttyConfig','ApplyNocttyConfigOnly','PlatformDirectory','SharedDirectory'
+        'ConvergeNocttyConfig','ApplyNocttyConfigOnly','PlatformDirectory','SharedDirectory','PackageInUse','ExistingProblems','AssertPackageShape','TestWindowsRelative','PathsOverlap',
+        'AssertSuccessfulPackageGc','CollectPackageGarbage','TreeReferenceProblems'
+    $names += 'SnapshotInstallAccess','InitializeSnapshotInstallAccess','ClassifyPackage','FindUninstallEntries','PreflightPackages'
     $names += 'AppxEffect', 'ObserveAppx', 'IntroduceAppx', 'ConvergeApps', 'FetchBootstrap', 'AssertAppxManifest', 'AssertMicrosoftSignature'
     $names += 'PlatformEffect','ObservePlatformEffect','IntroducePlatform','IsPlatformEffect','IsHostEffect','HostProfile'
     $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $Root 'win.ps1'), [ref]$null, [ref]$null)
@@ -918,6 +943,7 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
     $fontDirectory, $fontSubkey = (Join-Path $Scratch 'fonts'), 'Software\Microsoft\Windows NT\CurrentVersion\Fonts'
     $fontKey = 'HKCU\' + $fontSubkey
     $appPathsSubkey = 'Software\Microsoft\Windows\CurrentVersion\App Paths'
+    $registryViews = @(@('HKCU', 'CurrentUser', 'Default'), @('HKLM', 'LocalMachine', 'Registry64'), @('HKLM32', 'LocalMachine', 'Registry32'))
     $nocttyDirectory = Join-Path $Scratch ('Programs\noctty-' + $manifest.noctty.version)
     $nocttySshConfig, $nocttyKnownHosts = (Join-Path $Scratch 'noctty\versapro.config'), (Join-Path $Scratch 'noctty\versapro.known_hosts')
     $nocttyFiles = [ordered]@{
@@ -928,6 +954,139 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
     $nocttyRegistration = Get-NocttyRegistration @(@{ key = "Software\Classes\CLSID\$clsid\LocalServer32"; name = ''; data = 'proof' }) $nocttyDirectory $manifest.noctty.files
     $script:ledgerRecords, $script:nextSeq, $script:recordsWritten, $script:copied, $script:changed, $script:removed = @(), 1, 0, 0, 0, 0
     $script:ledgerById = NewLedgerIndex
+    $snapshotShape = [pscustomobject]@{
+        name='Chromium'; version='158.0.8120.0.r123'; productVersion='158.0.8120.0'
+        url='https://storage.googleapis.com/chromium-browser-snapshots/Win_x64/123/chrome-win.zip'; format='zip'
+        directory='Programs/chromium-158.0.8120.0.r123'; executable='chrome-win/chrome.exe'
+        files=[pscustomobject]@{'chrome-win/chrome.exe'=('a'*64)}; protected=@()
+        existing=[pscustomobject]@{uninstallKey='Chromium';displayName='Chromium';publisher='The Chromium Authors';installLocation='Chromium/Application';executable='chrome.exe'}
+    }
+    AssertPackageShape $snapshotShape
+    foreach ($change in @(
+        @{productVersion='158.0.8121.0'},
+        @{url='https://storage.googleapis.com/chromium-browser-snapshots/Win_x64/124/chrome-win.zip'},
+        @{url='https://storage.googleapis.com/chromium-browser-snapshots/Linux_x64/123/chrome-win.zip'},
+        @{url='https://storage.googleapis.com.evil.test/chromium-browser-snapshots/Win_x64/123/chrome-win.zip'},
+        @{url='https://storage.googleapis.com/chromium-browser-snapshots/Win_x64/123/chrome-win.zip?x=1'}
+    )) {
+        $bad = $snapshotShape | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+        foreach ($key in $change.Keys) { $bad.$key=$change[$key] }
+        Refused { AssertPackageShape $bad } '*Snapshot productVersion/revision/URL identity differs*'
+    }
+    $legacyShape = $snapshotShape | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+    $legacyShape.PSObject.Properties.Remove('productVersion')
+    $legacyShape.url='https://github.com/example/browser/releases/download/v158/browser.zip'
+    AssertPackageShape $legacyShape
+    # Snapshot-only install-files access on synthetic public bytes. No browser,
+    # private data, real registry write or real package tree is touched here.
+    $capSaved = @{ packages=$manifest.packages; home=$localAppData; ledger=$ledgerDirectory
+        records=$script:ledgerRecords; index=$script:ledgerById; seq=$script:nextSeq; written=$script:recordsWritten }
+    $findEntries = (Get-Item Function:FindUninstallEntries).ScriptBlock
+    Set-Item Function:FindUninstallEntries { @() }
+    try {
+        $localAppData = Join-Path $Scratch 'snapshot-access'
+        $ledgerDirectory = Join-Path $localAppData 'ledger'
+        $capPrograms = Join-Path $localAppData 'Programs'
+        $null = [IO.Directory]::CreateDirectory($ledgerDirectory)
+        $null = [IO.Directory]::CreateDirectory($capPrograms)
+        $script:ledgerRecords, $script:ledgerById, $script:nextSeq, $script:recordsWritten = @(), (NewLedgerIndex), 1, 0
+        $capPackage = $snapshotShape | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+        $capPackage | Add-Member NoteProperty sha256 ('a' * 64)
+        $capPackage.files = [pscustomobject]@{ 'chrome-win/chrome.exe'=(Sha 'public exe'); 'chrome-win/resources.pak'=(Sha 'public resource') }
+        $manifest.packages = @($capPackage)
+        $capEffect = PackageEffect $capPackage
+        $capState = [pscustomobject]@{ package=$capPackage; effect=$capEffect; install=$true }
+        $capStaging = Staging $capEffect
+        $parentAcl = (Get-Acl -LiteralPath $capPrograms).Sddl
+        $capAbsent = SnapshotInstallAccess $capPackage $capEffect.target
+        Must ($capAbsent.applicable -and $capAbsent.state -ceq 'absent' -and $capAbsent.expected.accessMask -eq 0x1200a9 -and
+            $capAbsent.expected.inheritance -eq 3 -and $capAbsent.expected.sids.Count -eq 2) 'Snapshot access declares two exact RX inheritable capabilities'
+        Refused { InitializeSnapshotInstallAccess $capState $capStaging } '*fresh selected install intent*'
+        Must (-not (Test-Path -LiteralPath $capStaging)) 'no intent refuses before staging creation'
+        WriteRecord 'intent' $capEffect $null $capStaging $capPackage.name
+        $beforeAccessSeq = $script:nextSeq
+        InitializeSnapshotInstallAccess $capState $capStaging
+        $null = [IO.Directory]::CreateDirectory((Join-Path $capStaging 'chrome-win'))
+        [IO.File]::WriteAllText((Join-Path $capStaging 'chrome-win\chrome.exe'), 'public exe')
+        [IO.File]::WriteAllText((Join-Path $capStaging 'chrome-win\resources.pak'), 'public resource')
+        $capAccess = SnapshotInstallAccess $capPackage $capStaging
+        Must ($capAccess.converged -and $capAccess.observed.Count -eq 4 -and
+            $capAccess.observed[0].owner -ceq [Security.Principal.WindowsIdentity]::GetCurrent().User.Value -and
+            (Get-Acl -LiteralPath $capPrograms).Sddl -ceq $parentAcl -and $script:nextSeq -eq $beforeAccessSeq) 'new staging has current owner, exact descendant RX and unchanged parent ACL/ledger'
+        $capAcl = (Get-Acl -LiteralPath $capStaging).Sddl
+        Refused { InitializeSnapshotInstallAccess $capState $capStaging } '*fresh selected install intent*'
+        Must ((Get-Acl -LiteralPath $capStaging).Sddl -ceq $capAcl) 'existing staging is never rewritten'
+        [IO.Directory]::Move($capStaging, $capEffect.target)
+        WriteRecord 'commit' $capEffect (ObserveTree $capEffect.target)
+        $rootAcl, $exeAcl = (Get-Acl -LiteralPath $capEffect.target).Sddl, (Get-Acl -LiteralPath (Join-Path $capEffect.target $capPackage.executable)).Sddl
+        $noopSeq = $script:nextSeq
+        Must ((ClassifyPackage $capPackage).class -ceq 'owned-match' -and (SnapshotInstallAccess $capPackage $capEffect.target).converged -and
+            (SnapshotInstallAccess $capPackage $capEffect.target).converged -and $script:nextSeq -eq $noopSeq -and
+            (Get-Acl -LiteralPath $capEffect.target).Sddl -ceq $rootAcl -and (Get-Acl -LiteralPath (Join-Path $capEffect.target $capPackage.executable)).Sddl -ceq $exeAcl) 'same-input observation is ACL/file/ledger no-op'
+        $badCap = $capPackage | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+        $badCap.url = $badCap.url.Replace('/123/', '/999/')
+        Refused { SnapshotInstallAccess $badCap $capEffect.target } '*Snapshot productVersion/revision/URL identity differs*'
+        Refused { InitializeSnapshotInstallAccess $capState (Join-Path $capPrograms 'arbitrary.staging') } '*not this selected owned tree*'
+        Must (-not (SnapshotInstallAccess $legacyShape $capEffect.target).applicable) 'absent-field legacy retains its access contract'
+        # Deliberately remove one new capability from this synthetic owned tree;
+        # observation must refuse adoption, and never repair it in place.
+        $acl = Get-Acl -LiteralPath $capEffect.target
+        foreach ($rule in @($acl.GetAccessRules($true,$false,[Security.Principal.SecurityIdentifier]) | Where-Object {
+            $_.IdentityReference.Value -ceq $capAbsent.expected.sids[0] })) { $acl.RemoveAccessRuleSpecific($rule) }
+        # Preserve SID identities; Set-Acl on Windows PowerShell 5.1 may resolve
+        # an unrelated unmapped group through the domain before writing its DACL.
+        if ($PSVersionTable.PSEdition -ceq 'Desktop') { [IO.Directory]::SetAccessControl($capEffect.target, $acl) }
+        else { [IO.FileSystemAclExtensions]::SetAccessControl([IO.DirectoryInfo]::new($capEffect.target), $acl) }
+        $missingAcl = (Get-Acl -LiteralPath $capEffect.target).Sddl
+        $missing = ClassifyPackage $capPackage
+        Must ($missing.class -ceq 'owned-drift' -and -not $missing.installAccess.converged -and -not $missing.install) 'owned missing capabilities are read-only drift, not a reinstall'
+        Refused { PreflightPackages @($missing) } '*Packages stop the run before any effect*'
+        Refused { InitializeSnapshotInstallAccess $capState $capEffect.target } '*fresh selected install intent*'
+        Must ((Get-Acl -LiteralPath $capEffect.target).Sddl -ceq $missingAcl -and $script:nextSeq -eq $noopSeq) 'existing missing access remains unchanged'
+        # Another current intent whose exact staging already exists: refusal is
+        # before any ACL write, including the atomic-create collision path.
+        $existingPackage = $capPackage | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+        $existingPackage.version = '158.0.8120.0.r124'; $existingPackage.url = $existingPackage.url.Replace('/123/', '/124/')
+        $existingPackage.directory = 'Programs/chromium-' + $existingPackage.version
+        $manifest.packages = @($existingPackage)
+        $existingEffect = PackageEffect $existingPackage
+        $existingState = [pscustomobject]@{ package=$existingPackage; effect=$existingEffect; install=$true }
+        $existingStaging = Staging $existingEffect
+        WriteRecord 'intent' $existingEffect $null $existingStaging $existingPackage.name
+        $null = [IO.Directory]::CreateDirectory($existingStaging)
+        [IO.File]::WriteAllText((Join-Path $existingStaging 'marker.txt'), 'preexisting public fixture')
+        $existingAcl = (Get-Acl -LiteralPath $existingStaging).Sddl
+        Refused { InitializeSnapshotInstallAccess $existingState $existingStaging } '*fresh selected install intent*'
+        Must ((Get-Acl -LiteralPath $existingStaging).Sddl -ceq $existingAcl -and
+            [IO.File]::ReadAllText((Join-Path $existingStaging 'marker.txt')) -ceq 'preexisting public fixture' -and
+            (Get-Acl -LiteralPath $capPrograms).Sddl -ceq $parentAcl) 'preexisting staging/parent/bytes remain untouched'
+    } finally {
+        Set-Item Function:FindUninstallEntries $findEntries
+        $manifest.packages, $localAppData, $ledgerDirectory = $capSaved.packages, $capSaved.home, $capSaved.ledger
+        $script:ledgerRecords, $script:ledgerById, $script:nextSeq, $script:recordsWritten = $capSaved.records, $capSaved.index, $capSaved.seq, $capSaved.written
+    }
+
+    $oldLayout = Join-Path $Scratch 'Programs\chromium-158.0.8120.0.r111\Chrome-bin'
+    $null = [IO.Directory]::CreateDirectory($oldLayout)
+    $oldExe = Join-Path $oldLayout 'chrome.exe'
+    [IO.File]::WriteAllText($oldExe, 'synthetic exe for sharing test only')
+    $newLayoutPackage = [pscustomobject]@{ executable='chrome-win/chrome.exe'; productVersion='158.0.8120.0' }
+    $oldFiles = @{ 'Chrome-bin/chrome.exe' = (Sha 'synthetic exe for sharing test only') }
+    $hold = [IO.File]::Open($oldExe,'Open','Read','None')
+    try { Must (PackageInUse $newLayoutPackage (Split-Path $oldLayout -Parent) $oldFiles) 'old layout locked executable is still in use' }
+    finally { $hold.Dispose() }
+    Must (-not (PackageInUse $newLayoutPackage (Split-Path $oldLayout -Parent) $oldFiles)) 'old layout unlocked executable is not in use'
+    $oldDll = Join-Path $oldLayout 'loaded.dll'
+    [IO.File]::WriteAllText($oldDll,'synthetic locked library')
+    $dllFiles = @{'Chrome-bin/loaded.dll'=(Sha 'synthetic locked library')}
+    $hold = [IO.File]::Open($oldDll,'Open','Read','None')
+    try { Must (PackageInUse $newLayoutPackage (Split-Path $oldLayout -Parent) $dllFiles) 'old layout locked DLL is in use' }
+    finally { $hold.Dispose() }
+    Must (-not (PackageInUse $newLayoutPackage (Split-Path $oldLayout -Parent) $dllFiles)) 'file-only recorded inventory is checked without requiring an exe'
+    Refused { PackageInUse $newLayoutPackage (Split-Path $oldLayout -Parent) 'unknown' } '*recorded file inventory*'
+
+    Must (@(ExistingProblems ([pscustomobject]@{}) $newLayoutPackage | Where-Object { $_ -like '*revision/inventory is unknown*' }).Count -eq 1) 'foreign same-version Snapshot is never automatically adopted'
+
     $null = New-Item -ItemType Directory -Path $ledgerDirectory, (Join-Path $Scratch 'Programs'), (Split-Path -Parent $nocttyConfig) -Force
     $selected = NocttyEffects
     & {
@@ -965,6 +1124,107 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
         $ledgerDirectory = $savedLedger
         $script:ledgerRecords, $script:ledgerById, $script:nextSeq = $savedRecords, $savedIndex, $savedSeq
         $script:recordsWritten, $script:copied, $script:changed, $script:removed = $savedWritten, $savedCopied, $savedChanged, $savedRemoved
+    }
+
+    # A GC approval applies to a successful current committed generation only.
+    # Synthetic trees/ledger live in this disposable proof scratch, never host apps.
+    $savedLedger, $savedRecords, $savedIndex = $ledgerDirectory, $script:ledgerRecords, $script:ledgerById
+    $savedSeq, $savedWritten, $savedRemoved = $script:nextSeq, $script:recordsWritten, $script:removed
+    $savedPackages = @($manifest.packages)
+    $savedDrift = @(Get-Variable packageDrift -Scope Script -ValueOnly -ErrorAction SilentlyContinue)
+    $gcAppName = 'gc-proof-' + [guid]::NewGuid().ToString('N') + '.exe'
+    $gcAppKey = "$appPathsSubkey\$gcAppName"
+    try {
+        $PreserveIncomplete = $true
+        $SuccessfulGcTarget, $SuccessfulGcEffectId, $SuccessfulGcIntentSeq = '', '', 0
+        $script:successfulGcConsumed, $script:packageDrift = $false, @()
+        $ledgerDirectory = Join-Path $Scratch 'successful-gc-ledger'
+        $null = [IO.Directory]::CreateDirectory($ledgerDirectory)
+        $script:ledgerRecords, $script:nextSeq, $script:recordsWritten, $script:removed = @(), 1, 0, 0
+        $script:ledgerById = NewLedgerIndex
+        $gcPackage = [pscustomobject]@{ name='GcProof'; executable='chrome-win/chrome.exe'; appPath=$gcAppName }
+        $manifest.packages = @($savedPackages) + @($gcPackage)
+        # This unrelated valid record is not ownership this collector handles.
+        # Filtering by package metadata must precede OpenAttempt's prior guard.
+        $unrelatedPath = Join-Path $Scratch 'unrelated-replaced.txt'
+        $unrelated = [ordered]@{ id=('file-replaced:' + $unrelatedPath.ToUpperInvariant()); kind='file-replaced'; target=$unrelatedPath
+            prior=@{ exists=$true; sha256=(Sha 'before'); backup=(Join-Path $Scratch 'unrelated-backup.txt') }
+            desired=@{ exists=$true; sha256=(Sha 'after') } }
+        WriteRecord 'intent' $unrelated $null
+        Refused { OpenAttempt $unrelated.id } '*target that existed before*'
+        function GcTree([string]$Version, [string]$Content, [switch]$Pending) {
+            $effect = Tree "gcproof-$Version" @{ 'old.txt'=(Sha $Content); 'loaded.dll'=(Sha 'library') }
+            WriteRecord 'intent' $effect $null (Staging $effect)
+            $null = [IO.Directory]::CreateDirectory($effect.target)
+            [IO.File]::WriteAllText((Join-Path $effect.target 'old.txt'), $Content, [Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText((Join-Path $effect.target 'loaded.dll'), 'library', [Text.UTF8Encoding]::new($false))
+            if (-not $Pending) { WriteRecord 'commit' $effect (ObserveTree $effect.target) }
+            $effect
+        }
+        $selectedGc = GcTree '2' 'selected'
+        $oldGc = GcTree '1' 'original' -Pending
+        $gcState = [pscustomobject]@{ package=$gcPackage; effect=$selectedGc }
+        $SuccessfulGcTarget, $SuccessfulGcEffectId = $oldGc.target, $oldGc.id
+        $SuccessfulGcIntentSeq = @(OpenAttempt $oldGc.id)[0].seq
+        Refused { CollectPackageGarbage $gcState } '*not committed*'
+        WriteRecord 'commit' $oldGc (ObserveTree $oldGc.target)
+        $savedApprovalTarget = $SuccessfulGcTarget
+        $SuccessfulGcTarget = ''
+        Refused { CollectPackageGarbage $gcState } '*approval is absent*'
+        $SuccessfulGcTarget = $savedApprovalTarget
+        $approvedSeq = $SuccessfulGcIntentSeq
+        $SuccessfulGcIntentSeq++
+        Refused { CollectPackageGarbage $gcState } '*identity/committed generation differs*'
+        $SuccessfulGcIntentSeq = $approvedSeq
+        $SuccessfulGcEffectId = $selectedGc.id
+        Refused { CollectPackageGarbage $gcState } '*identity/committed generation differs*'
+        $SuccessfulGcEffectId = $oldGc.id
+        $SuccessfulGcTarget = Join-Path $oldGc.target '..\gcproof-1'
+        Refused { CollectPackageGarbage $gcState } '*identity/committed generation differs*'
+        $SuccessfulGcTarget = $oldGc.target
+        $lock = [IO.File]::Open((Join-Path $oldGc.target 'loaded.dll'), 'Open', 'Read', 'None')
+        try { Refused { CollectPackageGarbage $gcState } '*blocked old generation*' }
+        finally { $lock.Dispose() }
+        $foreign = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($gcAppKey)
+        try { $foreign.SetValue('', (Join-Path $oldGc.target 'old.txt')) } finally { $foreign.Close() }
+        try { Refused { CollectPackageGarbage $gcState } '*blocked old generation*' }
+        finally { [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKey($gcAppKey) }
+        [IO.File]::WriteAllText((Join-Path $oldGc.target 'foreign.txt'), 'foreign')
+        Refused { CollectPackageGarbage $gcState } '*blocked old generation*'
+        [IO.File]::Delete((Join-Path $oldGc.target 'foreign.txt'))
+        Must ([IO.File]::ReadAllText((Join-Path $oldGc.target 'old.txt')) -ceq 'original') 'refusals precede any old-tree removal'
+        $script:packageDrift = @()
+        $openFirst = @(OpenAttempt $oldGc.id)[0]
+        $observations = @{}; $observations[$oldGc.id] = ObserveTree $oldGc.target
+        $gcPlan = Get-UninstallPlan @(RecordsOf $oldGc.id) $observations
+        Refused { UndoOwnedSteps @(OrderedSteps $gcPlan) } '*Owned tree removal retained*'
+        CollectPackageGarbage $gcState
+        Must ($script:successfulGcConsumed -and -not [IO.Directory]::Exists($oldGc.target) -and
+            @(OpenAttempt $oldGc.id).Count -eq 0) 'one approved successful old generation is removed and closed'
+        Refused { AssertSuccessfulPackageGc $openFirst @(OrderedSteps $gcPlan) } '*already consumed*'
+        # Same path/id, new contents and first intent seq: an old approval never
+        # authorizes its reappearance, and the current inventory must be used.
+        $again = GcTree '1' 'recreated'
+        $script:successfulGcConsumed = $false
+        Refused { CollectPackageGarbage $gcState } '*identity/committed generation differs*'
+        $SuccessfulGcIntentSeq = @(OpenAttempt $again.id)[0].seq
+        $secondOld = GcTree '3' 'another old generation'
+        Refused { CollectPackageGarbage $gcState } '*identity/committed generation differs*'
+        Must ([IO.File]::ReadAllText((Join-Path $again.target 'old.txt')) -ceq 'recreated' -and
+            [IO.Directory]::Exists($secondOld.target)) 'a mixed unapproved tree stops before the first deletion'
+        # The same existing plan remains usable for normal legacy GC when
+        # PreserveIncomplete was never requested.
+        $PreserveIncomplete = $false
+        CollectPackageGarbage $gcState
+        Must (-not [IO.Directory]::Exists($again.target) -and -not [IO.Directory]::Exists($secondOld.target)) 'legacy successful GC retains its default behavior and current inventories'
+    } finally {
+        $PreserveIncomplete = $false
+        $SuccessfulGcTarget, $SuccessfulGcEffectId, $SuccessfulGcIntentSeq = '', '', 0
+        $script:successfulGcConsumed = $false
+        $manifest.packages = $savedPackages
+        $ledgerDirectory = $savedLedger
+        $script:ledgerRecords, $script:ledgerById, $script:nextSeq = $savedRecords, $savedIndex, $savedSeq
+        $script:recordsWritten, $script:removed, $script:packageDrift = $savedWritten, $savedRemoved, $savedDrift
     }
 
     # The whole entry list is checked before anything is written.
@@ -1139,14 +1399,26 @@ public static string[] Split(string cmd) {
         @{ executable = $chromium.executable; files = $Files; protected = $Protected; seed = $seed }
     }
     function WithFile([string]$Name) { $files = @{ $Name = $shaA }; foreach ($p in $chromium.files.PSObject.Properties) { $files[$p.Name] = $p.Value }; $files }
-    $seedBad = @((SeedVariant @{ path = 'Chrome-bin/Initial_Preferences' }), (SeedVariant @{ path = 'initial_preferences' }),
-        (SeedVariant @{ path = 'Chrome-bin/master_preferences' }), (SeedVariant @{ sha256 = (Sha 'other') }), (SeedVariant @{ sha256 = $chromium.seed.sha256.ToUpperInvariant() }),
+    $seedParent = $chromium.executable.Substring(0, $chromium.executable.LastIndexOf('/') + 1)
+    $seedBad = @((SeedVariant @{ path = ($seedParent + 'Initial_Preferences') }), (SeedVariant @{ path = 'initial_preferences' }),
+        (SeedVariant @{ path = ($seedParent + 'master_preferences') }), (SeedVariant @{ sha256 = (Sha 'other') }), (SeedVariant @{ sha256 = $chromium.seed.sha256.ToUpperInvariant() }),
         (SeedVariant @{ size = 0 }), (SeedVariant @{ size = '1' }), (SeedVariant @{ file = 'payload/noctty.zip' }), (SeedVariant @{ file = '../x' }),
-        (SeedVariant @{} (WithFile 'Chrome-bin/initial_preferences')), (SeedVariant @{} (WithFile 'chrome-bin/Master_Preferences')),
-        (SeedVariant @{} (WithFile 'Chrome-bin/initial_preferences/x')), (SeedVariant @{} $chromium.files @()),
+        (SeedVariant @{} (WithFile ($seedParent + 'initial_preferences'))), (SeedVariant @{} (WithFile ($seedParent.ToLowerInvariant() + 'Master_Preferences'))),
+        (SeedVariant @{} (WithFile ($seedParent + 'initial_preferences/x'))), (SeedVariant @{} $chromium.files @()),
         (SeedVariant @{} $chromium.files @('Chromium/User Data', 'Chromium/Other')))
     $accepted = @($seedBad | Where-Object { $null -eq (Get-SeedProblem $_ $manifest.files) })
     Must ($accepted.Count -eq 0 -and $null -eq (Get-SeedProblem (SeedVariant @{}) $manifest.files)) "every broken seed is refused ($($accepted.Count) accepted)"
+    # Both supported layouts obey the same beside-executable seed rule.
+    foreach ($parent in @('Chrome-bin/', 'chrome-win/')) {
+        $baseFiles = @{ ($parent + 'chrome.exe') = $shaA }
+        $shape = @{ executable = ($parent + 'chrome.exe'); files = $baseFiles; protected = @('Chromium/User Data')
+            seed = @{ path = ($parent + 'initial_preferences'); file = $chromium.seed.file; sha256 = $chromium.seed.sha256; size = $chromium.seed.size } }
+        Must ($null -eq (Get-SeedProblem $shape $manifest.files)) 'both legacy and Snapshot layouts accept a coherent seed'
+        foreach ($conflict in @('initial_preferences', 'Master_Preferences', 'initial_preferences/x')) {
+            $shape.files = @{ ($parent + 'chrome.exe') = $shaA; ($parent + $conflict) = $shaA }
+            Must ($null -ne (Get-SeedProblem $shape $manifest.files)) 'both layouts refuse seed/legacy/child inventory collisions'
+        }
+    }
     # The owned tree is the inventory and the seed, so a tree recorded from the inventory alone is another selection (C1).
     $chromiumEffect = PackageEffect $chromium
     Must ($chromiumEffect.desired.files.Count -eq @($chromium.files.PSObject.Properties).Count + 1 -and
@@ -1154,23 +1426,25 @@ public static string[] Split(string cmd) {
         -not (Test-EffectStateEqual 'tree-extracted' @{ exists = $true; files = $chromium.files } $chromiumEffect.desired)) 'the owned tree: the inventory and the seed'
     # A small seeded stand-in: the archive listing is checked against the inventory alone (a seed in the archive is
     # refused); staging is the owned tree only once WriteSeed has written the verified bundle bytes, as a new file.
-    $mini = [pscustomobject]@{ name = 'Chromium'; version = '9.9'; directory = 'Programs/chromium-9.9'; executable = 'Chrome-bin/chrome.exe'
-        files = [pscustomobject]@{ 'Chrome-bin/chrome.exe' = (Sha 'exe') }; protected = @('Chromium/User Data'); seed = $chromium.seed }
+    $mini = [pscustomobject]@{ name = 'Chromium'; version = '9.9'; directory = 'Programs/chromium-9.9'; executable = $chromium.executable
+        files = [pscustomobject]@{ $chromium.executable = (Sha 'exe') }; protected = @('Chromium/User Data'); seed = $chromium.seed }
     $miniEffect = PackageEffect $mini
-    $listing = @(ConvertFrom-TarListing @('Chrome-bin/', 'Chrome-bin/chrome.exe', '') $mini.files)
+    $listing = @(ConvertFrom-TarListing @($seedParent, $mini.executable, '') $mini.files)
     Must ($null -eq (Get-ZipEntryProblem $listing $mini.files) -and $null -ne (Get-ZipEntryProblem $listing $miniEffect.desired.files) -and
-        $null -ne (Get-ZipEntryProblem @($listing + 'Chrome-bin/initial_preferences') $mini.files)) 'the listing is the inventory alone'
+        $null -ne (Get-ZipEntryProblem @($listing + $mini.seed.path) $mini.files)) 'the listing is the inventory alone'
     $miniStage = Staging $miniEffect
-    $null = New-Item -ItemType Directory -Path "$miniStage\Chrome-bin"
-    [IO.File]::WriteAllText("$miniStage\Chrome-bin\chrome.exe", 'exe')
+    $miniExe = Join-Path $miniStage $mini.executable.Replace('/', '\')
+    $miniSeed = Join-Path $miniStage $mini.seed.path.Replace('/', '\')
+    $null = New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($miniExe))
+    [IO.File]::WriteAllText($miniExe, 'exe')
     $forged = Join-Path $Scratch "forged-seed-$([guid]::NewGuid().ToString('N'))"
     [IO.File]::WriteAllText($forged, '{"webkit":{}}')
     Must (-not (Test-EffectStateEqual 'tree-extracted' $miniEffect.desired (ObserveTree $miniStage))) 'staging without its seed is not the owned tree'
     Refused { WriteSeed $chromium.seed $forged $miniStage } '*is not the manifest''s*'
-    Must (-not (Test-Path -LiteralPath "$miniStage\Chrome-bin\initial_preferences")) 'a seed differing from the manifest writes nothing'
+    Must (-not (Test-Path -LiteralPath $miniSeed)) 'a seed differing from the manifest writes nothing'
     WriteSeed $chromium.seed $seedSource $miniStage
     Must ((Test-EffectStateEqual 'tree-extracted' $miniEffect.desired (ObserveTree $miniStage)) -and
-        (Get-FileHash -LiteralPath "$miniStage\Chrome-bin\initial_preferences").Hash -eq $chromium.seed.sha256) 'staging with its seed is exactly the owned tree'
+        (Get-FileHash -LiteralPath $miniSeed).Hash -eq $chromium.seed.sha256) 'staging with its seed is exactly the owned tree'
     Refused { WriteSeed $chromium.seed $seedSource $miniStage } '*exists*'
     # Interrupted after the seed was written: recovery voids the intent and removes the seed with the staging.
     WriteRecord 'intent' $miniEffect $null $miniStage 'Chromium'
@@ -3150,7 +3424,7 @@ if (-not (Test-Path -LiteralPath $foreignTemp)) { throw 'A temporary file no int
 [IO.File]::Delete($foreignTemp)
 
 # ---- A23-A29: locked packages through the effect ledger. AutoHotkey (3 MB ZIP) is downloaded once, and
-# Chromium (7z) once, in A29 after every stand-in of A24-A28 is gone. The proof's own stand-ins
+# Chromium (the locked archive) once, in A29 after every stand-in of A24-A28 is gone. The proof's own stand-ins
 # (an Uninstall entry, a profile, crafted records) are removed again one entry at a time.
 $ahk = @($manifest.packages | Where-Object { $_.name -ceq 'AutoHotkey' })[0]
 $chromium = @($manifest.packages | Where-Object { $_.name -ceq 'Chromium' })[0]
@@ -3388,9 +3662,9 @@ $standInDesired = @{ exists = $true; files = @{ $chromium.executable = (Get-File
 Craft @{ phase = 'intent'; id = $chromiumId; kind = 'tree-extracted'; target = $chromiumTree; prior = $absent; desired = $standInDesired; package = 'Chromium' }
 Craft @{ phase = 'commit'; id = $chromiumId; kind = 'tree-extracted'; target = $chromiumTree; prior = $absent; desired = $standInDesired; observed = $standInDesired }
 $mark = LastSeq
-MustReject { ApplyPackages 'Chromium' } '*Packages stop the run before any effect: Chromium 154*installed for another inventory or seed*'
+MustReject { ApplyPackages 'Chromium' } "*Packages stop the run before any effect: Chromium $($chromium.version)*installed for another inventory or seed*"
 [IO.File]::Delete($sentinel)
-MustReject { ApplyPackages 'Chromium' } '*Packages stop the run before any effect: Chromium 154*without its First Run sentinel*do not start this Chromium*'
+MustReject { ApplyPackages 'Chromium' } "*Packages stop the run before any effect: Chromium $($chromium.version)*without its First Run sentinel*do not start this Chromium*"
 Must ((LastSeq) -eq $mark -and (Phases $chromiumId) -ceq 'intent,commit' -and (Test-Path -LiteralPath $standIn) -and
     [IO.File]::ReadAllText($preferences) -ceq $restored) 'A28: C1 stops an owned Chromium before any effect; the profile is only read'
 # A27: Uninstall leaves everything alone while a package executable is in use; closed, it removes every owned
@@ -3412,8 +3686,8 @@ SetSlotValue 'caption' $captionBytes
 Must ((MetricsText (Metrics)) -ceq (MetricsText $uiBefore)) 'A31: the runner''s WindowMetrics are its own again'
 
 # ---- A29 (b3b): the locked Chromium, installed for real (downloaded once), owned, first run, and removed ----
-# Here A27 has removed the stand-in 154 tree and every owned effect; the proof's stand-in profile keeps its restored
-# Default\Preferences, and First Run is written beside it, so R1 (the history of 153 and of the closed stand-in 154)
+# Here A27 has removed the selected-version stand-in tree and every owned effect; the proof's stand-in profile keeps its restored
+# Default\Preferences, and First Run is written beside it, so R1 (the history of 153 and of the closed selected-version stand-in)
 # and O1 (a sentinel is present) both let Chromium install over an existing profile, which is never written.
 [IO.File]::WriteAllText($sentinel, '')
 function ProfileKept { (Test-Path -LiteralPath "$chromiumProfile\proof.txt") -and (Test-Path -LiteralPath $sentinel) -and [IO.File]::ReadAllText($preferences) -ceq $restored }
@@ -3715,16 +3989,40 @@ try {
 function Ours($Observations) { @($Observations | Where-Object { $_.class -cin @('tree', 'descendant') }) }
 # Waits up to $Seconds for every tree and descendant process to end (noting when $Browser, the launched process, ended);
 # then kills only those, once, and checks for 5 s that they are gone. Unknown ones are never killed, only reported.
-function SettleChromium([int]$Seconds, $Browser) {
+function SettleChromium([int]$Seconds, $Browser, [switch]$CloseMainWindows) {
     $clock, $browserEnded = [Diagnostics.Stopwatch]::StartNew(), $null
+    $closeRequests, $closeErrors = @(), @()
+    $closedHandles = [Collections.Generic.HashSet[long]]::new()
+    $windowLeft = $false
     do {
+        # A first-run window can appear after an earlier window disappeared. Observe
+        # the same launched browser throughout this existing deadline, never another PID.
+        if ($CloseMainWindows -and $Browser) {
+            try {
+                $Browser.Refresh()
+                $windowLeft = -not $Browser.HasExited -and $Browser.MainWindowHandle -ne [IntPtr]::Zero
+                if ($windowLeft -and $closedHandles.Count -lt 5 -and $closedHandles.Add($Browser.MainWindowHandle.ToInt64())) {
+                    $title, $handle = [string]$Browser.MainWindowTitle, $Browser.MainWindowHandle.ToInt64()
+                    $accepted = $Browser.CloseMainWindow()
+                    $closeRequests += [pscustomobject]@{ seconds = [Math]::Round($clock.Elapsed.TotalSeconds, 1)
+                        handle = $handle; title = $title; accepted = $accepted }
+                }
+            } catch { $windowLeft = $null; $closeErrors += $_.Exception.Message }
+        }
         $live = B3aPoll
         if ($Browser -and $null -eq $browserEnded -and $Browser.HasExited) { $browserEnded = [Math]::Round($clock.Elapsed.TotalSeconds, 1) }
         if (-not @(Ours $live).Count) { break }
         Start-Sleep -Milliseconds 500
     } while ($clock.Elapsed.TotalSeconds -lt $Seconds)
+    if ($CloseMainWindows -and $Browser) {
+        try {
+            $Browser.Refresh()
+            $windowLeft = -not $Browser.HasExited -and $Browser.MainWindowHandle -ne [IntPtr]::Zero
+        } catch { $windowLeft = $null; $closeErrors += $_.Exception.Message }
+    }
     $settle = [pscustomobject]@{ endedAll = -not @(Ours $live).Count; seconds = [Math]::Round($clock.Elapsed.TotalSeconds, 1)
-        watched = $null -ne $Browser; browserEnded = $browserEnded; killed = @(); survivors = @(); unknown = @() }
+        watched = $null -ne $Browser; browserEnded = $browserEnded; killed = @(); survivors = @(); unknown = @()
+        closeRequests = $closeRequests; closeErrors = $closeErrors; windowLeft = $windowLeft }
     if (-not $settle.endedAll) {
         $settle.killed = @(Ours $live | ForEach-Object { "$($_.type)[$($_.id)<$($_.parent)]" })
         foreach ($process in (Ours $live)) { try { Stop-Process -Id $process.id -Force -ErrorAction Stop } catch { } }
@@ -3858,6 +4156,11 @@ $b3aStops = [Collections.Generic.List[string]]::new()
 try {
     $b3aPackage, $b3aTree = $chromium, $chromiumTree
     $b3aExe = Join-Path $b3aTree $b3aPackage.executable.Replace('/', '\')
+    # Public distribution paths only; diagnostic evidence, no ACL writes or sandbox flags.
+    $b3a.installAcl = @(foreach ($path in @($b3aTree, $b3aExe)) {
+        $acl = Get-Acl -LiteralPath $path -ErrorAction Stop
+        [ordered]@{ path = $path; sddl = $acl.Sddl }
+    }) | ConvertTo-Json -Depth 4 -Compress
     $b3aDir = Join-Path $env:RUNNER_TEMP ('b3a-' + [guid]::NewGuid().ToString('N'))  # fresh, never deleted
     $null = New-Item -ItemType Directory -Path $b3aDir
     $seedSource = Join-Path $PSScriptRoot $b3aPackage.seed.file.Replace('/', '\')
@@ -3887,11 +4190,13 @@ try {
         $browser = StartChromium @("--user-data-dir=$userData", $pageUrl)
         $seconds = WaitFor { (Test-Path -LiteralPath (Join-Path $userData 'First Run')) -and (Test-Path -LiteralPath (Join-Path $userData 'Default\Preferences')) } $wait
         Start-Sleep -Seconds 2  # the page renders with the profile's fonts
-        $windows = CloseWindows $browser
-        # A window still there after the closing (one that did not close, or a sixth) is an observed reason to stay.
-        $windowLeft = try { $browser.Refresh(); -not $browser.HasExited -and $browser.MainWindowHandle -ne [IntPtr]::Zero } catch { $false }
-        $settle = SettleChromium 45 $browser
-        $b3a.firstRun = "First Run and Default\Preferences $(if ($null -ne $seconds) { "after $seconds s" } else { "NOT BOTH within $wait s" }); sent $($windows.Count) close request(s) to windows $(Few @($windows | ForEach-Object { "'$_'" })); $(if ($windowLeft) { 'a WINDOW IS LEFT' } else { 'no window left' }); $(SettleText $settle)"
+        $settle = SettleChromium 45 $browser -CloseMainWindows
+        $windows = @($settle.closeRequests | ForEach-Object { $_.title })
+        $windowLeft = $settle.windowLeft  # last observation before any CI cleanup, never after a forced kill
+        $b3a.firstRunCloseRequests = ConvertTo-Json -InputObject @($settle.closeRequests) -Depth 3 -Compress
+        $b3a.firstRunCloseErrors = ConvertTo-Json -InputObject @($settle.closeErrors) -Compress
+        if ($settle.closeErrors.Count) { $b3aStops.Add('first-run window observation/close failed') }
+        $b3a.firstRun = "First Run and Default\Preferences $(if ($null -ne $seconds) { "after $seconds s" } else { "NOT BOTH within $wait s" }); sent $($windows.Count) close request(s) to windows $(Few @($windows | ForEach-Object { "'$_'" })); $(if ($null -eq $windowLeft) { 'window state UNOBSERVED' } elseif ($windowLeft) { 'a WINDOW IS LEFT' } else { 'no window left' }); $(SettleText $settle)"
         $b3a.firstRunSentinel = $(if (Test-Path -LiteralPath (Join-Path $userData 'First Run')) { 'present' } else { 'ABSENT' })
         $b3a.firstRunPreferences = SeedPreferences (Join-Path $userData 'Default\Preferences')
         $background = try { Get-Field (Get-Field ([IO.File]::ReadAllText((Join-Path $userData 'Local State')) | ConvertFrom-Json -AsHashtable) 'background_mode') 'enabled' } catch { 'unreadable' }
@@ -4301,7 +4606,7 @@ if ($g4.status -cne 'measured' -or (Get-Field $g4 'gate') -cne 'pass' -or $g4.st
     noctty = 'native owned tree, configuration, COM keys and values and the default-terminal selection through Apply and Uninstall (A15-A21)'
     appPathsLaunch = $appPathsLaunch
     platform = $platformAssetProof; platformRuntime = 'unproven'; platformInstallation = 'notPerformed'; platformRemoval = 'held'
-    scope = 'current-user owned fonts, Noctty, SSH client and locked packages (AutoHotkey ZIP and Chromium 7z with its font seed: install, ownership, its App Paths registration' + $(if ($appPathsLaunch -ceq 'proven') { ' and its resolution by ShellExecute' } else { '; App Paths launch unproven on this elevated runner, VM S7 required' }) + ', first run on scratch profiles, Uninstall) on an elevated Windows Server runner with Windows Terminal 1.23; not Restore (activation, package view, rollback), a clean unelevated Windows 11 user, Chromium on the default profile or started from Win+R itself, default-terminal handoff, real-host UX or a Cloudflare connection' } | ConvertTo-Json
+    scope = 'current-user owned fonts, Noctty, SSH client and locked packages (AutoHotkey ZIP and Chromium locked archive with its font seed: install, ownership, its App Paths registration' + $(if ($appPathsLaunch -ceq 'proven') { ' and its resolution by ShellExecute' } else { '; App Paths launch unproven on this elevated runner, VM S7 required' }) + ', first run on scratch profiles, Uninstall) on an elevated Windows Server runner with Windows Terminal 1.23; not Restore (activation, package view, rollback), a clean unelevated Windows 11 user, Chromium on the default profile or started from Win+R itself, default-terminal handoff, real-host UX or a Cloudflare connection' } | ConvertTo-Json
 # All expected failing children were checked above; the completed proof owns
 # its success exit instead of inheriting the last negative child's status.
 exit 0
