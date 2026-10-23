@@ -116,6 +116,21 @@ function CallCdp($Method,$Parameters=@{},$Session=$null) {
     } while ([DateTime]::UtcNow -lt $deadline)
     throw 'CDP response timeout; preserve attempt'
 }
+function CreditsEvidence($v) {
+    if ($v.href -cne 'chrome://credits/' -or $v.ready -cne 'complete' -or $v.title -cne 'Credits') { return $null }
+    $text=[string]$v.text
+    $full=($v.pageTitle -ceq 'Credits' -and $v.products -gt 0 -and
+        $v.licenseBlocks -eq $v.products -and $v.completeProducts -eq $v.products -and $text.Length -gt 1000)
+    if ($full) {
+        return [ordered]@{ availability='bundled-full-credits'; fullCreditsAvailable=$true; textKind='license-textContent'; sha256=(-join ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($text)) | ForEach-Object {$_.ToString('x2')})) }
+    }
+    $sample=($v.pageTitle -ceq '' -and $v.products -eq 0 -and $v.licenseBlocks -eq 0 -and $v.completeProducts -eq 0 -and
+        $text -ceq '' -and $v.sampleLinkCount -eq 1 -and $v.sampleLinkTag -ceq 'A' -and $v.sampleLinkHref -ceq '#' -and
+        $v.sampleLinkText -ceq 'Print' -and $v.sampleText -ceq 'This is sample credits page. To get correct credits page, set `generate_about_credits=true` in args.gn. Print Layout tests are based on layout tests from webkit.org.')
+    if (-not $sample) { return $null }
+    return [ordered]@{ availability='sample-only'; fullCreditsAvailable=$false; textKind='normalized-sample-body-textContent'; sha256=(-join ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes([string]$v.sampleText)) | ForEach-Object {$_.ToString('x2')})); expectedSourceSampleSha256='c2a338c4f1f5f5e19d3020a25f8dc47e394ba4fed1ec2d8dc5b2a915170e02bc' }
+}
+
 $code = 1
 try {
     # Pre-create and verify the new path so install_static cannot fall back to
@@ -173,8 +188,8 @@ try {
     if ($evaluation.result.value.title -cne 'resources-chromium-proof' -or $evaluation.result.value.value -ne 42 -or $evaluation.result.value.body -cne 'snapshot-proof') { throw 'Fixed page failed' }
     $tab=CallCdp 'Target.createTarget' @{url='chrome://credits/'}
     $session=(CallCdp 'Target.attachToTarget' @{targetId=$tab.targetId;flatten=$true}).sessionId
-    # Match the compiled upstream WebUI, including CSS-hidden license text.
-    $creditsExpression = "(() => { const products = Array.from(document.querySelectorAll('.product')); const licenses = Array.from(document.querySelectorAll('.product .license pre')); return {href: location.href, title: document.title, ready: document.readyState, pageTitle: document.querySelector('.page-title')?.textContent.trim() || '', products: products.length, licenseBlocks: licenses.length, completeProducts: products.filter(p => p.querySelector('.title')?.textContent.trim() && p.querySelectorAll('.license pre').length === 1 && p.querySelector('.license pre').textContent.trim()).length, text: licenses.map(p => p.textContent).join(String.fromCharCode(10))}; })()"
+    # Distinguish full credits from the exact upstream Snapshot sample; preserve its limitation.
+    $creditsExpression = "(() => { const products = Array.from(document.querySelectorAll('.product')); const licenses = Array.from(document.querySelectorAll('.product .license pre')); return {href: location.href, title: document.title, ready: document.readyState, pageTitle: document.querySelector('.page-title')?.textContent.trim() || '', products: products.length, licenseBlocks: licenses.length, completeProducts: products.filter(p => p.querySelector('.title')?.textContent.trim() && p.querySelectorAll('.license pre').length === 1 && p.querySelector('.license pre').textContent.trim()).length, text: licenses.map(p => p.textContent).join(String.fromCharCode(10)), sampleText: document.body?.textContent.replace(/\s+/g, ' ').trim() || '', sampleLinkCount: document.querySelectorAll('#print-link').length, sampleLinkTag: document.querySelector('#print-link')?.tagName || '', sampleLinkHref: document.querySelector('#print-link')?.getAttribute('href') || '', sampleLinkText: document.querySelector('#print-link')?.textContent.trim() || '', sampleLinkHidden: document.querySelector('#print-link')?.hidden ?? null}; })()"
     $credits=''; $creditsReady=$false
     $deadline=[DateTime]::UtcNow.AddSeconds(30)
     while ([DateTime]::UtcNow -lt $deadline) {
@@ -182,16 +197,15 @@ try {
         $valueProperty=$answer.result.PSObject.Properties['value']
         if ($null -ne $valueProperty -and $null -ne $valueProperty.Value) {
             $v=$valueProperty.Value; $credits=[string]$v.text
-            $receipt.credits=[ordered]@{href=$v.href;title=$v.title;ready=$v.ready;pageTitle=$v.pageTitle;products=$v.products;licenseBlocks=$v.licenseBlocks;completeProducts=$v.completeProducts;characters=$credits.Length}
-            $creditsReady=($v.href -ceq 'chrome://credits/' -and $v.ready -ceq 'complete' -and
-                $v.title -ceq 'Credits' -and $v.pageTitle -ceq 'Credits' -and $v.products -gt 0 -and
-                $v.licenseBlocks -eq $v.products -and $v.completeProducts -eq $v.products -and $credits.Length -gt 1000)
+            $receipt.credits=[ordered]@{href=$v.href;title=$v.title;ready=$v.ready;pageTitle=$v.pageTitle;products=$v.products;licenseBlocks=$v.licenseBlocks;completeProducts=$v.completeProducts;characters=$credits.Length;sampleLinkCount=$v.sampleLinkCount;sampleLinkTag=$v.sampleLinkTag;sampleLinkHref=$v.sampleLinkHref;sampleLinkText=$v.sampleLinkText;sampleLinkHidden=$v.sampleLinkHidden}
+            $evidence=CreditsEvidence $v
+            $creditsReady=$null -ne $evidence
+            if ($creditsReady) { foreach ($key in $evidence.Keys) { $receipt.credits[$key]=$evidence[$key] } }
             if ($creditsReady) { break }
         }
         Start-Sleep -Milliseconds 100
     }
-    if (-not $creditsReady) { throw 'Bundled third-party credits structure/content unavailable' }
-    $receipt.credits.sha256=(-join ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($credits)) | ForEach-Object {$_.ToString('x2')}))
+    if (-not $creditsReady) { throw 'Unrecognized credits page; neither full credits nor the exact upstream sample' }
     $closeRequested=$true
     $null=SendCdp 'Browser.close' @{} $null
     if (-not $process.WaitForExit(15000)) { throw 'Owned browser close UNKNOWN; preserve instance/profile' }

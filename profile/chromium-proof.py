@@ -120,6 +120,31 @@ def plain_ancestors(path):
         if parent.is_symlink():
             raise ValueError(f"Symlink ancestor: {parent}")
 
+def credits_evidence(observation):
+    """Classify only the real credits DOM or the exact upstream Snapshot sample."""
+    if not (observation.get("href") == "chrome://credits/" and
+            observation.get("ready") == "complete" and observation.get("title") == "Credits"):
+        return None
+    text = observation.get("text", "")
+    full = (observation.get("pageTitle") == "Credits" and observation.get("products", 0) > 0 and
+            observation.get("licenseBlocks") == observation.get("products") and
+            observation.get("completeProducts") == observation.get("products") and len(text) > 1000)
+    if full:
+        return dict(availability="bundled-full-credits", fullCreditsAvailable=True,
+                    textKind="license-textContent", sha256=hashlib.sha256(text.encode()).hexdigest())
+    sample = (observation.get("pageTitle") == "" and observation.get("products") == 0 and
+              observation.get("licenseBlocks") == 0 and observation.get("completeProducts") == 0 and
+              text == "" and observation.get("sampleLinkCount") == 1 and
+              observation.get("sampleLinkTag") == "A" and observation.get("sampleLinkHref") == "#" and
+              observation.get("sampleLinkText") == "Print" and observation.get("sampleText") == 'This is sample credits page. To get correct credits page, set `generate_about_credits=true` in args.gn. Print Layout tests are based on layout tests from webkit.org.')
+    if not sample:
+        return None
+    return dict(availability="sample-only", fullCreditsAvailable=False,
+                textKind="normalized-sample-body-textContent",
+                sha256=hashlib.sha256(observation["sampleText"].encode()).hexdigest(),
+                expectedSourceSampleSha256="c2a338c4f1f5f5e19d3020a25f8dc47e394ba4fed1ec2d8dc5b2a915170e02bc")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--package", type=Path, required=True)
@@ -247,28 +272,26 @@ def main():
             raise ValueError("Fixed representative page failed")
         credits = cdp.call("Target.createTarget", {"url":"chrome://credits/"})["targetId"]
         cs = cdp.call("Target.attachToTarget", {"targetId":credits,"flatten":True})["sessionId"]
-        # Credits licenses are present but CSS-hidden; Chromium is only an HTML
-        # comment in the upstream template. Observe the compiled entry structure.
-        credits_expression = "(() => { const products = Array.from(document.querySelectorAll('.product')); const licenses = Array.from(document.querySelectorAll('.product .license pre')); return {href: location.href, title: document.title, ready: document.readyState, pageTitle: document.querySelector('.page-title')?.textContent.trim() || '', products: products.length, licenseBlocks: licenses.length, completeProducts: products.filter(p => p.querySelector('.title')?.textContent.trim() && p.querySelectorAll('.license pre').length === 1 && p.querySelector('.license pre').textContent.trim()).length, text: licenses.map(p => p.textContent).join(String.fromCharCode(10))}; })()"
+        # Official Snapshots can compile the exact upstream sample instead of full credits.
+        # Observe and distinguish that supply limit without inventing missing notices.
+        credits_expression = r"(() => { const products = Array.from(document.querySelectorAll('.product')); const licenses = Array.from(document.querySelectorAll('.product .license pre')); return {href: location.href, title: document.title, ready: document.readyState, pageTitle: document.querySelector('.page-title')?.textContent.trim() || '', products: products.length, licenseBlocks: licenses.length, completeProducts: products.filter(p => p.querySelector('.title')?.textContent.trim() && p.querySelectorAll('.license pre').length === 1 && p.querySelector('.license pre').textContent.trim()).length, text: licenses.map(p => p.textContent).join(String.fromCharCode(10)), sampleText: document.body?.textContent.replace(/\s+/g, ' ').trim() || '', sampleLinkCount: document.querySelectorAll('#print-link').length, sampleLinkTag: document.querySelector('#print-link')?.tagName || '', sampleLinkHref: document.querySelector('#print-link')?.getAttribute('href') || '', sampleLinkText: document.querySelector('#print-link')?.textContent.trim() || '', sampleLinkHidden: document.querySelector('#print-link')?.hidden ?? null}; })()"
         text, credits_ready = "", False
         deadline = time.monotonic()+30
         while time.monotonic() < deadline:
             answer = cdp.call("Runtime.evaluate", {"expression":credits_expression,"returnByValue":True}, cs)
             observation = answer["result"].get("value") or {}
             text = observation.get("text", "")
-            record["credits"] = {k:v for k,v in observation.items() if k != "text"}
+            record["credits"] = {k:v for k,v in observation.items() if k not in ("text", "sampleText")}
             record["credits"]["characters"] = len(text)
-            credits_ready = (observation.get("href") == "chrome://credits/" and
-                observation.get("ready") == "complete" and observation.get("title") == "Credits" and
-                observation.get("pageTitle") == "Credits" and observation.get("products", 0) > 0 and
-                observation.get("licenseBlocks") == observation.get("products") and
-                observation.get("completeProducts") == observation.get("products") and len(text) > 1000)
+            evidence = credits_evidence(observation)
+            credits_ready = evidence is not None
+            if credits_ready:
+                record["credits"].update(evidence)
             if credits_ready:
                 break
             time.sleep(0.1)
         if not credits_ready:
-            raise ValueError("Bundled third-party credits structure/content unavailable")
-        record["credits"]["sha256"] = hashlib.sha256(text.encode()).hexdigest()
+            raise ValueError("Unrecognized credits page; neither full credits nor the exact upstream sample")
         close_requested = True
         cdp.seq += 1
         cdp.send(dict(id=cdp.seq, method="Browser.close", params={}))

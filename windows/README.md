@@ -21,8 +21,13 @@ candidate discovery: evaluation, builds and deployment never resolve latest.
 closure; autoPatchelf changes its derived executable hash, recorded alongside the
 unchanged raw archive hash in share/chromium/snapshot.json. This does not install
 it into an existing Linux profile or implement the rest of cross-OS issue #92.
-The BSD notice is retained in both distributions; the unmodified browser resources
-retain compiled third-party credits, checked by the representative browser proof.
+The BSD notice and unmodified browser resources are retained in both distributions.
+These fixed official Snapshots compile the upstream sample Credits page, not a full
+third-party notice listing. The representative proof verifies that exact sample
+and reports sample-only / fullCreditsAvailable=false; it does not claim a complete
+license audit or generate missing notices. Unknown/empty credits pages fail.
+Normal sandbox, actual browser identity, synthetic DOM behavior and owned-instance
+graceful close remain mandatory.
 
 Snapshot artifact identity is `<productVersion>.r<revision>`, including the owned
 directory. The optional productVersion field is the four-part actual PE version;
