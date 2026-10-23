@@ -224,12 +224,15 @@ dev 'test ! -e ~/home-proof
   test "$(cat untracked-proof)" = "untracked work"
   git diff --binary | sha256sum | cmp - ../work.diff.sha256
   test "$(readlink ../dist)" = "$(cat ../dist.path)" && test -e ../dist/windows-dist.zip
-  sed -i -e "s/\"154\.0\.8037\.58\"/\"154.0.8037.58.rentcontinued\"/" \
-    -e "s|Programs/chromium-154\.0\.8037\.58\"|Programs/chromium-154.0.8037.58.rentcontinued\"|" windows/nix.nix
-  test "$(git diff --numstat)" = "$(printf "4\t4\twindows/nix.nix")"
-  if git grep -q rentcontinued HEAD -- windows/nix.nix; then exit 1; fi
+  # A second real edit at the single shared Chromium definition. Keep its
+  # strict Snapshot identity/asset unchanged so the rebuild remains offline.
+  sed -i "s/appPath = \"chromium\\.exe\";/appPath = \"chromium.rentcontinued.exe\";/" profile/chromium.nix
+  test "$(git diff --numstat)" = "$(printf "1\t1\tprofile/chromium.nix\n2\t2\twindows/nix.nix")"
+  if git grep -q rentcontinued HEAD -- profile/chromium.nix windows/nix.nix; then exit 1; fi
   git diff --binary | sha256sum > ../work2.diff.sha256'
-build --offline AutoHotkey=2.0.28.rentfresh Chromium=154.0.8037.58.rentcontinued
+build --offline AutoHotkey=2.0.28.rentfresh
+jq -e '.packages | any(.name == "Chromium" and .appPath == "chromium.rentcontinued.exe")' "$evidence/dist/manifest.json" > /dev/null ||
+  fail 'manifest lacks the continued shared Chromium appPath selection'
 for r in "$base_roots" "$next_roots"; do test "$(root "readlink /nix/var/nix/gcroots/rent/${r##*/}")" = "$r"; done
 echo 'PASS replace -> continue (upgraded image, retained auth/session/work/store/profile, disposable HOME, offline rebuild with both edits)'
 
