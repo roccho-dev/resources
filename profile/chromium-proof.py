@@ -97,8 +97,16 @@ def main():
     package, result = args.package, args.result.absolute()
     if not str(package).startswith("/nix/store/") or not package.is_dir():
         raise ValueError("A source-built Nix output is required")
-    expected_parent = Path("/work/repos/resources/.worktrees/windows-core-chromium-snapshot-20261023/.generated")
-    if result.parent.resolve() != expected_parent or ".." in result.parts:
+    allowed_parents = {Path("/work/repos/resources/.worktrees/windows-core-chromium-snapshot-20261023/.generated")}
+    # Existing nix flake check runs the same installed helper in a disposable
+    # normal builder. Accept only that builder's exact, known scratch directory.
+    top = os.environ.get("NIX_BUILD_TOP", "")
+    if top == "/build" or re.fullmatch(r"/tmp/nix-build-chromium-snapshot-cdp\.drv-[0-9]+", top):
+        build_top = Path(top)
+        plain_ancestors(build_top)
+        if Path.cwd().resolve() == build_top.resolve():
+            allowed_parents.add(build_top.resolve()/".generated")
+    if result.parent.resolve() not in allowed_parents or ".." in result.parts:
         raise ValueError("Result must be new in the dedicated worktree .generated")
     plain_ancestors(result.parent)
     profile = result.with_suffix(".profile")

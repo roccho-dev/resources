@@ -907,6 +907,29 @@
           test "$(node watch.mjs validate "$registry")" = "$expected"
           touch $out
         '';
+        # Same fixed browser proof on the existing native Linux CI runner;
+        # no workflow, privileged sandbox setup or skip-on-failure path.
+        chromium-snapshot-cdp = pkgs.runCommand "chromium-snapshot-cdp" {
+          nativeBuildInputs = [ pkgs.python3 ];
+        } ''
+          mkdir -p .generated
+          set +e
+          python ${chromiumSnapshot.linux}/share/chromium/chromium-proof.py \
+            --package ${chromiumSnapshot.linux} \
+            --result "$NIX_BUILD_TOP/.generated/chromium-cdp-ci-attempt-1.json" > invoke.log 2>&1
+          status=$?
+          set -e
+          cat invoke.log
+          for evidence in .generated/*.json .generated/*.stderr; do
+            if [ -f "$evidence" ]; then cat "$evidence"; fi
+          done
+          # Nix's disposable builder owns its scratch lifecycle, including on
+          # FAIL. The helper never deletes profiles or kills another instance.
+          [ "$status" -eq 0 ] || exit "$status"
+          mkdir "$out"
+          cp .generated/*.json .generated/*.stdout .generated/*.stderr "$out/"
+          cp ${chromiumSnapshot.linux}/share/chromium/snapshot.json "$out/snapshot.json"
+        '';
         windows-dist = common.check;
         git-state-finite-poc = gitState.fixture;
         github-root-source = githubRoot.check;

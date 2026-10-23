@@ -1227,3 +1227,11 @@ executables are checked from their recorded inventory, not the new layout.
 PreserveIncomplete still stops whole-tree cleanup; a needed deletion must receive
 the existing per-occurrence exact-path permission rather than silently weakening
 the guard. A first installation is not an actual update/rollback proof.
+
+The existing Linux `nix flake check` jobs also run the installed, hash-bound
+helper as checks.x86_64-linux.chromium-snapshot-cdp. Its only additional result
+parent is the exact NIX_BUILD_TOP/.generated of that disposable normal builder.
+Failure remains a failed check, with receipt/stderr printed to the check log.
+Nix controls disposable builder scratch retention; this does not promise the
+same persistent profile preservation as an actual host/OCI proof attempt.
+No new workflow/job or sandbox-policy override is introduced.
