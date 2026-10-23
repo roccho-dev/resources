@@ -26,8 +26,11 @@ rec {
       identity,
       # Compile-time closed target selection; never a launcher argv/key/cipher selector.
       typellmTarget ? "oci-dev",
+      # The same closed selection for the Jev ciphertext: a target reads its own Jev cipher, never another target's.
+      jevTarget ? "oci-dev",
     }:
     assert builtins.elem typellmTarget [ "oci-dev" "versapro-own-oci" ];
+    assert builtins.elem jevTarget [ "oci-dev" "versapro-own-oci" ];
     let
       q = pkgs.lib.escapeShellArg;
       # One launcher source for the fixed consumers: the same currentness, recipient, build-before-decrypt and child
@@ -43,13 +46,18 @@ rec {
           announce,
           childEnv,
           binding ? "jev",
+          # The typed voice entry only: the same target's TypeLLM key as a second secret, same recipient and checks.
+          extraTypeLLM ? false,
         }:
         let
           # Compile-time pairs only; no caller argument can select a key, ciphertext or decrypt mode.
-          auth = builtins.getAttr binding {
+          ciphers = {
             jev = {
               key = "JEV_API_KEY";
-              cipher = "ciphertexts/dev-jev-api.oci-dev.sops.yaml";
+              cipher = builtins.getAttr jevTarget {
+                oci-dev = "ciphertexts/dev-jev-api.oci-dev.sops.yaml";
+                versapro-own-oci = "ciphertexts/dev-jev-api.versapro-own-oci.sops.yaml";
+              };
             };
             typellm = {
               key = "TYPELLM_API_KEY";
@@ -59,7 +67,10 @@ rec {
               };
             };
           };
+          auth = builtins.getAttr binding ciphers;
+          type = ciphers.typellm;
         in
+        assert !extraTypeLLM || binding == "jev";
         pkgs.writeShellApplication {
           inherit name;
           text = ''
@@ -115,7 +126,7 @@ rec {
                     if [ -L "$f" ] || [ ! -f "$f" ]; then return 1; fi
                     "$cu/rm" -f -- "$f"
                   done
-                  for f in "$work/cipher.yaml" "$repo/HEAD" "$repo/config" "$repo/FETCH_HEAD" "$repo/packed-refs" \
+                  for f in "$work/cipher.yaml" "$work/type.yaml" "$repo/HEAD" "$repo/config" "$repo/FETCH_HEAD" "$repo/packed-refs" \
                     "$repo/refs/heads/proposals"; do
                     if [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then return 1; fi
                     "$cu/rm" -f -- "$f"
@@ -145,6 +156,20 @@ rec {
                   | "$grep" -oE 'age1[0-9a-z]+' || true)
                 { [ -n "$recipients" ] && [ "$(echo "$recipients" | "$cu/wc" -l)" -eq 1 ]; } \
                   || fail "the ciphertext must have exactly one recipient"
+                ${pkgs.lib.optionalString extraTypeLLM ''
+                  type_path=${q type.cipher}
+                  type_at=$(git_ -C "$repo" rev-parse -q --verify "$envs_sha:$type_path") || fail "no TypeLLM ciphertext at that envs commit"
+                  type_now=$(git_ -C "$repo" rev-parse -q --verify "proposals:$type_path") || fail "no current TypeLLM ciphertext"
+                  [ "$type_at" = "$type_now" ] || fail "that TypeLLM ciphertext is not current"
+                  type_cipher=$work/type.yaml
+                  git_ -C "$repo" cat-file blob "$type_at" > "$type_cipher"
+                  type_fields=$("$grep" -E '^[^[:space:]#][^:]*:' "$type_cipher" | "$cu/cut" -d: -f1 | LC_ALL=C "$cu/sort" | "$cu/tr" '\n' ' ')
+                  [ "$type_fields" = "${type.key} sops " ] || fail "the TypeLLM ciphertext fields differ"
+                  "$grep" -q '^${type.key}: ENC\[AES256_GCM,' "$type_cipher" || fail "TypeLLM is not SOPS-encrypted"
+                  type_recipient=$("$grep" -E '^[[:space:]]*-?[[:space:]]*recipient:[[:space:]]*age1[0-9a-z]+[[:space:]]*$' "$type_cipher" \
+                    | "$grep" -oE 'age1[0-9a-z]+' || true)
+                  [ "$type_recipient" = "$recipients" ] || fail "TypeLLM must have the same single target recipient"
+                ''}
 
                 # The identity: a regular 0600 file of this user whose recipient is the ciphertext's.
                 { [ -f "$identity" ] && [ ! -L "$identity" ]; } || fail "the target identity is missing"
@@ -162,6 +187,12 @@ rec {
                   "$cipher" 2>/dev/null < /dev/null) || fail "decryption failed"
                 [ -n "$key" ] || fail "the decrypted key is empty"
                 { [ "''${#key}" -le 4096 ] && [[ $key != *$'\n'* ]]; } || fail "the decrypted key is not one short line"
+                ${pkgs.lib.optionalString extraTypeLLM ''
+                  say "decrypt TypeLLM envs $envs_sha ciphertext $type_at recipient $recipients"
+                  type_key=$(SOPS_AGE_KEY_FILE=$identity ${pkgs.sops}/bin/sops --decrypt --input-type yaml --extract '["${type.key}"]' \
+                    "$type_cipher" 2>/dev/null < /dev/null) || fail "TypeLLM decryption failed"
+                  { [ -n "$type_key" ] && [ "''${#type_key}" -le 4096 ] && [[ $type_key != *$'\n'* ]]; } || fail "the TypeLLM key is not one short line"
+                ''}
                 scratch_clear || fail "kept $work: unexpected scratch entries"
                 trap - EXIT
 
@@ -174,6 +205,7 @@ rec {
                 # shellcheck disable=SC2016
                 exec "$cu/env" -i PATH="$cu" HOME=/homeless-shelter LANG=C.UTF-8 SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt ${childEnv} \
                   ${pkgs.bash}/bin/bash -c 'IFS= read -r -u 3 ${auth.key} || true
+                    ${pkgs.lib.optionalString extraTypeLLM "IFS= read -r -u 5 ${type.key} || true"}
                     if [ "''${VOICE_UI_REFERENCE_REAL:-}" = 1 ]; then
                       IFS= read -r -u 4 VOICE_UI_PROPOSAL_B || exit 1
                       export VOICE_UI_PROPOSAL_B
@@ -182,8 +214,8 @@ rec {
                       n=''${f##*/}
                       if [[ $n =~ ^[0-9]+$ ]] && [ "$n" -gt 2 ] && [ -e "$f" ]; then exec {n}<&-; fi
                     done
-                    unset f n; export ${auth.key}; exec env -u PWD -u SHLVL -u OLDPWD -- "$0" "$@"' \
-                  "$program" "''${program_args[@]}" 3<<< "$key" 4<<< "$reference_binding"
+                    unset f n; export ${auth.key}${pkgs.lib.optionalString extraTypeLLM " ${type.key}"}; exec env -u PWD -u SHLVL -u OLDPWD -- "$0" "$@"' \
+                  "$program" "''${program_args[@]}" 3<<< "$key" 4<<< "$reference_binding" ${pkgs.lib.optionalString extraTypeLLM ''5<<< "$type_key"''}
           '';
         };
     in
@@ -405,6 +437,85 @@ rec {
             fi
         '';
       };
+      # The typed voice dev entry (moved from the archived windows repository): the exact apps dev server with the
+      # target's Jev and TypeLLM keys, each provider's sends bounded by the caller's finite limits. Non-formal only.
+      typedLaunch =
+        let
+          # A single process's allocated budget. The run owner reserves these finite allowances before launch,
+          # journals stderr before each send and reconciles unused allowances only after the process has stopped.
+          # No credential, request body, provider response or caller-selected endpoint is written here.
+          providerBudget = pkgs.writeText "voice-ui-provider-budget.mjs" ''
+            import { writeSync } from "node:fs";
+            const allowed = {
+              "https://api.typesafe.ai/v1/systemone": "jev",
+              "https://api.typellm.ai/v1/generate": "typellm",
+            };
+            const limits = { jev: process.env.VOICE_UI_JEV_LIMIT, typellm: process.env.VOICE_UI_TYPELLM_LIMIT };
+            for (const name of Object.keys(limits)) {
+              const value = limits[name];
+              if (!/^(0|[1-9][0-9]{0,2})$/.test(value ?? "") || Number(value) > 300) throw Error("provider_budget_invalid");
+              limits[name] = Number(value);
+            }
+            const native = globalThis.fetch.bind(globalThis.fetch), sent = { jev: 0, typellm: 0 };
+            globalThis.fetch = (input, init = {}) => {
+              const url = typeof input === "string" ? input : input instanceof URL ? input.href : input?.url;
+              const provider = Object.hasOwn(allowed, url) ? allowed[url] : null, method = init.method ?? input?.method ?? "GET";
+              if (!provider || method !== "POST") return Promise.reject(Error("provider_boundary"));
+              if (sent[provider] >= limits[provider]) {
+                writeSync(2, "provider-budget-exhausted:" + provider + "\n");
+                return Promise.reject(Error("provider_budget"));
+              }
+              sent[provider]++;
+              writeSync(2, "provider-send:" + provider + ":" + sent[provider] + "\n");
+              return native(input, { ...init, redirect: "error" });
+            };
+          '';
+        in
+        mkLaunch {
+          name = "voice-ui-typed-dev";
+          extraTypeLLM = true;
+          usage = "--envs-sha <40-hex> --apps-sha <40-hex> --port <1024-65535> --jev-limit <0-300> --typellm-limit <0-300> [--host 127.0.0.1|0.0.0.0]";
+          say = "2";
+          announce = "apps $apps_sha on $host:$port with PATH HOME LANG PORT HOST SSL_CERT_FILE NODE_OPTIONS VOICE_UI_JEV_LIMIT VOICE_UI_TYPELLM_LIMIT JEV_API_KEY TYPELLM_API_KEY";
+          childEnv = ''PORT="$port" HOST="$host" NODE_OPTIONS="--import=${providerBudget}" VOICE_UI_JEV_LIMIT="$jev_limit" VOICE_UI_TYPELLM_LIMIT="$typellm_limit"'';
+          parse = ''
+            apps_remote=${q appsRemote}
+            envs_sha="" apps_sha="" port="" host="" jev_limit="" typellm_limit=""
+            { [ "$#" -eq 10 ] || [ "$#" -eq 12 ]; } || usage
+            while [ "$#" -gt 0 ]; do
+              [ -n "''${2:-}" ] || usage
+              case "$1" in
+                --envs-sha) [ -z "$envs_sha" ] || usage; envs_sha=$2 ;;
+                --apps-sha) [ -z "$apps_sha" ] || usage; apps_sha=$2 ;;
+                --port) [ -z "$port" ] || usage; port=$2 ;;
+                --jev-limit) [ -z "$jev_limit" ] || usage; jev_limit=$2 ;;
+                --typellm-limit) [ -z "$typellm_limit" ] || usage; typellm_limit=$2 ;;
+                --host) [ -z "$host" ] || usage; host=$2 ;;
+                *) usage ;;
+              esac
+              shift 2
+            done
+            [[ $envs_sha =~ ^[0-9a-f]{40}$ && $apps_sha =~ ^[0-9a-f]{40}$ && $port =~ ^[1-9][0-9]{3,4}$ ]] || usage
+            { [ "$port" -ge 1024 ] && [ "$port" -le 65535 ]; } || usage
+            [[ $jev_limit =~ ^(0|[1-9][0-9]{0,2})$ && $typellm_limit =~ ^(0|[1-9][0-9]{0,2})$ ]] || usage
+            { [ "$jev_limit" -le 300 ] && [ "$typellm_limit" -le 300 ]; } || usage
+            [ -n "$host" ] || host=127.0.0.1
+            case $host in 127.0.0.1 | 0.0.0.0) ;; *) usage ;; esac
+          '';
+          build = ''
+            ref="git+$apps_remote?rev=$apps_sha"
+            program=$(nix_ eval --raw "$ref#apps.x86_64-linux.dev.program") || fail "cannot evaluate the apps dev program"
+            drv=$(nix_ eval --raw "$ref#apps.x86_64-linux.dev.program" --apply \
+              'p: let c = builtins.attrNames (builtins.getContext p); in if builtins.length c == 1 then builtins.head c else throw "not one derivation"') \
+              || fail "the apps dev program is not one derivation"
+            outs=$(nix_ build --no-link --print-out-paths "$drv^*") || fail "cannot build the apps dev program"
+            built=""
+            while read -r out; do
+              case "$program" in "$out" | "$out"/*) built=$out ;; esac
+            done <<< "$outs"
+            { [ -n "$built" ] && [ -x "$program" ]; } || fail "the built program is not the evaluated one"
+          '';
+        };
       # Runs the exact ops Jev CLI once: the caller's stdin is its request, its single stdout line is the result, and
       # the launcher's own messages go to stderr. Only the fixed package output; no attribute, program or argument choice.
       ops = mkLaunch {
