@@ -66,6 +66,8 @@ $receipt = [ordered]@{ state='not-started'; source=$ExpectedSource; manifest=$Ex
     profile=$profile; argv=$argv; cleanup='none'; existingProfilesOrInstances='unused' }
 function Save { [IO.File]::WriteAllText($Result,($receipt | ConvertTo-Json -Depth 12),[Text.UTF8Encoding]::new($false)) }
 $process, $socket = $null, $null
+$actualStarted, $ownedEndpoint, $closeRequested = $false, $false, $false
+$stdoutTask, $stderrTask = $null, $null
 $script:cdpSeq = 0
 function SendCdp($Method,$Parameters,$Session) {
     $script:cdpSeq++
@@ -110,6 +112,7 @@ try {
     $process = [Diagnostics.Process]::new(); $process.StartInfo=$info
     $receipt.state='start-requested'; Save
     if (-not $process.Start()) { throw 'New process start refused' }
+    $actualStarted=$true
     $stdoutTask, $stderrTask = $process.StandardOutput.ReadToEndAsync(), $process.StandardError.ReadToEndAsync()
     $receipt.pid=$process.Id; $receipt.state='started'; Save
     $actual = Get-CimInstance Win32_Process -Filter ("ProcessId="+$process.Id)
@@ -131,11 +134,19 @@ try {
     try { $socket.ConnectAsync([uri]('ws://127.0.0.1:'+$endpoint[0]+$endpoint[1]),$timeout.Token).GetAwaiter().GetResult() }
     finally { $timeout.Dispose() }
     $receipt.cdpVersion=CallCdp 'Browser.getVersion'
+    $ownedEndpoint=$true
     if ($receipt.cdpVersion.product -cne ('Chrome/'+$package.productVersion) -and $receipt.cdpVersion.product -cne ('HeadlessChrome/'+$package.productVersion)) { throw 'CDP product version differs from PE' }
     $tab=CallCdp 'Target.createTarget' @{url='data:text/html,<title>resources-chromium-proof</title><p>snapshot-proof</p>'}
     $session=(CallCdp 'Target.attachToTarget' @{targetId=$tab.targetId;flatten=$true}).sessionId
-    $evaluation=CallCdp 'Runtime.evaluate' @{expression='({title:document.title,value:6*7,body:document.body.textContent.trim()})';returnByValue=$true} $session
+    $ready=$false
+    for ($i=0;$i -lt 50;$i++) {
+        $evaluation=CallCdp 'Runtime.evaluate' @{expression="document.readyState === 'complete' ? ({title:document.title,value:6*7,body:document.body.textContent.trim()}) : null";returnByValue=$true} $session
+        $valueProperty=$evaluation.result.PSObject.Properties['value']
+        if ($null -ne $valueProperty -and $null -ne $valueProperty.Value) { $ready=$true; break }
+        Start-Sleep -Milliseconds 100
+    }
     $receipt.synthetic=$evaluation
+    if (-not $ready) { throw 'Fixed page readiness timeout' }
     if ($evaluation.result.value.title -cne 'resources-chromium-proof' -or $evaluation.result.value.value -ne 42 -or $evaluation.result.value.body -cne 'snapshot-proof') { throw 'Fixed page failed' }
     $tab=CallCdp 'Target.createTarget' @{url='chrome://credits/'}
     $session=(CallCdp 'Target.attachToTarget' @{targetId=$tab.targetId;flatten=$true}).sessionId
@@ -147,6 +158,7 @@ try {
     }
     if ($credits.Length -lt 1000 -or -not $credits.Contains('Chromium')) { throw 'Bundled third-party credits unavailable' }
     $receipt.credits=@{characters=$credits.Length;sha256=(-join ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($credits)) | ForEach-Object {$_.ToString('x2')}))}
+    $closeRequested=$true
     $null=SendCdp 'Browser.close' @{} $null
     if (-not $process.WaitForExit(15000)) { throw 'Owned browser close UNKNOWN; preserve instance/profile' }
     $receipt.exit=$process.ExitCode
@@ -154,12 +166,20 @@ try {
     $receipt.state='pass-representative-cdp-only'; $code=0
 } catch {
     $receipt.error=$_.Exception.Message
-    $receipt.state=if ($null -ne $process -and -not $process.HasExited) { 'unknown-live-instance-preserved' } else { 'hold' }
+    if ($actualStarted -and $ownedEndpoint -and -not $closeRequested -and -not $process.HasExited) {
+        $closeRequested=$true
+        try {
+            $null=SendCdp 'Browser.close' @{} $null
+            if ($process.WaitForExit(15000)) { $receipt.failureCloseExit=$process.ExitCode }
+            else { $receipt.failureCloseUnknown='Owned instance did not exit after graceful close' }
+        } catch { $receipt.failureCloseUnknown=$_.Exception.Message }
+    }
+    $receipt.state=if ($actualStarted -and -not $process.HasExited) { 'unknown-live-instance-preserved' } else { 'hold' }
 } finally {
-    if ($null -ne $process -and $process.Id -and $process.HasExited) {
+    if ($actualStarted -and $process.HasExited) {
         $receipt.exit=$process.ExitCode
-        [IO.File]::WriteAllText($outPath,$stdoutTask.GetAwaiter().GetResult(),[Text.UTF8Encoding]::new($false))
-        [IO.File]::WriteAllText($errPath,$stderrTask.GetAwaiter().GetResult(),[Text.UTF8Encoding]::new($false))
+        if ($null -ne $stdoutTask) { [IO.File]::WriteAllText($outPath,$stdoutTask.GetAwaiter().GetResult(),[Text.UTF8Encoding]::new($false)) }
+        if ($null -ne $stderrTask) { [IO.File]::WriteAllText($errPath,$stderrTask.GetAwaiter().GetResult(),[Text.UTF8Encoding]::new($false)) }
     }
     if ($null -ne $socket) { $socket.Dispose() }
     Save

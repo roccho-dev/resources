@@ -62,14 +62,16 @@ let
         --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath runtime}"
       runHook postInstall
     '';
-    postFixup = ''
+    # autoPatchelf runs in fixup hooks; attest only after the complete phase.
+    postPhases = [ "snapshotIdentityPhase" ];
+    snapshotIdentityPhase = ''
       export CHROMIUM_OUT="$out"
       python - <<'PY'
 import hashlib,json,os,pathlib
 root=pathlib.Path(os.environ["CHROMIUM_OUT"])
 p=json.loads(${builtins.toJSON (builtins.toJSON pins.linux)})
 p.update(executable=str(root/"lib/chromium/chrome"),
-         executableSha256=hashlib.sha256((root/"lib/chromium/chrome").read_bytes()).hexdigest(),
+         executableSha256=hashlib.file_digest((root/"lib/chromium/chrome").open("rb"),"sha256").hexdigest(),
          launcher=str(root/"bin/chromium-snapshot"), architecture="x86_64",
          proofSha256=hashlib.sha256((root/"share/chromium/chromium-proof.py").read_bytes()).hexdigest())
 (root/"share/chromium/snapshot.json").write_text(json.dumps(p,sort_keys=True,indent=2)+"\n")
