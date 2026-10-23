@@ -61,6 +61,23 @@ function MustReject([scriptblock]$Action, [string]$Pattern) {
 }
 $validated = Run 'Validate'
 if ($validated.source -ne $ExpectedSource -or $ExpectedSource -notmatch '^[0-9a-f]{40}$') { throw 'Source mismatch.' }
+# Exercise the actual proof's path assignments without starting it or touching any path.
+# A comma combined with concatenation once collapsed all three values into one string.
+$cdpAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'chromium-proof.ps1'), [ref]$null, [ref]$null)
+$cdpPaths = @($cdpAst.FindAll({param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and
+    $n.Left -is [Management.Automation.Language.VariableExpressionAst] -and $n.Left.VariablePath.UserPath -cin @('profile','outPath','errPath')}, $false))
+if ($cdpPaths.Count -ne 3) { throw 'Expected three separate Chromium proof path assignments.' }
+$cdpPathCheck = '$Result = ''C:\fixed proof\chromium-cdp-01234567-attempt-1.json''' + "`n" + ($cdpPaths.Extent.Text -join "`n") + @'
+
+if ($profile -cne ($Result + '.profile') -or $outPath -cne ($Result + '.stdout') -or $errPath -cne ($Result + '.stderr')) {
+    throw 'Chromium proof paths are not three distinct bounded strings.'
+}
+'@
+& ([scriptblock]::Create($cdpPathCheck))
+& $windowsPowerShell -NoProfile -NonInteractive -EncodedCommand ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cdpPathCheck)))
+if ($LASTEXITCODE -ne 0) { throw 'Native5.1 Chromium proof path assignment failed.' }
+Write-Host 'PASS Chromium proof path assignments PowerShell7 and5.1; no browser or file effects'
+
 # An app appearance is optional: the same bundle validates with apps that have none, and with no apps at all. A copy of the
 # listed files gets each variant's manifest.json (outside the inventory), run as the real one is (5.1, -File).
 foreach ($variant in 'without appearance', 'without apps') {

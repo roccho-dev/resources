@@ -55,7 +55,9 @@ if ([IO.Path]::GetDirectoryName($Result) -ine $base -or [IO.Path]::GetFileName($
     throw 'Result must be a new bounded attempt name'
 }
 Plain $base
-$profile, $outPath, $errPath = $Result+'.profile', $Result+'.stdout', $Result+'.stderr'
+$profile = $Result + '.profile'
+$outPath = $Result + '.stdout'
+$errPath = $Result + '.stderr'
 foreach ($path in @($Result,$profile,$outPath,$errPath)) {
     if (Test-Path -LiteralPath $path) { throw "Attempt path exists; no retry/overwrite: $path" }
 }
