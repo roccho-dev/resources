@@ -170,6 +170,8 @@ try {
     if ($endpoint.Count -ne 2 -or $endpoint[0] -notmatch '^\d+$' -or [int]$endpoint[0] -lt 1 -or [int]$endpoint[0] -gt 65535 -or
         $endpoint[1] -cnotmatch '^/devtools/browser/[0-9a-f-]+$') { throw 'Invalid private DevTools endpoint' }
     $socket=[Net.WebSockets.ClientWebSocket]::new()
+    # The verified endpoint is owned loopback; never route it through the ambient proxy.
+    $socket.Options.Proxy=$null
     $timeout=[Threading.CancellationTokenSource]::new(10000)
     try { $socket.ConnectAsync([uri]('ws://127.0.0.1:'+$endpoint[0]+$endpoint[1]),$timeout.Token).GetAwaiter().GetResult() }
     finally { $timeout.Dispose() }

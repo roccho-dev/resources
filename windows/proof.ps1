@@ -67,16 +67,22 @@ $cdpAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScrip
 $cdpPaths = @($cdpAst.FindAll({param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and
     $n.Left -is [Management.Automation.Language.VariableExpressionAst] -and $n.Left.VariablePath.UserPath -cin @('profile','outPath','errPath')}, $false))
 if ($cdpPaths.Count -ne 3) { throw 'Expected three separate Chromium proof path assignments.' }
-$cdpPathCheck = '$Result = ''C:\fixed proof\chromium-cdp-01234567-attempt-1.json''' + "`n" + ($cdpPaths.Extent.Text -join "`n") + @'
+$cdpSocketInit = @($cdpAst.FindAll({param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and
+    ($n.Left.Extent.Text -ceq '$socket.Options.Proxy' -or
+        ($n.Left.Extent.Text -ceq '$socket' -and $n.Right.Extent.Text -ceq '[Net.WebSockets.ClientWebSocket]::new()'))}, $true))
+if ($cdpSocketInit.Count -ne 2) { throw 'Expected one Chromium loopback socket and its local proxy override.' }
+$cdpPathCheck = '$Result = ''C:\fixed proof\chromium-cdp-01234567-attempt-1.json''' + "`n" + ($cdpPaths.Extent.Text -join "`n") + "`n" + ($cdpSocketInit.Extent.Text -join "`n") + @'
 
-if ($profile -cne ($Result + '.profile') -or $outPath -cne ($Result + '.stdout') -or $errPath -cne ($Result + '.stderr')) {
-    throw 'Chromium proof paths are not three distinct bounded strings.'
-}
+try {
+    if ($profile -cne ($Result + '.profile') -or $outPath -cne ($Result + '.stdout') -or $errPath -cne ($Result + '.stderr') -or $null -ne $socket.Options.Proxy) {
+        throw 'Chromium proof paths or direct loopback socket configuration differ.'
+    }
+} finally { $socket.Dispose() }
 '@
 & ([scriptblock]::Create($cdpPathCheck))
 & $windowsPowerShell -NoProfile -NonInteractive -EncodedCommand ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cdpPathCheck)))
 if ($LASTEXITCODE -ne 0) { throw 'Native5.1 Chromium proof path assignment failed.' }
-Write-Host 'PASS Chromium proof path assignments PowerShell7 and5.1; no browser or file effects'
+Write-Host 'PASS Chromium proof paths/direct loopback configuration PowerShell7 and5.1; no network/browser/file effects'
 
 # An app appearance is optional: the same bundle validates with apps that have none, and with no apps at all. A copy of the
 # listed files gets each variant's manifest.json (outside the inventory), run as the real one is (5.1, -File).
