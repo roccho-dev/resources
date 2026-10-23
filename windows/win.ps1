@@ -3374,12 +3374,13 @@ function SelectedPackages {
 function PackageInUse($Package, [string]$Tree, $OwnedFiles = $null) {
     # Old builds may use another executable layout. For collection inspect the
     # original ledger inventory, never the currently selected package path.
+    # All recorded files are checked: old records can validly have no .exe, and
+    # a loaded DLL must also prevent removal before any cleanup starts.
     $relative = if ($null -eq $OwnedFiles) { @($Package.executable) } else {
         $map = ConvertTo-FileMap $OwnedFiles
-        if ($null -eq $map) { throw "Cannot determine the recorded executable inventory: $Tree" }
-        @($map.Keys | Where-Object { $_ -match '\.exe$' })
+        if ($null -eq $map -or $map.Count -eq 0) { throw "Cannot determine the recorded file inventory: $Tree" }
+        @($map.Keys)
     }
-    if (-not @($relative).Count) { throw "No executable in the recorded package inventory: $Tree" }
     foreach ($name in $relative) {
         if (-not (TestWindowsRelative $name)) { throw 'Invalid recorded executable path' }
         $exe = Join-Path $Tree $name.Replace('/', '\')
@@ -3559,9 +3560,12 @@ function Uninstall {
         # running browser never loses half its files; a partly removed tree still resumes (D1).
         $programs = Join-Path $localAppData 'Programs'
         foreach ($tree in @($steps | Where-Object { $_.kind -ceq 'tree-extracted' } | ForEach-Object { $_.id } | Sort-Object -Unique -CaseSensitive)) {
-            $target = [string](Get-Field @(RecordsOf $tree)[0] 'target')
+            $first = @(RecordsOf $tree)[0]
+            $target = [string](Get-Field $first 'target')
+            $oldFiles = Get-Field (Get-Field $first 'desired') 'files'
+            if ($null -eq $oldFiles) { $refused += "${tree}: recorded file inventory is unknown"; continue }
             foreach ($package in @($manifest.packages | Where-Object { Test-PackageTarget $target $_.name $programs })) {
-                if (PackageInUse $package $target) { $refused += "${tree}: $($package.executable) is in use; close $($package.name) first" }
+                if (PackageInUse $package $target $oldFiles) { $refused += "${tree}: a recorded file is in use; close $($package.name) first" }
             }
         }
     }

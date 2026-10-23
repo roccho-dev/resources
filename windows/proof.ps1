@@ -961,6 +961,15 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
     try { Must (PackageInUse $newLayoutPackage (Split-Path $oldLayout -Parent) $oldFiles) 'old layout locked executable is still in use' }
     finally { $hold.Dispose() }
     Must (-not (PackageInUse $newLayoutPackage (Split-Path $oldLayout -Parent) $oldFiles)) 'old layout unlocked executable is not in use'
+    $oldDll = Join-Path $oldLayout 'loaded.dll'
+    [IO.File]::WriteAllText($oldDll,'synthetic locked library')
+    $dllFiles = @{'Chrome-bin/loaded.dll'=(Sha 'synthetic locked library')}
+    $hold = [IO.File]::Open($oldDll,'Open','Read','None')
+    try { Must (PackageInUse $newLayoutPackage (Split-Path $oldLayout -Parent) $dllFiles) 'old layout locked DLL is in use' }
+    finally { $hold.Dispose() }
+    Must (-not (PackageInUse $newLayoutPackage (Split-Path $oldLayout -Parent) $dllFiles)) 'file-only recorded inventory is checked without requiring an exe'
+    Refused { PackageInUse $newLayoutPackage (Split-Path $oldLayout -Parent) 'unknown' } '*recorded file inventory*'
+
     Must (@(ExistingProblems ([pscustomobject]@{}) $newLayoutPackage | Where-Object { $_ -like '*revision/inventory is unknown*' }).Count -eq 1) 'foreign same-version Snapshot is never automatically adopted'
 
     $null = New-Item -ItemType Directory -Path $ledgerDirectory, (Join-Path $Scratch 'Programs'), (Split-Path -Parent $nocttyConfig) -Force
