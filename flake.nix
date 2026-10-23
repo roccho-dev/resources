@@ -48,13 +48,14 @@
         identity = "/work/repos/.auth/roccho-dev/age/versapro-own-oci.key";
         typellmTarget = "versapro-own-oci";
       }).typellm;
-      # Standalone JEV consumer over the existing own identity and fixed JEV ciphertext.
+      # Standalone JEV consumer over the own identity and the own target's JEV ciphertext.
       versaSemlint = (dev.jevTools {
         envsRemote = "https://github.com/roccho-org/envs";
         appsRemote = "https://github.com/roccho-dev/apps";
         opsRemote = "https://github.com/roccho-org/ops";
         identity = "/work/repos/.auth/roccho-dev/age/versapro-own-oci.key";
         typellmTarget = "versapro-own-oci";
+        jevTarget = "versapro-own-oci";
       }).semlint;
       # Static voice consumer: the typed voice entry over the own identity and the own Jev and TypeLLM ciphertexts.
       versaVoiceTyped = (dev.jevTools {
@@ -861,7 +862,8 @@
           tool=${versaSemlint}/bin/ops-semlint-owner
           test -x "$tool"
           grep -qF "identity=/work/repos/.auth/roccho-dev/age/versapro-own-oci.key" "$tool"
-          grep -qF "cipher_path=ciphertexts/dev-jev-api.oci-dev.sops.yaml" "$tool"
+          grep -qF "cipher_path=ciphertexts/dev-jev-api.versapro-own-oci.sops.yaml" "$tool"
+          if grep -qF ".oci-dev.sops.yaml" "$tool"; then exit 1; fi
           grep -qF "envs_remote=https://github.com/roccho-org/envs" "$tool"
           grep -qF "ops_remote=https://github.com/roccho-org/ops" "$tool"
           grep -qF '#packages.x86_64-linux.semlint-owner' "$tool"
