@@ -36,6 +36,19 @@ if ($null -eq $target -or @($target.unresolved).Count -or $env:COMPUTERNAME -ine
     ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'Requires the resolved normal unelevated target user/host/x64'
 }
+# The real browser honors UserDataDir policy ahead of the command-line path.
+# Read only this redirecting policy; never publish its possibly personal value.
+foreach ($view in @(@('CurrentUser','Default'),@('LocalMachine','Registry64'),@('LocalMachine','Registry32'))) {
+    $registry = [Microsoft.Win32.RegistryKey]::OpenBaseKey($view[0],$view[1])
+    try {
+        $policy = $registry.OpenSubKey('SOFTWARE\Policies\Chromium')
+        try {
+            if ($null -ne $policy -and @($policy.GetValueNames() | Where-Object { $_ -ieq 'UserDataDir' }).Count) {
+                throw 'Chromium UserDataDir policy prevents isolated proof; no browser started'
+            }
+        } finally { if ($null -ne $policy) { $policy.Close() } }
+    } finally { $registry.Close() }
+}
 $base = Join-Path $env:USERPROFILE 'Codex\mieru\local\windows-core-pc7337-20261022'
 $Result = [IO.Path]::GetFullPath($Result)
 if ([IO.Path]::GetDirectoryName($Result) -ine $base -or [IO.Path]::GetFileName($Result) -notmatch '^chromium-cdp-[0-9a-f]{8}-attempt-[1-9][0-9]*\.json$') {
@@ -105,10 +118,20 @@ function CallCdp($Method,$Parameters=@{},$Session=$null) {
 }
 $code = 1
 try {
+    # Pre-create and verify the new path so install_static cannot fall back to
+    # the default personal User Data after an invalid/unwritable supplied path.
+    $null=[IO.Directory]::CreateDirectory($profile)
+    Plain $profile
+    $marker=[IO.File]::Open((Join-Path $profile '.resources-cdp-owned'),'CreateNew','Write','None')
+    try { $marker.WriteByte(1) } finally { $marker.Dispose() }
+    $crash=Join-Path $profile 'Crashpad'
+    $null=[IO.Directory]::CreateDirectory($crash)
+    $receipt.crashDirectory=$crash
     # Redirects exist before start. No inherited existing browser endpoint.
     $info = [Diagnostics.ProcessStartInfo]::new()
     $info.FileName=$exe; $info.Arguments=$argv; $info.UseShellExecute=$false
     $info.RedirectStandardOutput=$true; $info.RedirectStandardError=$true; $info.CreateNoWindow=$true
+    $info.EnvironmentVariables['BREAKPAD_DUMP_LOCATION']=$crash
     $process = [Diagnostics.Process]::new(); $process.StartInfo=$info
     $receipt.state='start-requested'; Save
     if (-not $process.Start()) { throw 'New process start refused' }

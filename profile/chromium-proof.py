@@ -147,7 +147,19 @@ def main():
     owned_endpoint, close_requested = False, False
     code = 1
     try:
-        version = subprocess.run([manifest["launcher"], "--version"], capture_output=True, text=True, timeout=30)
+        # Crashpad uses the default config location independently of --user-data-dir.
+        # Give only this child a new writable namespace; never fall back to user config.
+        profile.mkdir(mode=0o700)
+        child_env = dict(os.environ)
+        child_state = {}
+        for variable, leaf in [("CHROME_CONFIG_HOME", "config"), ("XDG_CONFIG_HOME", "config"),
+                               ("XDG_CACHE_HOME", "cache"), ("BREAKPAD_DUMP_LOCATION", "crash")]:
+            directory = profile/leaf
+            directory.mkdir(mode=0o700, exist_ok=True)
+            child_env[variable] = str(directory)
+            child_state[variable] = str(directory)
+        record["childState"] = child_state
+        version = subprocess.run([manifest["launcher"], "--version"], capture_output=True, text=True, timeout=30, env=child_env)
         record["version"] = dict(exit=version.returncode, stdout=version.stdout, stderr=version.stderr)
         if version.returncode or version.stdout.strip() != "Chromium "+manifest["productVersion"]:
             raise ValueError("Actual Chromium product/version differs")
@@ -156,7 +168,7 @@ def main():
                 "--user-data-dir="+str(profile), "about:blank"]
         record["argv"] = argv
         with stdout.open("xb") as out, stderr.open("xb") as err:
-            process = subprocess.Popen(argv, stdout=out, stderr=err)
+            process = subprocess.Popen(argv, stdout=out, stderr=err, env=child_env)
         record.update(state="started", pid=process.pid)
         result.write_text(json.dumps(record, indent=2)+"\n")
         deadline = time.monotonic()+5

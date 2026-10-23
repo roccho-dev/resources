@@ -1235,3 +1235,10 @@ Failure remains a failed check, with receipt/stderr printed to the check log.
 Nix controls disposable builder scratch retention; this does not promise the
 same persistent profile preservation as an actual host/OCI proof attempt.
 No new workflow/job or sandbox-policy override is introduced.
+
+Fresh browser probes also bound their diagnostic state. Linux gives only the
+version/browser child new config/cache/crash directories inside the new proof
+profile; HOME and the global environment are unchanged. Windows refuses an
+existing/unreadable Chromium UserDataDir policy before startup, pre-creates and
+checks its new profile, and directs only that child's crash dumps into it.
+Crash reporting and the browser sandbox remain enabled.
