@@ -3311,7 +3311,7 @@ if (-not (Test-Path -LiteralPath $foreignTemp)) { throw 'A temporary file no int
 [IO.File]::Delete($foreignTemp)
 
 # ---- A23-A29: locked packages through the effect ledger. AutoHotkey (3 MB ZIP) is downloaded once, and
-# Chromium (7z) once, in A29 after every stand-in of A24-A28 is gone. The proof's own stand-ins
+# Chromium (the locked archive) once, in A29 after every stand-in of A24-A28 is gone. The proof's own stand-ins
 # (an Uninstall entry, a profile, crafted records) are removed again one entry at a time.
 $ahk = @($manifest.packages | Where-Object { $_.name -ceq 'AutoHotkey' })[0]
 $chromium = @($manifest.packages | Where-Object { $_.name -ceq 'Chromium' })[0]
@@ -3549,9 +3549,9 @@ $standInDesired = @{ exists = $true; files = @{ $chromium.executable = (Get-File
 Craft @{ phase = 'intent'; id = $chromiumId; kind = 'tree-extracted'; target = $chromiumTree; prior = $absent; desired = $standInDesired; package = 'Chromium' }
 Craft @{ phase = 'commit'; id = $chromiumId; kind = 'tree-extracted'; target = $chromiumTree; prior = $absent; desired = $standInDesired; observed = $standInDesired }
 $mark = LastSeq
-MustReject { ApplyPackages 'Chromium' } '*Packages stop the run before any effect: Chromium 154*installed for another inventory or seed*'
+MustReject { ApplyPackages 'Chromium' } "*Packages stop the run before any effect: Chromium $($chromium.version)*installed for another inventory or seed*"
 [IO.File]::Delete($sentinel)
-MustReject { ApplyPackages 'Chromium' } '*Packages stop the run before any effect: Chromium 154*without its First Run sentinel*do not start this Chromium*'
+MustReject { ApplyPackages 'Chromium' } "*Packages stop the run before any effect: Chromium $($chromium.version)*without its First Run sentinel*do not start this Chromium*"
 Must ((LastSeq) -eq $mark -and (Phases $chromiumId) -ceq 'intent,commit' -and (Test-Path -LiteralPath $standIn) -and
     [IO.File]::ReadAllText($preferences) -ceq $restored) 'A28: C1 stops an owned Chromium before any effect; the profile is only read'
 # A27: Uninstall leaves everything alone while a package executable is in use; closed, it removes every owned
@@ -3573,8 +3573,8 @@ SetSlotValue 'caption' $captionBytes
 Must ((MetricsText (Metrics)) -ceq (MetricsText $uiBefore)) 'A31: the runner''s WindowMetrics are its own again'
 
 # ---- A29 (b3b): the locked Chromium, installed for real (downloaded once), owned, first run, and removed ----
-# Here A27 has removed the stand-in 154 tree and every owned effect; the proof's stand-in profile keeps its restored
-# Default\Preferences, and First Run is written beside it, so R1 (the history of 153 and of the closed stand-in 154)
+# Here A27 has removed the selected-version stand-in tree and every owned effect; the proof's stand-in profile keeps its restored
+# Default\Preferences, and First Run is written beside it, so R1 (the history of 153 and of the closed selected-version stand-in)
 # and O1 (a sentinel is present) both let Chromium install over an existing profile, which is never written.
 [IO.File]::WriteAllText($sentinel, '')
 function ProfileKept { (Test-Path -LiteralPath "$chromiumProfile\proof.txt") -and (Test-Path -LiteralPath $sentinel) -and [IO.File]::ReadAllText($preferences) -ceq $restored }
@@ -4462,7 +4462,7 @@ if ($g4.status -cne 'measured' -or (Get-Field $g4 'gate') -cne 'pass' -or $g4.st
     noctty = 'native owned tree, configuration, COM keys and values and the default-terminal selection through Apply and Uninstall (A15-A21)'
     appPathsLaunch = $appPathsLaunch
     platform = $platformAssetProof; platformRuntime = 'unproven'; platformInstallation = 'notPerformed'; platformRemoval = 'held'
-    scope = 'current-user owned fonts, Noctty, SSH client and locked packages (AutoHotkey ZIP and Chromium 7z with its font seed: install, ownership, its App Paths registration' + $(if ($appPathsLaunch -ceq 'proven') { ' and its resolution by ShellExecute' } else { '; App Paths launch unproven on this elevated runner, VM S7 required' }) + ', first run on scratch profiles, Uninstall) on an elevated Windows Server runner with Windows Terminal 1.23; not Restore (activation, package view, rollback), a clean unelevated Windows 11 user, Chromium on the default profile or started from Win+R itself, default-terminal handoff, real-host UX or a Cloudflare connection' } | ConvertTo-Json
+    scope = 'current-user owned fonts, Noctty, SSH client and locked packages (AutoHotkey ZIP and Chromium locked archive with its font seed: install, ownership, its App Paths registration' + $(if ($appPathsLaunch -ceq 'proven') { ' and its resolution by ShellExecute' } else { '; App Paths launch unproven on this elevated runner, VM S7 required' }) + ', first run on scratch profiles, Uninstall) on an elevated Windows Server runner with Windows Terminal 1.23; not Restore (activation, package view, rollback), a clean unelevated Windows 11 user, Chromium on the default profile or started from Win+R itself, default-terminal handoff, real-host UX or a Cloudflare connection' } | ConvertTo-Json
 # All expected failing children were checked above; the completed proof owns
 # its success exit instead of inheriting the last negative child's status.
 exit 0
