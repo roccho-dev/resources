@@ -3876,16 +3876,40 @@ try {
 function Ours($Observations) { @($Observations | Where-Object { $_.class -cin @('tree', 'descendant') }) }
 # Waits up to $Seconds for every tree and descendant process to end (noting when $Browser, the launched process, ended);
 # then kills only those, once, and checks for 5 s that they are gone. Unknown ones are never killed, only reported.
-function SettleChromium([int]$Seconds, $Browser) {
+function SettleChromium([int]$Seconds, $Browser, [switch]$CloseMainWindows) {
     $clock, $browserEnded = [Diagnostics.Stopwatch]::StartNew(), $null
+    $closeRequests, $closeErrors = @(), @()
+    $closedHandles = [Collections.Generic.HashSet[long]]::new()
+    $windowLeft = $false
     do {
+        # A first-run window can appear after an earlier window disappeared. Observe
+        # the same launched browser throughout this existing deadline, never another PID.
+        if ($CloseMainWindows -and $Browser) {
+            try {
+                $Browser.Refresh()
+                $windowLeft = -not $Browser.HasExited -and $Browser.MainWindowHandle -ne [IntPtr]::Zero
+                if ($windowLeft -and $closedHandles.Count -lt 5 -and $closedHandles.Add($Browser.MainWindowHandle.ToInt64())) {
+                    $title, $handle = [string]$Browser.MainWindowTitle, $Browser.MainWindowHandle.ToInt64()
+                    $accepted = $Browser.CloseMainWindow()
+                    $closeRequests += [pscustomobject]@{ seconds = [Math]::Round($clock.Elapsed.TotalSeconds, 1)
+                        handle = $handle; title = $title; accepted = $accepted }
+                }
+            } catch { $windowLeft = $null; $closeErrors += $_.Exception.Message }
+        }
         $live = B3aPoll
         if ($Browser -and $null -eq $browserEnded -and $Browser.HasExited) { $browserEnded = [Math]::Round($clock.Elapsed.TotalSeconds, 1) }
         if (-not @(Ours $live).Count) { break }
         Start-Sleep -Milliseconds 500
     } while ($clock.Elapsed.TotalSeconds -lt $Seconds)
+    if ($CloseMainWindows -and $Browser) {
+        try {
+            $Browser.Refresh()
+            $windowLeft = -not $Browser.HasExited -and $Browser.MainWindowHandle -ne [IntPtr]::Zero
+        } catch { $windowLeft = $null; $closeErrors += $_.Exception.Message }
+    }
     $settle = [pscustomobject]@{ endedAll = -not @(Ours $live).Count; seconds = [Math]::Round($clock.Elapsed.TotalSeconds, 1)
-        watched = $null -ne $Browser; browserEnded = $browserEnded; killed = @(); survivors = @(); unknown = @() }
+        watched = $null -ne $Browser; browserEnded = $browserEnded; killed = @(); survivors = @(); unknown = @()
+        closeRequests = $closeRequests; closeErrors = $closeErrors; windowLeft = $windowLeft }
     if (-not $settle.endedAll) {
         $settle.killed = @(Ours $live | ForEach-Object { "$($_.type)[$($_.id)<$($_.parent)]" })
         foreach ($process in (Ours $live)) { try { Stop-Process -Id $process.id -Force -ErrorAction Stop } catch { } }
@@ -4019,6 +4043,11 @@ $b3aStops = [Collections.Generic.List[string]]::new()
 try {
     $b3aPackage, $b3aTree = $chromium, $chromiumTree
     $b3aExe = Join-Path $b3aTree $b3aPackage.executable.Replace('/', '\')
+    # Public distribution paths only; diagnostic evidence, no ACL writes or sandbox flags.
+    $b3a.installAcl = @(foreach ($path in @($b3aTree, $b3aExe)) {
+        $acl = Get-Acl -LiteralPath $path -ErrorAction Stop
+        [ordered]@{ path = $path; sddl = $acl.Sddl }
+    }) | ConvertTo-Json -Depth 4 -Compress
     $b3aDir = Join-Path $env:RUNNER_TEMP ('b3a-' + [guid]::NewGuid().ToString('N'))  # fresh, never deleted
     $null = New-Item -ItemType Directory -Path $b3aDir
     $seedSource = Join-Path $PSScriptRoot $b3aPackage.seed.file.Replace('/', '\')
@@ -4048,11 +4077,13 @@ try {
         $browser = StartChromium @("--user-data-dir=$userData", $pageUrl)
         $seconds = WaitFor { (Test-Path -LiteralPath (Join-Path $userData 'First Run')) -and (Test-Path -LiteralPath (Join-Path $userData 'Default\Preferences')) } $wait
         Start-Sleep -Seconds 2  # the page renders with the profile's fonts
-        $windows = CloseWindows $browser
-        # A window still there after the closing (one that did not close, or a sixth) is an observed reason to stay.
-        $windowLeft = try { $browser.Refresh(); -not $browser.HasExited -and $browser.MainWindowHandle -ne [IntPtr]::Zero } catch { $false }
-        $settle = SettleChromium 45 $browser
-        $b3a.firstRun = "First Run and Default\Preferences $(if ($null -ne $seconds) { "after $seconds s" } else { "NOT BOTH within $wait s" }); sent $($windows.Count) close request(s) to windows $(Few @($windows | ForEach-Object { "'$_'" })); $(if ($windowLeft) { 'a WINDOW IS LEFT' } else { 'no window left' }); $(SettleText $settle)"
+        $settle = SettleChromium 45 $browser -CloseMainWindows
+        $windows = @($settle.closeRequests | ForEach-Object { $_.title })
+        $windowLeft = $settle.windowLeft  # last observation before any CI cleanup, never after a forced kill
+        $b3a.firstRunCloseRequests = ConvertTo-Json -InputObject @($settle.closeRequests) -Depth 3 -Compress
+        $b3a.firstRunCloseErrors = ConvertTo-Json -InputObject @($settle.closeErrors) -Compress
+        if ($settle.closeErrors.Count) { $b3aStops.Add('first-run window observation/close failed') }
+        $b3a.firstRun = "First Run and Default\Preferences $(if ($null -ne $seconds) { "after $seconds s" } else { "NOT BOTH within $wait s" }); sent $($windows.Count) close request(s) to windows $(Few @($windows | ForEach-Object { "'$_'" })); $(if ($null -eq $windowLeft) { 'window state UNOBSERVED' } elseif ($windowLeft) { 'a WINDOW IS LEFT' } else { 'no window left' }); $(SettleText $settle)"
         $b3a.firstRunSentinel = $(if (Test-Path -LiteralPath (Join-Path $userData 'First Run')) { 'present' } else { 'ABSENT' })
         $b3a.firstRunPreferences = SeedPreferences (Join-Path $userData 'Default\Preferences')
         $background = try { Get-Field (Get-Field ([IO.File]::ReadAllText((Join-Path $userData 'Local State')) | ConvertFrom-Json -AsHashtable) 'background_mode') 'enabled' } catch { 'unreadable' }
