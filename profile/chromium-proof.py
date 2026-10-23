@@ -106,6 +106,15 @@ class CDP:
                 return result.get("result", {})
         raise TimeoutError("CDP response timeout")
 
+def source_revision_evidence(reported, expected):
+    if reported == "@"+expected:
+        return "embedded-source-matches"
+    if reported == "@"+"0"*40:
+        # Upstream's non-official-build LASTCHANGE.dummy is not source evidence.
+        # Archive provenance and the actual derived executable hash stay required.
+        return "unavailable-upstream-dummy"
+    raise ValueError("CDP source revision differs or is malformed")
+
 def plain_ancestors(path):
     for parent in [path] + list(path.parents):
         if parent.is_symlink():
@@ -221,8 +230,11 @@ def main():
         cdp = CDP(int(lines[0]), lines[1])
         record["cdpVersion"] = cdp.call("Browser.getVersion")
         owned_endpoint = True
-        if record["cdpVersion"].get("revision") != "@"+manifest["sourceCommit"]:
-            raise ValueError("CDP source revision differs")
+        record["cdpRevisionEvidence"] = source_revision_evidence(
+            record["cdpVersion"].get("revision"), manifest["sourceCommit"])
+        if record["cdpVersion"].get("product") not in (
+                "Chrome/"+manifest["productVersion"], "HeadlessChrome/"+manifest["productVersion"]):
+            raise ValueError("CDP product version differs from the actual executable")
         target = cdp.call("Target.createTarget", {"url":"data:text/html,<title>resources-chromium-proof</title><p>snapshot-proof</p>"})["targetId"]
         session = cdp.call("Target.attachToTarget", {"targetId":target,"flatten":True})["sessionId"]
         for _ in range(50):

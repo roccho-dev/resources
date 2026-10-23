@@ -1255,3 +1255,15 @@ profile; HOME and the global environment are unchanged. Windows refuses an
 existing/unreadable Chromium UserDataDir policy before startup, pre-creates and
 checks its new profile, and directs only that child's crash dumps into it.
 Crash reporting and the browser sandbox remain enabled.
+
+
+A CDP revision of exactly `@` followed by forty zeros is upstream's
+`build/util/LASTCHANGE.dummy`, used by non-official-build version metadata.
+This build flag is separate from the official Snapshot download origin. The
+Linux proof records it as `unavailable-upstream-dummy`, never as the selected
+source commit. A real matching source hash is recorded separately; other,
+empty or malformed revisions refuse. Fixed archive URL/hash and REVISIONS
+provenance, derived executable/hash/architecture and actual product version remain
+the source identity evidence. Windows retains raw CDP metadata alongside its
+existing owned-file/PE/product checks; neither CDP branding nor a dummy revision
+substitutes for that identity. No Windows CDP result is claimed before execution.
