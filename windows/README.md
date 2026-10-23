@@ -39,6 +39,19 @@ Protected Chromium/User Data, its existing history, and App Paths chromium.exe
 remain the same product. No existing Chrome executable or personal profile is
 used by the bounded representative proofs.
 
+Windows official Snapshot installation also reproduces the upstream install-files
+capabilities: only its freshly and atomically created owned staging receives the
+two named capability read/execute ACEs, inherited by the extracted public files.
+Existing ACL entries and ordinary inheritance are retained. No Programs parent,
+private profile, other package or existing tree is granted access. The expected
+SIDs/mask/inheritance and observed public file/directory ACEs are reported
+separately from effective sandbox execution. Missing or unreadable access on an
+existing owned tree is drift and is never repaired in place; repeated matching
+observation writes no ACL or ledger records. A changed native access condition
+requires a fresh normal-user Plan and current native/runtime evidence. First GUI
+normal close is separately observed within its existing 45-second budget,
+including late windows; forced CI cleanup never proves normal close.
+
 The full `windows-pc7337-dist` output becomes available when all source inputs are
 selected. Its availability and native inDesiredState describe declared persistent
 state only: they do not prove active font faces, GUI use, default-terminal handoff

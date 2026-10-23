@@ -3343,6 +3343,136 @@ function WriteSeed($Seed, [string]$Source, [string]$Staging) {
 # written for another inventory or seed is owned-drift (C1); a profile a seed would overwrite (O1)
 # stops an install and an owned tree's convergence. An attempt left unrecovered (a read-only mode) is
 # indeterminate.
+# The official Snapshot needs the same two install-files capabilities as its
+# upstream installer. This declaration is not proof of an effective sandbox token.
+function SnapshotInstallAccess($Package, [string]$Root) {
+    $sids = @('S-1-15-3-1024-3424233489-972189580-2057154623-747635277-1604371224-316187997-3786583170-1043257646',
+        'S-1-15-3-1024-2302894289-466761758-1166120688-1039016420-2430351297-4240214049-4028510897-3317428798')
+    $expected = [ordered]@{ sids = $sids; accessMask = 0x1200a9; inheritance = 3; propagation = 0
+        rootOwner = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
+    $applies = $null -ne (Get-Field $Package 'productVersion') -or
+        [string](Get-Field $Package 'url') -cmatch '^https://storage\.googleapis\.com/chromium-browser-snapshots/Win_x64/'
+    if (-not $applies) { return [pscustomobject]@{ applicable = $false; expected = $null; observed = @(); converged = $true; state = 'notApplicable'; issues = @() } }
+    AssertPackageShape $Package  # closes product/version/revision/URL/executable identity
+    $target = [IO.Path]::GetFullPath((Join-Path $localAppData $Package.directory.Replace('/', '\')))
+    if (-not [IO.Path]::IsPathRooted($Root) -or [IO.Path]::GetFullPath($Root) -cne $Root -or
+        ($Root -cne $target -and $Root -cnotmatch ('^' + [regex]::Escape($target) + '\.[0-9a-f]{32}\.staging\z'))) {
+        throw 'Snapshot install access target is not this selected owned tree or its staging.'
+    }
+    $issues, $observed = @(), @()
+    for ($parent = Split-Path -Parent $Root; $parent; $parent = Split-Path -Parent $parent) {
+        if (-not (Test-Path -LiteralPath $parent -ErrorAction Stop)) { continue }
+        $item = Get-Item -LiteralPath $parent -Force -ErrorAction Stop
+        if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Snapshot install access has an unsafe ancestor.' }
+    }
+    if (-not (Test-Path -LiteralPath $Root)) { return [pscustomobject]@{ applicable = $true; expected = $expected; observed = @(); converged = $false; state = 'absent'; issues = @() } }
+    $paths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $null = $paths.Add('')
+    foreach ($relative in @((ConvertTo-FileMap $Package.files).Keys) + @($(if ($null -ne (Get-Field $Package 'seed')) { $Package.seed.path }))) {
+        $null = $paths.Add([string]$relative)
+        for ($at = [IO.Path]::GetDirectoryName($relative.Replace('/', '\')); $at; $at = [IO.Path]::GetDirectoryName($at)) { $null = $paths.Add($at.Replace('\', '/')) }
+    }
+    foreach ($relative in @($paths | Sort-Object)) {
+        try {
+            $path = if ($relative) { Join-Path $Root $relative.Replace('/', '\') } else { $Root }
+            $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Reparse point' }
+            $sections = [Security.AccessControl.AccessControlSections]'Owner, Access'
+            $acl = if ($PSVersionTable.PSEdition -ceq 'Desktop') {
+                if ($item.PSIsContainer) { [IO.Directory]::GetAccessControl($path, $sections) } else { [IO.File]::GetAccessControl($path, $sections) }
+            } else { [IO.FileSystemAclExtensions]::GetAccessControl($item, $sections) }
+            if (-not $relative -and $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $expected.rootOwner) { $issues += 'Root ownership differs' }
+            $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+            $caps = @(foreach ($sid in $sids) {
+                $found = @($rules | Where-Object { $_.IdentityReference.Value -ceq $sid })
+                $good = @($found | Where-Object { $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+                    [int]$_.FileSystemRights -eq $expected.accessMask -and $_.PropagationFlags -eq $expected.propagation -and
+                    (-not $item.PSIsContainer -or [int]$_.InheritanceFlags -eq $expected.inheritance) }).Count -gt 0
+                if (-not $good -or @($found | Where-Object { $_.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+                    ([int]$_.FileSystemRights -band (-bnot $expected.accessMask)) -ne 0 }).Count) { $issues += "$relative capability access differs" }
+                [ordered]@{ sid = $sid; matchingReadExecute = $good; rules = @($found | ForEach-Object {
+                    [ordered]@{ mask = [int]$_.FileSystemRights; type = [string]$_.AccessControlType; inheritance = [int]$_.InheritanceFlags
+                        propagation = [int]$_.PropagationFlags; inherited = $_.IsInherited } }) }
+            })
+            $observed += [ordered]@{ path = $relative; owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value; capabilities = $caps }
+        } catch { $issues += "$relative access could not be observed" }
+    }
+    [pscustomobject]@{ applicable = $true; expected = $expected; observed = $observed; converged = $issues.Count -eq 0
+        state = $(if ($issues.Count) { 'driftOrUnknown' } else { 'declaredAccessPresent' }); issues = $issues
+        scope = 'Every declared public file, its directories and managed seed; ACE presence only, effective sandbox execution is separate.' }
+}
+
+# The only ACL writer: the current install intent's fresh GUID staging. Creation
+# is atomic and its descriptor specifies only this token's user owner; the DACL
+# continues to inherit normally. Existing directories never receive any writes.
+function InitializeSnapshotInstallAccess($State, [string]$Staging) {
+    $package, $effect = $State.package, $State.effect
+    $before = SnapshotInstallAccess $package $Staging
+    $want = PackageEffect $package
+    $open = @(OpenAttempt $effect.id)
+    $selected = @($manifest.packages | Where-Object { $_.name -ceq $package.name -and $_.version -ceq $package.version -and
+        $_.url -ceq $package.url -and $_.sha256 -ceq $package.sha256 })
+    if (-not $before.applicable -or $before.state -cne 'absent' -or ($State.install -isnot [bool]) -or -not $State.install -or $effect.kind -cne 'tree-extracted' -or
+        ($selected.Count -ne 1) -or ($package | ConvertTo-Json -Depth 20 -Compress) -cne ($selected[0] | ConvertTo-Json -Depth 20 -Compress) -or
+        -not (Test-EffectStateEqual $effect.kind (PackageEffect $selected[0]).desired $want.desired) -or
+        $effect.id -cne $want.id -or $effect.target -cne $want.target -or
+        -not (Test-EffectStateEqual $effect.kind $want.desired $effect.desired) -or
+        $open.Count -ne 1 -or $open[0].id -cne $effect.id -or $open[0].phase -cne 'intent' -or @($open | Where-Object { $_.phase -ceq 'commit' }).Count -or
+        (Get-Field $open[0] 'temp') -cne $Staging -or $open[0].target -cne $effect.target -or
+        $open[0].kind -cne $effect.kind -or -not (Test-EffectStateEqual $effect.kind $open[0].desired $want.desired) -or
+        $Staging -cnotmatch ('^' + [regex]::Escape($effect.target) + '\.[0-9a-f]{32}\.staging\z')) {
+        throw 'Snapshot access initialization requires this fresh selected install intent.'
+    }
+    if (-not ('WindowsIacSnapshotDirectory' -as [type])) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class WindowsIacSnapshotDirectory {
+    [StructLayout(LayoutKind.Sequential)] public struct Attributes { public int Length; public IntPtr Descriptor; [MarshalAs(UnmanagedType.Bool)] public bool Inherit; }
+    [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern bool ConvertStringSecurityDescriptorToSecurityDescriptorW(string text, uint revision, out IntPtr descriptor, out uint size);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern bool CreateDirectoryW(string path, ref Attributes attributes);
+    [DllImport("kernel32.dll")] public static extern IntPtr LocalFree(IntPtr memory);
+}
+"@
+    }
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $descriptor, $size = [IntPtr]::Zero, [uint32]0
+    try {
+        if (-not [WindowsIacSnapshotDirectory]::ConvertStringSecurityDescriptorToSecurityDescriptorW(('O:' + $sid.Value), 1, [ref]$descriptor, [ref]$size)) {
+            throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())
+        }
+        $attributes = [WindowsIacSnapshotDirectory+Attributes]::new()
+        $attributes.Length = [Runtime.InteropServices.Marshal]::SizeOf($attributes); $attributes.Descriptor = $descriptor
+        if (-not [WindowsIacSnapshotDirectory]::CreateDirectoryW($Staging, [ref]$attributes)) {
+            throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())
+        }
+    } finally { if ($descriptor -ne [IntPtr]::Zero) { $null = [WindowsIacSnapshotDirectory]::LocalFree($descriptor) } }
+    $sections = [Security.AccessControl.AccessControlSections]'Owner, Access'
+    $acl = if ($PSVersionTable.PSEdition -ceq 'Desktop') { [IO.Directory]::GetAccessControl($Staging, $sections) }
+        else { [IO.FileSystemAclExtensions]::GetAccessControl([IO.DirectoryInfo]::new($Staging), $sections) }
+    if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $sid.Value -or
+        (Get-Item -LiteralPath $Staging -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Fresh Snapshot staging ownership/type differs.' }
+    $oldRules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object {
+        "$($_.IdentityReference.Value)|$([int]$_.FileSystemRights)|$($_.AccessControlType)|$([int]$_.InheritanceFlags)|$([int]$_.PropagationFlags)|$($_.IsInherited)" })
+    foreach ($capability in $before.expected.sids) {
+        $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($capability),
+            [Security.AccessControl.FileSystemRights]$before.expected.accessMask, [Security.AccessControl.InheritanceFlags]$before.expected.inheritance,
+            [Security.AccessControl.PropagationFlags]$before.expected.propagation, [Security.AccessControl.AccessControlType]::Allow))
+    }
+    if ($PSVersionTable.PSEdition -ceq 'Desktop') { [IO.Directory]::SetAccessControl($Staging, $acl) }
+    else { [IO.FileSystemAclExtensions]::SetAccessControl([IO.DirectoryInfo]::new($Staging), $acl) }
+    $readback = if ($PSVersionTable.PSEdition -ceq 'Desktop') { [IO.Directory]::GetAccessControl($Staging, $sections) }
+        else { [IO.FileSystemAclExtensions]::GetAccessControl([IO.DirectoryInfo]::new($Staging), $sections) }
+    $actual = @($readback.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+    $actualText = @($actual | ForEach-Object { "$($_.IdentityReference.Value)|$([int]$_.FileSystemRights)|$($_.AccessControlType)|$([int]$_.InheritanceFlags)|$([int]$_.PropagationFlags)|$($_.IsInherited)" })
+    if (@($oldRules | Where-Object { $actualText -cnotcontains $_ }).Count -or $readback.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $sid.Value -or
+        @($before.expected.sids | Where-Object { $cap = $_; -not @($actual | Where-Object { $_.IdentityReference.Value -ceq $cap -and
+            -not $_.IsInherited -and [int]$_.FileSystemRights -eq $before.expected.accessMask -and [int]$_.InheritanceFlags -eq $before.expected.inheritance -and
+            [int]$_.PropagationFlags -eq $before.expected.propagation -and $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow }).Count }).Count) {
+        throw 'Fresh Snapshot install-files access did not read back exactly; staging retained.'
+    }
+}
+
 function ClassifyPackage($Package) {
     $effect = PackageEffect $Package
     $entries = @(FindUninstallEntries $Package.existing)
@@ -3368,8 +3498,13 @@ function ClassifyPackage($Package) {
         elseif ($class.changed) { "the owned $($effect.target) was installed for another inventory or seed than this selection; Uninstall removes it, then it can be installed again" }
         elseif ($class.class -ceq 'owned-drift') { "the owned $($effect.target) differs from the pinned inventory; Uninstall removes it, then it can be installed again" }
         elseif ($class.class -ceq 'indeterminate') { $(if ($tree.reason) { $tree.reason } else { 'an interrupted attempt is not recovered yet' }) }
+    $installAccess = SnapshotInstallAccess $Package $effect.target
+    if ($class.class -ceq 'owned-match' -and $installAccess.applicable -and -not $installAccess.converged) {
+        $class.class = 'owned-drift'; $class.converged = $false; $class.install = $false
+        $reason = 'Owned Snapshot install-files capabilities are missing or unknown; never repaired in place.'
+    }
     [pscustomobject]@{ package = $Package; effect = $effect; class = $class.class; install = $class.install; converged = $class.converged
-        conflict = $class.conflict; hazard = $class.hazard; reason = $reason }
+        conflict = $class.conflict; hazard = $class.hazard; reason = $reason; installAccess = $installAccess }
 }
 
 # The packages this run converges or checks: every lock for Restore and RestoreTest, those named by -Packages for Apply.
@@ -3466,14 +3601,19 @@ function InstallPackage($State) {
             $listing = @(ConvertFrom-TarListing $rawListing $package.files (Get-Field $package 'emptyDirectories'))
             $problem = Get-ZipEntryProblem $listing $package.files (Get-Field $package 'emptyDirectories')
             if ($problem) { throw "The $($package.name) archive is not the pinned inventory: $problem" }
-            $null = [IO.Directory]::CreateDirectory($staging)
+            if ((SnapshotInstallAccess $package $staging).applicable) { InitializeSnapshotInstallAccess $State $staging }
+            else { $null = [IO.Directory]::CreateDirectory($staging) }
             $null = Invoke-Native $tar @('-xf', $asset, '-C', $staging) 600
         } finally { $stream.Dispose() }
         [IO.File]::Delete($asset)
         $seed = Get-Field $package 'seed'
         if ($null -ne $seed) { WriteSeed $seed (BundlePath $seed.file) $staging }
         if (-not (Test-EffectStateEqual 'tree-extracted' $effect.desired (ObserveTree $staging))) { throw "Staged $staging differs from the inventory." }
+        $access = SnapshotInstallAccess $package $staging
+        if ($access.applicable -and -not $access.converged) { throw 'Staged Snapshot install-files access differs; staging retained.' }
         [IO.Directory]::Move($staging, $effect.target)
+        $access = SnapshotInstallAccess $package $effect.target
+        if ($access.applicable -and -not $access.converged) { throw 'Moved Snapshot install-files access differs; tree retained without commit.' }
         WriteRecord 'commit' $effect (ObserveTree $effect.target)
         $script:copied++
     }
@@ -3738,7 +3878,7 @@ try {
             noctty = $nocttyPlan; terminalSelection = (StartupPair); terminalPackageView = $nativeNoctty.packageView
             terminalMinimumVersionMet = (TestTerminalPackage)
             packages = @($nativePackages | ForEach-Object { [ordered]@{ name = $_.package.name; version = $_.package.version; productVersion = $(if ($null -ne (Get-Field $_.package "productVersion")) { $_.package.productVersion } else { $_.package.version })
-                target = $_.effect.target; class = $_.class; install = $_.install; converged = $_.converged; reason = $_.reason } })
+                target = $_.effect.target; class = $_.class; install = $_.install; converged = $_.converged; reason = $_.reason; installAccess = $_.installAccess } })
             apps = @(AppStates | ForEach-Object { [ordered]@{ name = $_.app.name; action = $_.action; acceptedVersion = (Get-Field $_.app 'acceptedVersion'); found = @($_.found) } })
             ledgerRecords = $script:ledgerRecords.Count
             ledgerLastRecords = @(LedgerIds | ForEach-Object { $last = @(RecordsOf $_)[-1]
@@ -3865,7 +4005,8 @@ try {
             $name = $_.name
             $state = @($packageStates | Where-Object { $_.package.name -ceq $name })
             [ordered]@{ name = $name; version = $_.version; productVersion = $(if ($null -ne (Get-Field $_ "productVersion")) { $_.productVersion } else { $_.version })
-                class = $(if ($state.Count) { $state[0].class } else { 'notEvaluated' }) } });
+                class = $(if ($state.Count) { $state[0].class } else { 'notEvaluated' });
+                installAccess = $(if ($state.Count) { $state[0].installAccess } else { 'notEvaluated' }) } });
         appFonts = $appFontsResult
         chromiumFonts = $(if ($ChromiumFonts) { @($script:chromiumFontsResult) } else { 'notEvaluated' })
         uiFont = $(if ($uiFont) { UiFontReport } else { 'notEvaluated' })
@@ -3885,7 +4026,7 @@ try {
             else { $Mode -cin @('Restore','RestoreTest') -and @($manifest.core.pending).Count -eq 0 });
         # A partial core cannot report the whole declared core in desired state; active UX is separate.
         registrationState = $(if (TestNocttyRegistration) { 'registered' } else { 'unregistered' });
-        handoffProof = 'unproven' } | ConvertTo-Json -Compress -Depth 4
+        handoffProof = 'unproven' } | ConvertTo-Json -Compress -Depth 10
 }
 finally {
     if ($script:ledgerLock) { $script:ledgerLock.Dispose() }

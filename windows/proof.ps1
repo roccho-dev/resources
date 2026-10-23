@@ -895,6 +895,7 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
         'ConvergeAppPath', 'CollectAppPathGarbage', 'ConvergeEffect', 'Classify', 'UndoOwned', 'SharedKey', 'ObserveKeyContent',
         'ConvergeNocttyConfig','ApplyNocttyConfigOnly','PlatformDirectory','SharedDirectory','PackageInUse','ExistingProblems','AssertPackageShape','TestWindowsRelative','PathsOverlap',
         'AssertSuccessfulPackageGc','CollectPackageGarbage','TreeReferenceProblems'
+    $names += 'SnapshotInstallAccess','InitializeSnapshotInstallAccess','ClassifyPackage','FindUninstallEntries','PreflightPackages'
     $names += 'AppxEffect', 'ObserveAppx', 'IntroduceAppx', 'ConvergeApps', 'FetchBootstrap', 'AssertAppxManifest', 'AssertMicrosoftSignature'
     $names += 'PlatformEffect','ObservePlatformEffect','IntroducePlatform','IsPlatformEffect','IsHostEffect','HostProfile'
     $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $Root 'win.ps1'), [ref]$null, [ref]$null)
@@ -953,6 +954,95 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
     $legacyShape.PSObject.Properties.Remove('productVersion')
     $legacyShape.url='https://github.com/example/browser/releases/download/v158/browser.zip'
     AssertPackageShape $legacyShape
+    # Snapshot-only install-files access on synthetic public bytes. No browser,
+    # private data, real registry write or real package tree is touched here.
+    $capSaved = @{ packages=$manifest.packages; home=$localAppData; ledger=$ledgerDirectory
+        records=$script:ledgerRecords; index=$script:ledgerById; seq=$script:nextSeq; written=$script:recordsWritten }
+    $findEntries = (Get-Item Function:FindUninstallEntries).ScriptBlock
+    Set-Item Function:FindUninstallEntries { @() }
+    try {
+        $localAppData = Join-Path $Scratch 'snapshot-access'
+        $ledgerDirectory = Join-Path $localAppData 'ledger'
+        $capPrograms = Join-Path $localAppData 'Programs'
+        $null = [IO.Directory]::CreateDirectory($ledgerDirectory)
+        $null = [IO.Directory]::CreateDirectory($capPrograms)
+        $script:ledgerRecords, $script:ledgerById, $script:nextSeq, $script:recordsWritten = @(), (NewLedgerIndex), 1, 0
+        $capPackage = $snapshotShape | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+        $capPackage | Add-Member NoteProperty sha256 ('a' * 64)
+        $capPackage.files = [pscustomobject]@{ 'chrome-win/chrome.exe'=(Sha 'public exe'); 'chrome-win/resources.pak'=(Sha 'public resource') }
+        $manifest.packages = @($capPackage)
+        $capEffect = PackageEffect $capPackage
+        $capState = [pscustomobject]@{ package=$capPackage; effect=$capEffect; install=$true }
+        $capStaging = Staging $capEffect
+        $parentAcl = (Get-Acl -LiteralPath $capPrograms).Sddl
+        $capAbsent = SnapshotInstallAccess $capPackage $capEffect.target
+        Must ($capAbsent.applicable -and $capAbsent.state -ceq 'absent' -and $capAbsent.expected.accessMask -eq 0x1200a9 -and
+            $capAbsent.expected.inheritance -eq 3 -and $capAbsent.expected.sids.Count -eq 2) 'Snapshot access declares two exact RX inheritable capabilities'
+        Refused { InitializeSnapshotInstallAccess $capState $capStaging } '*fresh selected install intent*'
+        Must (-not (Test-Path -LiteralPath $capStaging)) 'no intent refuses before staging creation'
+        WriteRecord 'intent' $capEffect $null $capStaging $capPackage.name
+        $beforeAccessSeq = $script:nextSeq
+        InitializeSnapshotInstallAccess $capState $capStaging
+        $null = [IO.Directory]::CreateDirectory((Join-Path $capStaging 'chrome-win'))
+        [IO.File]::WriteAllText((Join-Path $capStaging 'chrome-win\chrome.exe'), 'public exe')
+        [IO.File]::WriteAllText((Join-Path $capStaging 'chrome-win\resources.pak'), 'public resource')
+        $capAccess = SnapshotInstallAccess $capPackage $capStaging
+        Must ($capAccess.converged -and $capAccess.observed.Count -eq 4 -and
+            $capAccess.observed[0].owner -ceq [Security.Principal.WindowsIdentity]::GetCurrent().User.Value -and
+            (Get-Acl -LiteralPath $capPrograms).Sddl -ceq $parentAcl -and $script:nextSeq -eq $beforeAccessSeq) 'new staging has current owner, exact descendant RX and unchanged parent ACL/ledger'
+        $capAcl = (Get-Acl -LiteralPath $capStaging).Sddl
+        Refused { InitializeSnapshotInstallAccess $capState $capStaging } '*fresh selected install intent*'
+        Must ((Get-Acl -LiteralPath $capStaging).Sddl -ceq $capAcl) 'existing staging is never rewritten'
+        [IO.Directory]::Move($capStaging, $capEffect.target)
+        WriteRecord 'commit' $capEffect (ObserveTree $capEffect.target)
+        $rootAcl, $exeAcl = (Get-Acl -LiteralPath $capEffect.target).Sddl, (Get-Acl -LiteralPath (Join-Path $capEffect.target $capPackage.executable)).Sddl
+        $noopSeq = $script:nextSeq
+        Must ((ClassifyPackage $capPackage).class -ceq 'owned-match' -and (SnapshotInstallAccess $capPackage $capEffect.target).converged -and
+            (SnapshotInstallAccess $capPackage $capEffect.target).converged -and $script:nextSeq -eq $noopSeq -and
+            (Get-Acl -LiteralPath $capEffect.target).Sddl -ceq $rootAcl -and (Get-Acl -LiteralPath (Join-Path $capEffect.target $capPackage.executable)).Sddl -ceq $exeAcl) 'same-input observation is ACL/file/ledger no-op'
+        $badCap = $capPackage | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+        $badCap.url = $badCap.url.Replace('/123/', '/999/')
+        Refused { SnapshotInstallAccess $badCap $capEffect.target } '*Snapshot productVersion/revision/URL identity differs*'
+        Refused { InitializeSnapshotInstallAccess $capState (Join-Path $capPrograms 'arbitrary.staging') } '*not this selected owned tree*'
+        Must (-not (SnapshotInstallAccess $legacyShape $capEffect.target).applicable) 'absent-field legacy retains its access contract'
+        # Deliberately remove one new capability from this synthetic owned tree;
+        # observation must refuse adoption, and never repair it in place.
+        $acl = Get-Acl -LiteralPath $capEffect.target
+        foreach ($rule in @($acl.GetAccessRules($true,$false,[Security.Principal.SecurityIdentifier]) | Where-Object {
+            $_.IdentityReference.Value -ceq $capAbsent.expected.sids[0] })) { $acl.RemoveAccessRuleSpecific($rule) }
+        # Preserve SID identities; Set-Acl on Windows PowerShell 5.1 may resolve
+        # an unrelated unmapped group through the domain before writing its DACL.
+        if ($PSVersionTable.PSEdition -ceq 'Desktop') { [IO.Directory]::SetAccessControl($capEffect.target, $acl) }
+        else { [IO.FileSystemAclExtensions]::SetAccessControl([IO.DirectoryInfo]::new($capEffect.target), $acl) }
+        $missingAcl = (Get-Acl -LiteralPath $capEffect.target).Sddl
+        $missing = ClassifyPackage $capPackage
+        Must ($missing.class -ceq 'owned-drift' -and -not $missing.installAccess.converged -and -not $missing.install) 'owned missing capabilities are read-only drift, not a reinstall'
+        Refused { PreflightPackages @($missing) } '*Packages stop the run before any effect*'
+        Refused { InitializeSnapshotInstallAccess $capState $capEffect.target } '*fresh selected install intent*'
+        Must ((Get-Acl -LiteralPath $capEffect.target).Sddl -ceq $missingAcl -and $script:nextSeq -eq $noopSeq) 'existing missing access remains unchanged'
+        # Another current intent whose exact staging already exists: refusal is
+        # before any ACL write, including the atomic-create collision path.
+        $existingPackage = $capPackage | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+        $existingPackage.version = '158.0.8120.0.r124'; $existingPackage.url = $existingPackage.url.Replace('/123/', '/124/')
+        $existingPackage.directory = 'Programs/chromium-' + $existingPackage.version
+        $manifest.packages = @($existingPackage)
+        $existingEffect = PackageEffect $existingPackage
+        $existingState = [pscustomobject]@{ package=$existingPackage; effect=$existingEffect; install=$true }
+        $existingStaging = Staging $existingEffect
+        WriteRecord 'intent' $existingEffect $null $existingStaging $existingPackage.name
+        $null = [IO.Directory]::CreateDirectory($existingStaging)
+        [IO.File]::WriteAllText((Join-Path $existingStaging 'marker.txt'), 'preexisting public fixture')
+        $existingAcl = (Get-Acl -LiteralPath $existingStaging).Sddl
+        Refused { InitializeSnapshotInstallAccess $existingState $existingStaging } '*fresh selected install intent*'
+        Must ((Get-Acl -LiteralPath $existingStaging).Sddl -ceq $existingAcl -and
+            [IO.File]::ReadAllText((Join-Path $existingStaging 'marker.txt')) -ceq 'preexisting public fixture' -and
+            (Get-Acl -LiteralPath $capPrograms).Sddl -ceq $parentAcl) 'preexisting staging/parent/bytes remain untouched'
+    } finally {
+        Set-Item Function:FindUninstallEntries $findEntries
+        $manifest.packages, $localAppData, $ledgerDirectory = $capSaved.packages, $capSaved.home, $capSaved.ledger
+        $script:ledgerRecords, $script:ledgerById, $script:nextSeq, $script:recordsWritten = $capSaved.records, $capSaved.index, $capSaved.seq, $capSaved.written
+    }
+
     $oldLayout = Join-Path $Scratch 'Programs\chromium-158.0.8120.0.r111\Chrome-bin'
     $null = [IO.Directory]::CreateDirectory($oldLayout)
     $oldExe = Join-Path $oldLayout 'chrome.exe'
