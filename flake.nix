@@ -680,6 +680,7 @@
       } // pkgs.lib.optionalAttrs windowsPc7337.plan.complete {
         windows-pc7337-dist = windowsPc7337.fullDist;
       };
+      chromiumSnapshots = chromiumSnapshot.pins;
       windowsHosts = { pc7337 = windowsPc7337.plan; g6i3 = windowsG6i3.plan; };
       apps.${system}.github-root = {
         type = "app";

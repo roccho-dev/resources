@@ -893,7 +893,7 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
         'StepText', 'IsPackageTree', 'RemovePackageAsset', 'IndexRecord', 'ReadLedger', 'LedgerIds', 'NewLedgerIndex', 'AttemptOf',
         'PackageEffect', 'SeedHazard', 'WriteSeed', 'AppPathEffects', 'IsAppPathEffect', 'MachineAppPath', 'EffectClass', 'AppPathState',
         'ConvergeAppPath', 'CollectAppPathGarbage', 'ConvergeEffect', 'Classify', 'UndoOwned', 'SharedKey', 'ObserveKeyContent',
-        'ConvergeNocttyConfig','ApplyNocttyConfigOnly','PlatformDirectory','SharedDirectory','PackageInUse','ExistingProblems','AssertPackageShape'
+        'ConvergeNocttyConfig','ApplyNocttyConfigOnly','PlatformDirectory','SharedDirectory','PackageInUse','ExistingProblems','AssertPackageShape','TestWindowsRelative','PathsOverlap'
     $names += 'AppxEffect', 'ObserveAppx', 'IntroduceAppx', 'ConvergeApps', 'FetchBootstrap', 'AssertAppxManifest', 'AssertMicrosoftSignature'
     $names += 'PlatformEffect','ObservePlatformEffect','IntroducePlatform','IsPlatformEffect','IsHostEffect','HostProfile'
     $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $Root 'win.ps1'), [ref]$null, [ref]$null)
@@ -961,7 +961,7 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
     try { Must (PackageInUse $newLayoutPackage (Split-Path $oldLayout -Parent) $oldFiles) 'old layout locked executable is still in use' }
     finally { $hold.Dispose() }
     Must (-not (PackageInUse $newLayoutPackage (Split-Path $oldLayout -Parent) $oldFiles)) 'old layout unlocked executable is not in use'
-    Must (@(ExistingProblems ([pscustomobject]@{}) $newLayoutPackage) -like '*revision/inventory is unknown*') 'foreign same-version Snapshot is never automatically adopted'
+    Must (@(ExistingProblems ([pscustomobject]@{}) $newLayoutPackage | Where-Object { $_ -like '*revision/inventory is unknown*' }).Count -eq 1) 'foreign same-version Snapshot is never automatically adopted'
 
     $null = New-Item -ItemType Directory -Path $ledgerDirectory, (Join-Path $Scratch 'Programs'), (Split-Path -Parent $nocttyConfig) -Force
     $selected = NocttyEffects

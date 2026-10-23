@@ -2,20 +2,27 @@
 # These are different OS builds, not Chrome channel releases and not a moving latest.
 { pkgs }:
 let
-  pins = {
+  selections = {
     windows = {
       revision = "1725461"; productVersion = "158.0.8120.0";
       sourceCommit = "de870ab4e5458d2efb17be9070932318dfb43019";
-      url = "https://storage.googleapis.com/chromium-browser-snapshots/Win_x64/1725461/chrome-win.zip";
       size = 368715830; sha256 = "10b934a9178ec2788d0cbadaf6a5bb179907ad42c06153174052f24fdbd48cba";
     };
     linux = {
       revision = "1725409"; productVersion = "158.0.8119.0";
       sourceCommit = "2fd190223685b6c8fbe3723772c28b2797a675aa";
-      url = "https://storage.googleapis.com/chromium-browser-snapshots/Linux_x64/1725409/chrome-linux.zip";
       size = 253847229; sha256 = "6086e166e5a41a52346a2a163acf47a991643592a4d83f375bf0284a223620dd";
     };
   };
+  pins = builtins.mapAttrs (os: pin:
+    assert builtins.match "[1-9][0-9]*" pin.revision != null;
+    assert builtins.match "[0-9]+(\\.[0-9]+){3}" pin.productVersion != null;
+    assert builtins.match "[0-9a-f]{40}" pin.sourceCommit != null;
+    pin // {
+      url = "https://storage.googleapis.com/chromium-browser-snapshots/"
+        + (if os == "windows" then "Win_x64" else "Linux_x64")
+        + "/${pin.revision}/" + (if os == "windows" then "chrome-win.zip" else "chrome-linux.zip");
+    }) selections;
   # Both selected source revisions carry the same BSD notice. Keep it with each
   # materialization; the unchanged browser resources also contain chrome://credits.
   license = pkgs.runCommand "chromium-source-license" {} ''
