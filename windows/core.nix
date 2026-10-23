@@ -6,11 +6,12 @@ let
     (pkgs.lib.splitString "\n" (builtins.readFile (meltypeSrc + "/src/Meltype/Meltype.csproj"))));
   meltypeVersion = assert builtins.length versionRows == 1; builtins.head (builtins.head versionRows);
   nocttyVersion = "1.3.131";
+  declared = [ "Notepads" "Noctty" "fonts" "Chromium" "Meltype fork" ];
+  chromium = import ../profile/chromium.nix { inherit pkgs; };
 in {
-  declared = [ "Notepads" "Noctty" "fonts" "Chromium Beta" "Meltype fork" ];
-  selected = [ "Notepads" "Noctty" "fonts" "Meltype fork" ];
-  pending = [ { product = "Chromium"; channel = "Beta";
-    reason = "A true Beta-branch Chromium Windows artifact supplier/build is not selected; Chrome, ungoogled, Stable and arbitrary snapshots are not substitutes."; } ];
+  inherit chromium declared;
+  selected = declared;
+  pending = [];
   fonts = (import ../profile/fonts.nix { inherit pkgs; }).commonFonts;
   noctty = {
     version = nocttyVersion;
@@ -19,7 +20,7 @@ in {
       sha256 = "d776bd0e4507abd3a3d6e4a4b347d089960ad5171d0caeeb783e01dd4b0e15fd";
     };
   };
-  packages = [ {
+  packages = [ chromium.windowsPackage {
     name = "Meltype"; version = meltypeVersion;
     url = "https://github.com/roccho-dev/Meltype/releases/download/v${meltypeVersion}/Meltype-${meltypeVersion}-windows.zip";
     format = "zip"; size = 51260370;

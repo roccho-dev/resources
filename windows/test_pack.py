@@ -187,6 +187,35 @@ class CompilerTests(unittest.TestCase):
         existing.update(changes)
         return existing
 
+    def test_official_snapshot_build_identity(self):
+        def snapshot(rev="123", product="158.0.8120.0"):
+            return self.lock(name="Chromium", version=f"{product}.r{rev}", productVersion=product,
+                url=f"https://storage.googleapis.com/chromium-browser-snapshots/Win_x64/{rev}/chrome-win.zip",
+                directory=f"Programs/chromium-{product}.r{rev}", executable="chrome-win/chrome.exe")
+        one, two = snapshot(), snapshot("124")
+        self.assertEqual(pack.package_locks([one]), [one])
+        self.assertNotEqual(one["directory"], two["directory"])
+        for change in [
+            {"productVersion": "158.0.8120"}, {"productVersion": "158.0.8121.0"},
+            {"version": "158.0.8120.0.r124"}, {"name": "Fixture"},
+            {"format": "7z"}, {"executable": "Chrome-bin/chrome.exe"},
+            {"url": one["url"].replace("Win_x64", "Linux_x64")},
+            {"url": one["url"].replace("/123/", "/124/")},
+            {"url": one["url"]+"?download=1"},
+            {"url": one["url"].replace("storage.googleapis.com", "storage.googleapis.com.evil.test")},
+            {"url": one["url"].replace("/123/", "/../123/")},
+            {"url": one["url"].replace("/123/", "/0123/")},
+            {"url": one["url"].replace("chrome-win.zip", "other.zip")},
+        ]:
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                pack.package_locks([dict(one, **change)])
+        missing = dict(one)
+        missing.pop("productVersion")
+        with self.assertRaises(ValueError):
+            pack.package_locks([missing])
+        # Other pre-existing lock types keep the previous version meaning.
+        self.assertEqual(pack.package_locks([self.lock()]), [self.lock()])
+
     def test_package_lock_contract(self):
         self.assertEqual(pack.package_locks([self.lock()]), [self.lock()])
         self.assertEqual(pack.package_locks([self.lock(sha1="0" * 40)]), [self.lock(sha1="0" * 40)])
@@ -439,7 +468,7 @@ class CompilerTests(unittest.TestCase):
         scripts = self.root / "scripts"
         scripts.mkdir(exist_ok=True)
         for name in ("win.ps1", "proof.ps1", "handoff-proof.ps1", "handoff-evaluate.ps1",
-                     "package-view.ps1", "ui-font.ahk", "rent-access.ps1", "host-state.ps1", "README.md"):
+                     "package-view.ps1", "ui-font.ahk", "rent-access.ps1", "host-state.ps1", "chromium-proof.ps1", "README.md"):
             (scripts / name).write_text("fixture")
         (scripts / "ssh").mkdir(exist_ok=True)
         for name in ("versapro.config", "versapro.known_hosts"):

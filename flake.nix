@@ -74,6 +74,7 @@
       };
       versaOwnBase = mkOwn { piTarget = versaOwnPiTarget; };
       versaTypeLLMOwn = mkOwn { extra = [ versaTypeLLM ]; piTarget = versaOwnPiTarget; };
+      chromiumSnapshot = import ./profile/chromium.nix { inherit pkgs; };
       windowsCore = import ./windows/core.nix { inherit pkgs; meltypeSrc = meltype-src; };
       windowsFor = host: import ./windows/nix.nix {
         inherit pkgs host; core = windowsCore; source = self.rev or "uncommitted";
@@ -672,6 +673,7 @@
         git-state-backend = gitState.backend;
         dev-profile = dev.profile;
         dev-image = dev.image;
+        chromium-snapshot = chromiumSnapshot.linux;
         common-fonts = common.fonts;
         windows-dist = common.dist; # Existing legacy proof consumer; never the PC7337 apply entry.
         windows-pc7337-partial-dist = windowsPc7337.dist;

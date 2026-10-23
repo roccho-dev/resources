@@ -188,6 +188,15 @@ function AssertPackageShape($Package) {
         @($protected | Where-Object { -not (TestWindowsRelative $_) }).Count -gt 0) {
         throw "Invalid package in manifest: $name"
     }
+    $productVersion = Get-Field $Package 'productVersion'
+    $snapshotUrl = [regex]::Match([string](Get-Field $Package 'url'), '^https://storage\.googleapis\.com/chromium-browser-snapshots/Win_x64/([1-9][0-9]*)/chrome-win\.zip\z')
+    if ($null -ne $productVersion -or $snapshotUrl.Success) {
+        if ($name -cne 'Chromium' -or (Get-Field $Package 'format') -cne 'zip' -or -not $snapshotUrl.Success -or
+            $productVersion -isnot [string] -or $productVersion -cnotmatch '^[0-9]+(\.[0-9]+){3}\z' -or
+            $version -cne ($productVersion + '.r' + $snapshotUrl.Groups[1].Value) -or $executable -cne 'chrome-win/chrome.exe') {
+            throw 'Chromium Snapshot productVersion/revision/URL identity differs'
+        }
+    }
     foreach ($foreign in @($existing.installLocation) + @($protected)) {
         if (PathsOverlap $Package.directory $foreign) { throw "Package directory overlaps an unowned path: $name" }
     }
@@ -306,6 +315,9 @@ function FindUninstallEntries($Existing) {
 # Why one Uninstall entry is not exactly the locked version of this product; none when it is.
 # The version is read from the entry's own InstallLocation, not from the lock.
 function ExistingProblems($Entry, $Package) {
+    # A four-part PE/Uninstall version cannot prove the revision of a foreign Snapshot.
+    # Only an owned, fully inventoried tree proves this source's build identity.
+    if ($null -ne (Get-Field $Package 'productVersion')) { return 'External Chromium Snapshot revision/inventory is unknown; automatic adoption refused' }
     $existing = $Package.existing
     if ($Entry.key -ne $existing.uninstallKey) { "key is not $($existing.uninstallKey)" }
     if ($Entry.displayName -cne $existing.displayName) { "DisplayName is '$($Entry.displayName)'" }
@@ -3359,15 +3371,27 @@ function SelectedPackages {
 # sharing or lock violation, as while it runs (a mapped image refuses writers) or another handle holds
 # it; Uninstall and collection then leave that tree alone. Any other failure (read-only, access denied)
 # is not "in use" and stops the run with its real reason; a missing executable is not in use.
-function PackageInUse($Package, [string]$Tree) {
-    $exe = Join-Path $Tree $Package.executable.Replace('/', '\')
-    if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { return $false }
-    try { [IO.File]::Open($exe, 'Open', 'ReadWrite', 'None').Dispose(); return $false }
-    catch {
-        $failure = $_.Exception.GetBaseException()
-        if ($failure -is [IO.IOException] -and ($failure.HResult -band 0xFFFF) -in @(32, 33)) { return $true }  # ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION
-        throw "Cannot tell whether $exe is in use: $($failure.Message)"
+function PackageInUse($Package, [string]$Tree, $OwnedFiles = $null) {
+    # Old builds may use another executable layout. For collection inspect the
+    # original ledger inventory, never the currently selected package path.
+    $relative = if ($null -eq $OwnedFiles) { @($Package.executable) } else {
+        $map = ConvertTo-FileMap $OwnedFiles
+        if ($null -eq $map) { throw "Cannot determine the recorded executable inventory: $Tree" }
+        @($map.Keys | Where-Object { $_ -match '\.exe$' })
     }
+    if (-not @($relative).Count) { throw "No executable in the recorded package inventory: $Tree" }
+    foreach ($name in $relative) {
+        if (-not (TestWindowsRelative $name)) { throw 'Invalid recorded executable path' }
+        $exe = Join-Path $Tree $name.Replace('/', '\')
+        if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { continue }
+        try { [IO.File]::Open($exe, 'Open', 'ReadWrite', 'None').Dispose() }
+        catch {
+            $failure = $_.Exception.GetBaseException()
+            if ($failure -is [IO.IOException] -and ($failure.HResult -band 0xFFFF) -in @(32, 33)) { return $true }
+            throw "Cannot tell whether $exe is in use: $($failure.Message)"
+        }
+    }
+    return $false
 }
 
 # Before any effect: an indeterminate or owned-drift package stops the run, and every install (ZIP or 7z,
@@ -3449,7 +3473,9 @@ function CollectPackageGarbage($State) {
         $target = [string](Get-Field $first 'target')
         if ($id -ceq $State.effect.id -or (Get-Field $first 'kind') -cne 'tree-extracted' -or -not (Test-PackageTarget $target $State.package.name $programs) -or
             -not @(OpenAttempt $id).Count) { continue }
-        if (PackageInUse $State.package $target) { $script:packageDrift += "$target is in use; kept"; continue }
+        $oldFiles = Get-Field (Get-Field $first 'desired') 'files'
+        if ($null -eq $oldFiles) { throw "Old package inventory is unknown: $target" }
+        if (PackageInUse $State.package $target $oldFiles) { $script:packageDrift += "$target is in use; kept"; continue }
         $observations = @{}
         $observations[$id] = Observe $first
         $plan = Get-UninstallPlan @(RecordsOf $id) $observations
@@ -3632,7 +3658,7 @@ try {
             fonts = $fontPlan; uiFontFaces = $uiPlan; liveUiFont = $(if ($null -ne $uiTypography) { UiFontReport } else { $null })
             noctty = $nocttyPlan; terminalSelection = (StartupPair); terminalPackageView = $nativeNoctty.packageView
             terminalMinimumVersionMet = (TestTerminalPackage)
-            packages = @($nativePackages | ForEach-Object { [ordered]@{ name = $_.package.name; version = $_.package.version
+            packages = @($nativePackages | ForEach-Object { [ordered]@{ name = $_.package.name; version = $_.package.version; productVersion = $(if ($null -ne (Get-Field $_.package "productVersion")) { $_.package.productVersion } else { $_.package.version })
                 target = $_.effect.target; class = $_.class; install = $_.install; converged = $_.converged; reason = $_.reason } })
             apps = @(AppStates | ForEach-Object { [ordered]@{ name = $_.app.name; action = $_.action; acceptedVersion = (Get-Field $_.app 'acceptedVersion'); found = @($_.found) } })
             ledgerRecords = $script:ledgerRecords.Count
@@ -3759,7 +3785,7 @@ try {
         packages = @($manifest.packages | ForEach-Object {
             $name = $_.name
             $state = @($packageStates | Where-Object { $_.package.name -ceq $name })
-            [ordered]@{ name = $name; version = $_.version
+            [ordered]@{ name = $name; version = $_.version; productVersion = $(if ($null -ne (Get-Field $_ "productVersion")) { $_.productVersion } else { $_.version })
                 class = $(if ($state.Count) { $state[0].class } else { 'notEvaluated' }) } });
         appFonts = $appFontsResult
         chromiumFonts = $(if ($ChromiumFonts) { @($script:chromiumFontsResult) } else { 'notEvaluated' })

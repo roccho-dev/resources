@@ -107,8 +107,8 @@ def package_locks(packages: object) -> list[dict]:
         raise ValueError("Empty package selection")
     names, owned, app_paths = set(), [], set()
     for package in packages:
-        if not isinstance(package, dict) or set(package) - {"sha1", "seed", "appPath"} != PACKAGE_KEYS:
-            raise ValueError(f"Package lock keys differ from {sorted(PACKAGE_KEYS)} (+ optional sha1, seed, appPath)")
+        if not isinstance(package, dict) or set(package) - {"sha1", "seed", "appPath", "productVersion"} != PACKAGE_KEYS:
+            raise ValueError(f"Package lock keys differ from {sorted(PACKAGE_KEYS)} (+ optional sha1, seed, appPath, productVersion)")
         name, version = text(package["name"], "name"), text(package["version"], "version")
         if not TOKEN.fullmatch(name) or not VERSION.fullmatch(version) or name.casefold() in names:
             raise ValueError(f"Invalid or duplicate package: {name!r} {version!r}")
@@ -116,7 +116,15 @@ def package_locks(packages: object) -> list[dict]:
         if package["format"] not in ("zip", "7z"):
             raise ValueError(f"Unsupported package format: {package['format']!r}")
         url = text(package["url"], "url")
-        if (not url.startswith("https://github.com/") or "/releases/download/" not in url
+        snapshot = re.fullmatch(r"https://storage\.googleapis\.com/chromium-browser-snapshots/Win_x64/([1-9][0-9]*)/chrome-win\.zip", url)
+        if "productVersion" in package or snapshot:
+            product = package.get("productVersion")
+            if (name != "Chromium" or package["format"] != "zip" or not snapshot
+                    or not isinstance(product, str) or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){3}", product)
+                    or version != f"{product}.r{snapshot[1]}"
+                    or package["executable"] != "chrome-win/chrome.exe"):
+                raise ValueError("Chromium Snapshot productVersion/revision/URL identity differs")
+        elif (not url.startswith("https://github.com/") or "/releases/download/" not in url
                 or not url.endswith("." + package["format"])):
             raise ValueError(f"Package URL is not a pinned release asset: {url}")
         if not is_size(package["size"]):
@@ -681,7 +689,7 @@ def distribution(fonts: Path, noctty: Path, cloudflared: Path, choices: Path,
             raise ValueError("Declared Store apps require absent-AppInstaller recovery metadata")
         # rent-access.ps1 is the rent ProxyCommand launcher RentSsh installs beside the pinned client.
         for name in ("win.ps1", "proof.ps1", "handoff-proof.ps1", "handoff-evaluate.ps1",
-                     "package-view.ps1", "ui-font.ahk", "rent-access.ps1", "host-state.ps1", "README.md"):
+                     "package-view.ps1", "ui-font.ahk", "rent-access.ps1", "host-state.ps1", "chromium-proof.ps1", "README.md"):
             shutil.copyfile(scripts / name, root / name)
         # The SSH entries and host key pin Noctty's command reads; win.ps1 writes them beside its configuration.
         (root / "ssh").mkdir()
@@ -701,6 +709,9 @@ def distribution(fonts: Path, noctty: Path, cloudflared: Path, choices: Path,
                 (root / seed_file).write_bytes(data)
                 package["seed"] = {"path": package["seed"]["path"], "file": seed_file,
                                    "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+        if selected.get("chromiumLicense"):
+            (root / "licenses/chromium").mkdir(parents=True)
+            shutil.copyfile(selected["chromiumLicense"], root / "licenses/chromium/LICENSE")
         files = {p.relative_to(root).as_posix(): digest(p) for p in sorted(root.rglob("*")) if p.is_file()}
         write_json(root / "manifest.json", {"schemaVersion": 3, "source": source, "fonts": entries,
                    "noctty": {"version": selected["noctty"]["version"],

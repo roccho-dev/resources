@@ -893,7 +893,7 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
         'StepText', 'IsPackageTree', 'RemovePackageAsset', 'IndexRecord', 'ReadLedger', 'LedgerIds', 'NewLedgerIndex', 'AttemptOf',
         'PackageEffect', 'SeedHazard', 'WriteSeed', 'AppPathEffects', 'IsAppPathEffect', 'MachineAppPath', 'EffectClass', 'AppPathState',
         'ConvergeAppPath', 'CollectAppPathGarbage', 'ConvergeEffect', 'Classify', 'UndoOwned', 'SharedKey', 'ObserveKeyContent',
-        'ConvergeNocttyConfig','ApplyNocttyConfigOnly','PlatformDirectory','SharedDirectory'
+        'ConvergeNocttyConfig','ApplyNocttyConfigOnly','PlatformDirectory','SharedDirectory','PackageInUse','ExistingProblems','AssertPackageShape'
     $names += 'AppxEffect', 'ObserveAppx', 'IntroduceAppx', 'ConvergeApps', 'FetchBootstrap', 'AssertAppxManifest', 'AssertMicrosoftSignature'
     $names += 'PlatformEffect','ObservePlatformEffect','IntroducePlatform','IsPlatformEffect','IsHostEffect','HostProfile'
     $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $Root 'win.ps1'), [ref]$null, [ref]$null)
@@ -928,6 +928,41 @@ function PrimitiveProof([string]$Root, [string]$Scratch, [switch]$Real) {
     $nocttyRegistration = Get-NocttyRegistration @(@{ key = "Software\Classes\CLSID\$clsid\LocalServer32"; name = ''; data = 'proof' }) $nocttyDirectory $manifest.noctty.files
     $script:ledgerRecords, $script:nextSeq, $script:recordsWritten, $script:copied, $script:changed, $script:removed = @(), 1, 0, 0, 0, 0
     $script:ledgerById = NewLedgerIndex
+    $snapshotShape = [pscustomobject]@{
+        name='Chromium'; version='158.0.8120.0.r123'; productVersion='158.0.8120.0'
+        url='https://storage.googleapis.com/chromium-browser-snapshots/Win_x64/123/chrome-win.zip'; format='zip'
+        directory='Programs/chromium-158.0.8120.0.r123'; executable='chrome-win/chrome.exe'
+        files=[pscustomobject]@{'chrome-win/chrome.exe'=('a'*64)}; protected=@()
+        existing=[pscustomobject]@{uninstallKey='Chromium';displayName='Chromium';publisher='The Chromium Authors';installLocation='Chromium/Application';executable='chrome.exe'}
+    }
+    AssertPackageShape $snapshotShape
+    foreach ($change in @(
+        @{productVersion='158.0.8121.0'},
+        @{url='https://storage.googleapis.com/chromium-browser-snapshots/Win_x64/124/chrome-win.zip'},
+        @{url='https://storage.googleapis.com/chromium-browser-snapshots/Linux_x64/123/chrome-win.zip'},
+        @{url='https://storage.googleapis.com.evil.test/chromium-browser-snapshots/Win_x64/123/chrome-win.zip'},
+        @{url='https://storage.googleapis.com/chromium-browser-snapshots/Win_x64/123/chrome-win.zip?x=1'}
+    )) {
+        $bad = $snapshotShape | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+        foreach ($key in $change.Keys) { $bad.$key=$change[$key] }
+        Refused { AssertPackageShape $bad } '*Snapshot productVersion/revision/URL identity differs*'
+    }
+    $legacyShape = $snapshotShape | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+    $legacyShape.PSObject.Properties.Remove('productVersion')
+    $legacyShape.url='https://github.com/example/browser/releases/download/v158/browser.zip'
+    AssertPackageShape $legacyShape
+    $oldLayout = Join-Path $Scratch 'Programs\chromium-158.0.8120.0.r111\Chrome-bin'
+    $null = [IO.Directory]::CreateDirectory($oldLayout)
+    $oldExe = Join-Path $oldLayout 'chrome.exe'
+    [IO.File]::WriteAllText($oldExe, 'synthetic exe for sharing test only')
+    $newLayoutPackage = [pscustomobject]@{ executable='chrome-win/chrome.exe'; productVersion='158.0.8120.0' }
+    $oldFiles = @{ 'Chrome-bin/chrome.exe' = (Sha 'synthetic exe for sharing test only') }
+    $hold = [IO.File]::Open($oldExe,'Open','Read','None')
+    try { Must (PackageInUse $newLayoutPackage (Split-Path $oldLayout -Parent) $oldFiles) 'old layout locked executable is still in use' }
+    finally { $hold.Dispose() }
+    Must (-not (PackageInUse $newLayoutPackage (Split-Path $oldLayout -Parent) $oldFiles)) 'old layout unlocked executable is not in use'
+    Must (@(ExistingProblems ([pscustomobject]@{}) $newLayoutPackage) -like '*revision/inventory is unknown*') 'foreign same-version Snapshot is never automatically adopted'
+
     $null = New-Item -ItemType Directory -Path $ledgerDirectory, (Join-Path $Scratch 'Programs'), (Split-Path -Parent $nocttyConfig) -Force
     $selected = NocttyEffects
     & {
