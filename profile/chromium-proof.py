@@ -28,7 +28,12 @@ class CDP:
                            f"Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
                            "Sec-WebSocket-Version: 13\r\n\r\n").encode())
         response = b""
+        deadline = time.monotonic()+15
         while not response.endswith(b"\r\n\r\n"):
+            remaining = deadline-time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("WebSocket handshake timeout")
+            self.sock.settimeout(remaining)
             part = self.sock.recv(1)
             if not part:
                 raise EOFError("WebSocket handshake closed")
@@ -42,7 +47,12 @@ class CDP:
 
     def exact(self, n):
         out = b""
+        deadline = time.monotonic()+15
         while len(out) < n:
+            remaining = deadline-time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("CDP frame timeout")
+            self.sock.settimeout(remaining)
             part = self.sock.recv(n-len(out))
             if not part:
                 raise EOFError("CDP closed")
@@ -57,17 +67,27 @@ class CDP:
         self.sock.sendall(header+mask+bytes(v ^ mask[i % 4] for i, v in enumerate(raw)))
 
     def read(self):
-        head = self.exact(2)
-        if head[0] != 0x81 or head[1] & 0x80:
-            raise ValueError("Unexpected CDP frame")
-        size = head[1] & 127
-        if size == 126:
-            size = struct.unpack("!H", self.exact(2))[0]
-        elif size == 127:
-            size = struct.unpack("!Q", self.exact(8))[0]
-        if size > 16*1024*1024:
-            raise ValueError("Oversized CDP message")
-        return json.loads(self.exact(size))
+        # Large chrome://credits results may use continuation frames.
+        data = bytearray()
+        first = True
+        deadline = time.monotonic()+20
+        while time.monotonic() < deadline:
+            head = self.exact(2)
+            opcode = head[0] & 15
+            if head[0] & 0x70 or head[1] & 0x80 or opcode != (1 if first else 0):
+                raise ValueError("Unexpected CDP frame")
+            size = head[1] & 127
+            if size == 126:
+                size = struct.unpack("!H", self.exact(2))[0]
+            elif size == 127:
+                size = struct.unpack("!Q", self.exact(8))[0]
+            if len(data)+size > 16*1024*1024:
+                raise ValueError("Oversized CDP message")
+            data.extend(self.exact(size))
+            if head[0] & 0x80:
+                return json.loads(data)
+            first = False
+        raise TimeoutError("CDP message timeout")
 
     def call(self, method, params=None, session=None):
         self.seq += 1

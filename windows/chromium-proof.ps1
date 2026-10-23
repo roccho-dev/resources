@@ -140,7 +140,7 @@ try {
     $session=(CallCdp 'Target.attachToTarget' @{targetId=$tab.targetId;flatten=$true}).sessionId
     $ready=$false
     for ($i=0;$i -lt 50;$i++) {
-        $evaluation=CallCdp 'Runtime.evaluate' @{expression="document.readyState === 'complete' ? ({title:document.title,value:6*7,body:document.body.textContent.trim()}) : null";returnByValue=$true} $session
+        $evaluation=CallCdp 'Runtime.evaluate' @{expression="document.readyState === 'complete' && document.title === 'resources-chromium-proof' ? ({title:document.title,value:6*7,body:document.body.textContent.trim()}) : null";returnByValue=$true} $session
         $valueProperty=$evaluation.result.PSObject.Properties['value']
         if ($null -ne $valueProperty -and $null -ne $valueProperty.Value) { $ready=$true; break }
         Start-Sleep -Milliseconds 100
