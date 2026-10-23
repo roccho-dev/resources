@@ -682,13 +682,15 @@
         windows-pc7337-dist = windowsPc7337.fullDist;
       };
       windowsHosts = { pc7337 = windowsPc7337.plan; g6i3 = windowsG6i3.plan; };
-      apps.${system}.github-root = {
-        type = "app";
-        program = "${githubRoot.app}/bin/github-root";
-      };
-      apps.${system}.versa-preview = {
-        type = "app";
-        program = "${versaPreview.app}/bin/versa-preview";
+      apps.${system} = {
+        github-root = {
+          type = "app";
+          program = "${githubRoot.app}/bin/github-root";
+        };
+        versa-preview = {
+          type = "app";
+          program = "${versaPreview.app}/bin/versa-preview";
+        };
       };
       checks.${system} = {
         versa-preview = pkgs.runCommand "versa-preview-check" {} ''
