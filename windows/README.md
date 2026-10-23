@@ -1267,3 +1267,11 @@ provenance, derived executable/hash/architecture and actual product version rema
 the source identity evidence. Windows retains raw CDP metadata alongside its
 existing owned-file/PE/product checks; neither CDP branding nor a dummy revision
 substitutes for that identity. No Windows CDP result is claimed before execution.
+
+The fixed credits check follows the bundled upstream WebUI structure: exact
+chrome://credits/ URL, complete readiness, Credits document/page title, one
+nonempty license pre per named product, and a nontrivial combined license
+textContent length/hash. CSS hides these license bodies, and the Chromium word
+in the template is an HTML comment; visible innerText is not a license-presence
+test. Only counts/readiness and the license text digest are retained in receipts,
+including partial structural diagnostics on failure.

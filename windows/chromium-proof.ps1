@@ -173,14 +173,25 @@ try {
     if ($evaluation.result.value.title -cne 'resources-chromium-proof' -or $evaluation.result.value.value -ne 42 -or $evaluation.result.value.body -cne 'snapshot-proof') { throw 'Fixed page failed' }
     $tab=CallCdp 'Target.createTarget' @{url='chrome://credits/'}
     $session=(CallCdp 'Target.attachToTarget' @{targetId=$tab.targetId;flatten=$true}).sessionId
-    $credits=''
-    for ($i=0;$i -lt 50;$i++) {
-        $credits=[string](CallCdp 'Runtime.evaluate' @{expression="document.body ? document.body.innerText : ''";returnByValue=$true} $session).result.value
-        if ($credits.Length -gt 1000 -and $credits.Contains('Chromium')) { break }
+    # Match the compiled upstream WebUI, including CSS-hidden license text.
+    $creditsExpression = "(() => { const products = Array.from(document.querySelectorAll('.product')); const licenses = Array.from(document.querySelectorAll('.product .license pre')); return {href: location.href, title: document.title, ready: document.readyState, pageTitle: document.querySelector('.page-title')?.textContent.trim() || '', products: products.length, licenseBlocks: licenses.length, completeProducts: products.filter(p => p.querySelector('.title')?.textContent.trim() && p.querySelectorAll('.license pre').length === 1 && p.querySelector('.license pre').textContent.trim()).length, text: licenses.map(p => p.textContent).join(String.fromCharCode(10))}; })()"
+    $credits=''; $creditsReady=$false
+    $deadline=[DateTime]::UtcNow.AddSeconds(30)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $answer=CallCdp 'Runtime.evaluate' @{expression=$creditsExpression;returnByValue=$true} $session
+        $valueProperty=$answer.result.PSObject.Properties['value']
+        if ($null -ne $valueProperty -and $null -ne $valueProperty.Value) {
+            $v=$valueProperty.Value; $credits=[string]$v.text
+            $receipt.credits=[ordered]@{href=$v.href;title=$v.title;ready=$v.ready;pageTitle=$v.pageTitle;products=$v.products;licenseBlocks=$v.licenseBlocks;completeProducts=$v.completeProducts;characters=$credits.Length}
+            $creditsReady=($v.href -ceq 'chrome://credits/' -and $v.ready -ceq 'complete' -and
+                $v.title -ceq 'Credits' -and $v.pageTitle -ceq 'Credits' -and $v.products -gt 0 -and
+                $v.licenseBlocks -eq $v.products -and $v.completeProducts -eq $v.products -and $credits.Length -gt 1000)
+            if ($creditsReady) { break }
+        }
         Start-Sleep -Milliseconds 100
     }
-    if ($credits.Length -lt 1000 -or -not $credits.Contains('Chromium')) { throw 'Bundled third-party credits unavailable' }
-    $receipt.credits=@{characters=$credits.Length;sha256=(-join ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($credits)) | ForEach-Object {$_.ToString('x2')}))}
+    if (-not $creditsReady) { throw 'Bundled third-party credits structure/content unavailable' }
+    $receipt.credits.sha256=(-join ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($credits)) | ForEach-Object {$_.ToString('x2')}))
     $closeRequested=$true
     $null=SendCdp 'Browser.close' @{} $null
     if (-not $process.WaitForExit(15000)) { throw 'Owned browser close UNKNOWN; preserve instance/profile' }

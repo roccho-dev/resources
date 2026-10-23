@@ -247,16 +247,28 @@ def main():
             raise ValueError("Fixed representative page failed")
         credits = cdp.call("Target.createTarget", {"url":"chrome://credits/"})["targetId"]
         cs = cdp.call("Target.attachToTarget", {"targetId":credits,"flatten":True})["sessionId"]
-        text = ""
-        for _ in range(50):
-            answer = cdp.call("Runtime.evaluate", {"expression":"document.body ? document.body.innerText : ''","returnByValue":True}, cs)
-            text = answer["result"].get("value", "")
-            if "Chromium" in text and len(text) > 1000:
+        # Credits licenses are present but CSS-hidden; Chromium is only an HTML
+        # comment in the upstream template. Observe the compiled entry structure.
+        credits_expression = "(() => { const products = Array.from(document.querySelectorAll('.product')); const licenses = Array.from(document.querySelectorAll('.product .license pre')); return {href: location.href, title: document.title, ready: document.readyState, pageTitle: document.querySelector('.page-title')?.textContent.trim() || '', products: products.length, licenseBlocks: licenses.length, completeProducts: products.filter(p => p.querySelector('.title')?.textContent.trim() && p.querySelectorAll('.license pre').length === 1 && p.querySelector('.license pre').textContent.trim()).length, text: licenses.map(p => p.textContent).join(String.fromCharCode(10))}; })()"
+        text, credits_ready = "", False
+        deadline = time.monotonic()+30
+        while time.monotonic() < deadline:
+            answer = cdp.call("Runtime.evaluate", {"expression":credits_expression,"returnByValue":True}, cs)
+            observation = answer["result"].get("value") or {}
+            text = observation.get("text", "")
+            record["credits"] = {k:v for k,v in observation.items() if k != "text"}
+            record["credits"]["characters"] = len(text)
+            credits_ready = (observation.get("href") == "chrome://credits/" and
+                observation.get("ready") == "complete" and observation.get("title") == "Credits" and
+                observation.get("pageTitle") == "Credits" and observation.get("products", 0) > 0 and
+                observation.get("licenseBlocks") == observation.get("products") and
+                observation.get("completeProducts") == observation.get("products") and len(text) > 1000)
+            if credits_ready:
                 break
             time.sleep(0.1)
-        if "Chromium" not in text or len(text) < 1000:
-            raise ValueError("Bundled third-party credits unavailable")
-        record["credits"] = dict(characters=len(text), sha256=hashlib.sha256(text.encode()).hexdigest())
+        if not credits_ready:
+            raise ValueError("Bundled third-party credits structure/content unavailable")
+        record["credits"]["sha256"] = hashlib.sha256(text.encode()).hexdigest()
         close_requested = True
         cdp.seq += 1
         cdp.send(dict(id=cdp.seq, method="Browser.close", params={}))
