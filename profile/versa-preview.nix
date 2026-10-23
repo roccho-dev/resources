@@ -38,7 +38,7 @@ let
       exec ${pkgs.coreutils}/bin/env -i HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent \
         SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt \
         ${cloudflared}/bin/cloudflared tunnel --config ${emptyConfig} --no-autoupdate \
-        --url "http://127.0.0.1:$port" --allowed-mail "$email"
+        --metrics 127.0.0.1:0 --url "http://127.0.0.1:$port" --allowed-mail "$email"
     '';
   };
 in
