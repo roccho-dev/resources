@@ -1286,14 +1286,26 @@ public static string[] Split(string cmd) {
         @{ executable = $chromium.executable; files = $Files; protected = $Protected; seed = $seed }
     }
     function WithFile([string]$Name) { $files = @{ $Name = $shaA }; foreach ($p in $chromium.files.PSObject.Properties) { $files[$p.Name] = $p.Value }; $files }
-    $seedBad = @((SeedVariant @{ path = 'Chrome-bin/Initial_Preferences' }), (SeedVariant @{ path = 'initial_preferences' }),
-        (SeedVariant @{ path = 'Chrome-bin/master_preferences' }), (SeedVariant @{ sha256 = (Sha 'other') }), (SeedVariant @{ sha256 = $chromium.seed.sha256.ToUpperInvariant() }),
+    $seedParent = $chromium.executable.Substring(0, $chromium.executable.LastIndexOf('/') + 1)
+    $seedBad = @((SeedVariant @{ path = ($seedParent + 'Initial_Preferences') }), (SeedVariant @{ path = 'initial_preferences' }),
+        (SeedVariant @{ path = ($seedParent + 'master_preferences') }), (SeedVariant @{ sha256 = (Sha 'other') }), (SeedVariant @{ sha256 = $chromium.seed.sha256.ToUpperInvariant() }),
         (SeedVariant @{ size = 0 }), (SeedVariant @{ size = '1' }), (SeedVariant @{ file = 'payload/noctty.zip' }), (SeedVariant @{ file = '../x' }),
-        (SeedVariant @{} (WithFile 'Chrome-bin/initial_preferences')), (SeedVariant @{} (WithFile 'chrome-bin/Master_Preferences')),
-        (SeedVariant @{} (WithFile 'Chrome-bin/initial_preferences/x')), (SeedVariant @{} $chromium.files @()),
+        (SeedVariant @{} (WithFile ($seedParent + 'initial_preferences'))), (SeedVariant @{} (WithFile ($seedParent.ToLowerInvariant() + 'Master_Preferences'))),
+        (SeedVariant @{} (WithFile ($seedParent + 'initial_preferences/x'))), (SeedVariant @{} $chromium.files @()),
         (SeedVariant @{} $chromium.files @('Chromium/User Data', 'Chromium/Other')))
     $accepted = @($seedBad | Where-Object { $null -eq (Get-SeedProblem $_ $manifest.files) })
     Must ($accepted.Count -eq 0 -and $null -eq (Get-SeedProblem (SeedVariant @{}) $manifest.files)) "every broken seed is refused ($($accepted.Count) accepted)"
+    # Both supported layouts obey the same beside-executable seed rule.
+    foreach ($parent in @('Chrome-bin/', 'chrome-win/')) {
+        $baseFiles = @{ ($parent + 'chrome.exe') = $shaA }
+        $shape = @{ executable = ($parent + 'chrome.exe'); files = $baseFiles; protected = @('Chromium/User Data')
+            seed = @{ path = ($parent + 'initial_preferences'); file = $chromium.seed.file; sha256 = $chromium.seed.sha256; size = $chromium.seed.size } }
+        Must ($null -eq (Get-SeedProblem $shape $manifest.files)) 'both legacy and Snapshot layouts accept a coherent seed'
+        foreach ($conflict in @('initial_preferences', 'Master_Preferences', 'initial_preferences/x')) {
+            $shape.files = @{ ($parent + 'chrome.exe') = $shaA; ($parent + $conflict) = $shaA }
+            Must ($null -ne (Get-SeedProblem $shape $manifest.files)) 'both layouts refuse seed/legacy/child inventory collisions'
+        }
+    }
     # The owned tree is the inventory and the seed, so a tree recorded from the inventory alone is another selection (C1).
     $chromiumEffect = PackageEffect $chromium
     Must ($chromiumEffect.desired.files.Count -eq @($chromium.files.PSObject.Properties).Count + 1 -and
@@ -1301,23 +1313,25 @@ public static string[] Split(string cmd) {
         -not (Test-EffectStateEqual 'tree-extracted' @{ exists = $true; files = $chromium.files } $chromiumEffect.desired)) 'the owned tree: the inventory and the seed'
     # A small seeded stand-in: the archive listing is checked against the inventory alone (a seed in the archive is
     # refused); staging is the owned tree only once WriteSeed has written the verified bundle bytes, as a new file.
-    $mini = [pscustomobject]@{ name = 'Chromium'; version = '9.9'; directory = 'Programs/chromium-9.9'; executable = 'Chrome-bin/chrome.exe'
-        files = [pscustomobject]@{ 'Chrome-bin/chrome.exe' = (Sha 'exe') }; protected = @('Chromium/User Data'); seed = $chromium.seed }
+    $mini = [pscustomobject]@{ name = 'Chromium'; version = '9.9'; directory = 'Programs/chromium-9.9'; executable = $chromium.executable
+        files = [pscustomobject]@{ $chromium.executable = (Sha 'exe') }; protected = @('Chromium/User Data'); seed = $chromium.seed }
     $miniEffect = PackageEffect $mini
-    $listing = @(ConvertFrom-TarListing @('Chrome-bin/', 'Chrome-bin/chrome.exe', '') $mini.files)
+    $listing = @(ConvertFrom-TarListing @($seedParent, $mini.executable, '') $mini.files)
     Must ($null -eq (Get-ZipEntryProblem $listing $mini.files) -and $null -ne (Get-ZipEntryProblem $listing $miniEffect.desired.files) -and
-        $null -ne (Get-ZipEntryProblem @($listing + 'Chrome-bin/initial_preferences') $mini.files)) 'the listing is the inventory alone'
+        $null -ne (Get-ZipEntryProblem @($listing + $mini.seed.path) $mini.files)) 'the listing is the inventory alone'
     $miniStage = Staging $miniEffect
-    $null = New-Item -ItemType Directory -Path "$miniStage\Chrome-bin"
-    [IO.File]::WriteAllText("$miniStage\Chrome-bin\chrome.exe", 'exe')
+    $miniExe = Join-Path $miniStage $mini.executable.Replace('/', '\')
+    $miniSeed = Join-Path $miniStage $mini.seed.path.Replace('/', '\')
+    $null = New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($miniExe))
+    [IO.File]::WriteAllText($miniExe, 'exe')
     $forged = Join-Path $Scratch "forged-seed-$([guid]::NewGuid().ToString('N'))"
     [IO.File]::WriteAllText($forged, '{"webkit":{}}')
     Must (-not (Test-EffectStateEqual 'tree-extracted' $miniEffect.desired (ObserveTree $miniStage))) 'staging without its seed is not the owned tree'
     Refused { WriteSeed $chromium.seed $forged $miniStage } '*is not the manifest''s*'
-    Must (-not (Test-Path -LiteralPath "$miniStage\Chrome-bin\initial_preferences")) 'a seed differing from the manifest writes nothing'
+    Must (-not (Test-Path -LiteralPath $miniSeed)) 'a seed differing from the manifest writes nothing'
     WriteSeed $chromium.seed $seedSource $miniStage
     Must ((Test-EffectStateEqual 'tree-extracted' $miniEffect.desired (ObserveTree $miniStage)) -and
-        (Get-FileHash -LiteralPath "$miniStage\Chrome-bin\initial_preferences").Hash -eq $chromium.seed.sha256) 'staging with its seed is exactly the owned tree'
+        (Get-FileHash -LiteralPath $miniSeed).Hash -eq $chromium.seed.sha256) 'staging with its seed is exactly the owned tree'
     Refused { WriteSeed $chromium.seed $seedSource $miniStage } '*exists*'
     # Interrupted after the seed was written: recovery voids the intent and removes the seed with the staging.
     WriteRecord 'intent' $miniEffect $null $miniStage 'Chromium'
